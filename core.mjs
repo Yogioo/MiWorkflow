@@ -67,6 +67,8 @@ function run(cmd, argv, input, timeoutMs) {
 
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; process.stderr.write(d); });
+    // 子进程不读 stdin 就退出时写入会 EPIPE，这里吞掉，别让它掀翻整个 run
+    child.stdin.on('error', () => {});
     child.on('error', (err) => { stderr += String(err.message); finish(-1); });
     child.on('close', (code) => finish(code ?? -1));
     child.stdin.end(input ?? '');
@@ -77,11 +79,19 @@ function run(cmd, argv, input, timeoutMs) {
 export async function script(name, args = {}, opts = {}) {
   const startedAt = Date.now();
   const file = path.join(SCRIPTS_DIR, `${name}.mjs`);
-  const res = await run(process.execPath, [file], JSON.stringify(args), opts.timeoutMs ?? 120_000);
+
+  // dryRun（§6.1）：run.mjs 的 --dry-run 落到 env，core 统一注入 args，脚本自己决定怎么干跑
+  const dryRun = opts.dryRun ?? process.env.AGENTFLOW_DRY_RUN === '1';
+  const payload = dryRun ? { dryRun: true, ...args } : args;
+  const res = await run(process.execPath, [file], JSON.stringify(payload), opts.timeoutMs ?? 120_000);
 
   let result;
   try {
     result = JSON.parse(res.stdout);
+    // 非 0 退出码即失败，哪怕 stdout 是合法 JSON（§6.1）
+    if (res.code !== 0 && result.status !== 'failed') {
+      result = { ...result, status: 'failed', error: result.error ?? `exit_${res.code}` };
+    }
   } catch {
     result = {
       status: 'failed',
@@ -111,26 +121,38 @@ export async function agent(goal, opts = {}) {
     budget: { maxTokens: 20000, timeoutSec: 120, maxTurns: 8, ...(opts.budget ?? {}) }
   };
 
-  let status = 'ok';
-  let choice = 'done';
-  let reason = '';
-  let data = {};
+  let status;
+  let choice;
+  let reason;
+  let data;
 
   const cmd = opts.cmd ?? process.env.AGENTFLOW_AGENT_CMD;
   if (!cmd) {
-    // 没配外部 Agent 时不假装思考，返回一个明确的占位结果
+    // 没配外部 Agent 时不假装思考：明确 failed，让任务自己决定怎么办（§6.2）
+    status = 'failed';
+    choice = 'agent_unavailable';
     reason = `未配置 AGENTFLOW_AGENT_CMD；stub 收到 goal：${goal}`;
+    data = {};
   } else {
     const [bin, ...rest] = cmd.split(/\s+/).filter(Boolean);
     const res = await run(bin, rest, JSON.stringify(pkg), (pkg.budget.timeoutSec + 5) * 1000);
     try {
       const out = JSON.parse(res.stdout);
-      status = out.status ?? 'ok';
-      choice = out.choice ?? 'done';
-      reason = out.reason ?? '';
-      data = out.data ?? {};
+      // 输出不合契约（§6.2）就 failed：不补默认值，不猜，不隐式回落
+      if (!['ok', 'need_human', 'failed'].includes(out?.status) || typeof out?.choice !== 'string') {
+        status = 'failed';
+        choice = 'agent_bad_output';
+        reason = 'agent_bad_output';
+        data = { stdout: res.stdout.slice(-2000), stderr: res.stderr.slice(-2000) };
+      } else {
+        status = out.status;
+        choice = out.choice;
+        reason = out.reason ?? '';
+        data = out.data ?? {};
+      }
     } catch {
       status = 'failed';
+      choice = 'agent_invalid_json';
       reason = 'agent_invalid_json';
       data = { stderr: res.stderr.slice(-2000) };
     }

@@ -6,16 +6,19 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const task = process.argv[2];
+const argv = process.argv.slice(2);
+const task = argv.find((a) => !a.startsWith('--'));
+const dryRun = argv.includes('--dry-run');
 
 if (!task) {
-  console.error('usage: node run.mjs <task> [--yes]');
+  console.error('usage: node run.mjs <task> [--yes] [--dry-run]');
   process.exit(1);
 }
 
 // 先定 runId，再加载 core（core 里 runId 是延迟解析的）
 process.env.AGENTFLOW_TASK = task;
 process.env.AGENTFLOW_RUN_ID ??= randomUUID();
+if (dryRun) process.env.AGENTFLOW_DRY_RUN = '1';
 
 const { log } = await import('./core.mjs');
 

@@ -32,15 +32,19 @@
 ## 3. 目录
 
 ```text
-agentflow/
+MiWorkflow/
   run.mjs         # 唯一入口
   core.mjs        # 三个原语
   tasks/          # 任务，mjs，空
   scripts/        # 原子能力，mjs，空
-  logs/           # 运行记录 JSONL
+  logs/           # 运行记录 JSONL（首跑时自动建，gitignore）
   viewer/         # 实时视图 + 人工审批页，外部工具，不默认加载
   examples/       # 示例，仅参考，不默认加载
   tests/          # 测试
+  package.json    # type: module + npm test / npm run view
+  README.md       # 怎么跑；规范以本文档为准
+  .gitignore      # node_modules/、logs/
+  .gitattributes  # 统一 LF（§11）
   .git/
 ```
 
@@ -74,6 +78,7 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 ```
 
 对任务而言只有这三个。另有 `log()` 供 `run.mjs` 写 run 级记录（run 开始 / 结束）。
+另导出常量 `LOGS_DIR`（`logs/` 的绝对路径），只给需要定位日志目录的调用方用，不属于任务接口。
 
 任务文件 import 它们，然后用 JS 自由组合：
 
@@ -97,8 +102,9 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 - 返回：`{ status, data, error }`
 - `status`：`'ok' | 'failed'`
 - 日志：stderr
-- 失败：返回 `status: 'failed'` 或非 0 退出码
-- 支持 `dryRun`
+- 失败：返回 `status: 'failed'` 或非 0 退出码；退出码非 0 时，即使 stdout 是合法 JSON 也判 `failed`
+- 支持 `dryRun`：`node run.mjs <task> --dry-run`（或 `AGENTFLOW_DRY_RUN=1`）时，core 在 args 里注入
+  `dryRun: true`，脚本自己决定怎么干跑（写操作由脚本负责跳过）
 - 人话层：可选返回 `say`，缺省由 core 回落（§13）
 
 ### 6.2 agent
@@ -106,7 +112,9 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 - 输入：结构化任务包，字段精简
 - 输出：`{ status, choice, reason, data }`
 - `status`：`'ok' | 'need_human' | 'failed'`
-- 必须结构化 JSON
+- 必须结构化 JSON；缺 `status` / `choice` 或 `status` 不在枚举内 → core 直接判 `failed`
+  （`choice: 'agent_bad_output'`），不补默认值、不猜
+- 没配 `AGENTFLOW_AGENT_CMD` → 不假装思考：`status: 'failed'`、`choice: 'agent_unavailable'`，`reason` 说明原因
 - 不输出 actions
 - 可直接写，默认全权限
 - 任务 JS 根据 `choice` 分支，再调 `script()`
@@ -237,6 +245,7 @@ export function log(record) {
 }
 
 export async function script(name, args = {}, opts = {}) {
+  // dryRun 注入 args；parseOrFail 顺带把非 0 退出码判成 failed（§6.1）
   const out = await run(process.execPath, [`scripts/${name}.mjs`], JSON.stringify(args));
   const result = parseOrFail(out);
   // say 缺省由 core 回落，脚本可自行返回（§13.1）
@@ -246,7 +255,7 @@ export async function script(name, args = {}, opts = {}) {
 
 export async function agent(goal, opts = {}) {
   // 组任务包（§10）→ 调 AGENTFLOW_AGENT_CMD → 解析 { status, choice, reason, data }
-  // 未配置外部命令时不假装思考，返回明确的 stub 结果
+  // 输出不合契约（§6.2）或未配置外部命令 → failed，不猜默认值
   log({ primitive: 'agent', status, choice, reason, say: reason || `agent: ${choice}` });
   return { status, choice, reason, data };
 }
@@ -488,17 +497,18 @@ human() 写一条 status:'pending' 记录，阻塞
 `viewer/` 是仓库里的外部工具，不是内核（§16）：
 
 ```text
-viewer/serve.mjs    零依赖静态服务 + 三个只读接口 + 一个写接口
+viewer/serve.mjs    零依赖静态服务 + 四个只读接口 + 一个写接口
 viewer/index.html   单文件视图：run 列表 / trace 时间线 / 待决定卡片
 ```
 
-接口只有四个：
+接口只有五个：
 
 | 接口 | 作用 |
 |---|---|
 | `GET /api/runs` | 列出 run：标题、状态、待决定数 |
 | `GET /api/run/<id>?from=N` | 从第 N 字节起吐日志，只吐完整行 |
 | `POST /api/decide` | 写决定文件（§13.5） |
+| `GET /health` | 存活探针，给反代 / 脚本用 |
 | `GET /` | 视图页 |
 
 两个刻意的选择：
@@ -523,11 +533,11 @@ viewer/index.html   单文件视图：run 列表 / trace 时间线 / 待决定�
 
 ## 14. 自动进化（v2 待办）
 
-v1.5 只保留原则：
+v1.6 只保留原则：
 
 > **失败即需求，测试即护栏，Git 即进化。**
 
-v1.5 只要求：
+v1.6 只要求：
 
 1. 任务失败 → 记录日志。
 2. 人工或 Agent 修改任务 / 脚本。
@@ -586,6 +596,7 @@ node run.mjs demo
 - 不预置任何业务逻辑
 - 不自研 apply_patch
 - 不执行 Agent 输出的 actions
+- 不替 Agent 补默认值：输出不合契约就判 failed（§6.2）
 - 不自动生成任务草案，不隐式 fallback
 - 不内置 MCP 层
 
@@ -609,8 +620,10 @@ node run.mjs demo
 5. ✅ 跑通「任务不存在 → 明确报错；把 `examples/*.task.mjs` 复制进 `tasks/` → 执行 → 记录 → 网页可见可审批」。
 6. ✅ 把原则变成护栏：`node --test` 里断言 `tasks/`、`scripts/` 不预置任何实现（§3、§16）。
 7. ✅ Git 固化：`git init` + 首次提交，此后每条 trace 的 `gitSha` 都有值（§12）。
-8. 后续只往 `tasks/` 和 `scripts/` 沉淀（从复制 `examples/` 起步），不改内核。
-9. 自动进化 v2 再议。
+8. ✅ v1.6 收口：`--dry-run` 注入 `args.dryRun`、脚本非 0 退出码即 failed、Agent 输出不合契约即 failed；
+   文档同步实现（§6.1、§6.2、§13.6）。
+9. 后续只往 `tasks/` 和 `scripts/` 沉淀（从复制 `examples/` 起步），不改内核。
+10. 自动进化 v2 再议。
 
 ---
 
