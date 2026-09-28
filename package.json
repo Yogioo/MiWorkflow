@@ -5,6 +5,8 @@
   "engines": { "node": ">=18" },
   "scripts": {
     "view": "node viewer/serve.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "guard": "node guard.mjs check"
+
   }
 }

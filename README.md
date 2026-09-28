@@ -48,6 +48,24 @@ node --test
 
 测试里带三条护栏杆，断言 `tasks/`、`scripts/` 不预置任何实现 —— 这条原则是被测出来的，不是写在文档里就算。
 
+## 内核护栏
+
+`tasks/`、`scripts/` 是沉淀的地方，随便改；**内核**（`run.mjs`、`core.mjs`、`guard.mjs`、`viewer/`、`tests/`、`Core.md` …）改动需要有人在终端确认：
+
+```bash
+npm run guard                                    # 只读检查（= node guard.mjs check）
+node guard.mjs approve --reason "为什么改内核"
+```
+
+改了内核而没重新固化，`node --test` 会红 —— 护栏不靠自觉，靠测试（[Core.md](Core.md) §14.1）。
+`approve` 要求 stdin 是 TTY：Agent 通常在管道里跑，拿不到 TTY，所以过不来。
+
+可选，再拦一道提交：
+
+```bash
+node guard.mjs install      # 装 .git/hooks/pre-commit
+```
+
 ## 环境变量
 
 | 变量 | 作用 |

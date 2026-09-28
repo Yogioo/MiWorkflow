@@ -35,6 +35,8 @@
 MiWorkflow/
   run.mjs         # 唯一入口
   core.mjs        # 三个原语
+  guard.mjs       # 内核护栏：改内核要人审批（§14.1）
+  core.lock.json  # 内核指纹 + 最后一次审批的理由（§14.1）
   tasks/          # 任务，mjs，空
   scripts/        # 原子能力，mjs，空
   logs/           # 运行记录 JSONL（首跑时自动建，gitignore）
@@ -553,6 +555,35 @@ v1.6 只要求：
 
 这些放到 v2，等最小闭环跑稳后再加。
 
+### 14.1 内核护栏（v1.6 已实现）
+
+「只往 `tasks/` 和 `scripts/` 沉淀，不改内核」不靠自觉，靠 `core.lock.json` 加 `node --test`。
+
+- **可写面**：`tasks/`、`scripts/`、`logs/`、`examples/` —— 沉淀的地方，随便改，不算数。
+- **内核**：其余全部（`run.mjs`、`core.mjs`、`guard.mjs`、`viewer/`、`tests/`、`Core.md`、`package.json` …）。
+- `core.lock.json` 记下内核每个文件的哈希，以及最后一次审批的时间、署名、理由。
+
+改了内核而没重新固化，`node --test` 直接红；而「测试通过」是进化闭环的第 3 步（§14），
+于是未审批的内核改动卡在门口。
+
+重新固化必须有人在终端：
+
+```bash
+node guard.mjs check                                  # 只读检查，跑不坏东西
+node guard.mjs approve --reason "修 agent 超时没杀掉子进程"
+```
+
+`approve` 要求 stdin 是 TTY。Agent 通常在管道里跑，拿不到 TTY，所以这道闸对它天然有效。
+可选再加一道提交时的闸：
+
+```bash
+node guard.mjs install      # 装 .git/hooks/pre-commit
+```
+
+**边界要说清**：这不是防盗墙。Agent 有文件写权限，真想绕一定绕得过去。
+它拦的是「无意识的静默改动」，逼出一句人写的理由和一条可回滚的 Git 记录。
+要物理级隔离，用只读挂载 + 可写卷 —— 那是操作系统的事，不是打包的事。
+
 ---
 
 ## 15. 示例位置
@@ -622,8 +653,9 @@ node run.mjs demo
 7. ✅ Git 固化：`git init` + 首次提交，此后每条 trace 的 `gitSha` 都有值（§12）。
 8. ✅ v1.6 收口：`--dry-run` 注入 `args.dryRun`、脚本非 0 退出码即 failed、Agent 输出不合契约即 failed；
    文档同步实现（§6.1、§6.2、§13.6）。
-9. 后续只往 `tasks/` 和 `scripts/` 沉淀（从复制 `examples/` 起步），不改内核。
-10. 自动进化 v2 再议。
+9. ✅ 内核护栏：`core.lock.json` + `guard.mjs`，改内核要在终端显式 `approve`，否则 `node --test` 变红（§14.1）。
+10. 后续只往 `tasks/` 和 `scripts/` 沉淀（从复制 `examples/` 起步），不改内核。
+11. 自动进化 v2 再议。
 
 ---
 
