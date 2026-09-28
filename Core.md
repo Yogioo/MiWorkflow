@@ -608,7 +608,7 @@ node run.mjs demo
 4. ✅ `viewer/`：实时视图 + Web 审批（外部工具，§13.6）。
 5. ✅ 跑通「任务不存在 → 明确报错；把 `examples/*.task.mjs` 复制进 `tasks/` → 执行 → 记录 → 网页可见可审批」。
 6. ✅ 把原则变成护栏：`node --test` 里断言 `tasks/`、`scripts/` 不预置任何实现（§3、§16）。
-7. Git 固化（`git init` 后 `gitSha` 才有值）。
+7. ✅ Git 固化：`git init` + 首次提交，此后每条 trace 的 `gitSha` 都有值（§12）。
 8. 后续只往 `tasks/` 和 `scripts/` 沉淀（从复制 `examples/` 起步），不改内核。
 9. 自动进化 v2 再议。
 
