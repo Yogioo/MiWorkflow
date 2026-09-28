@@ -1,13 +1,14 @@
 {
   "version": 1,
-  "approvedAt": "2026-09-28T13:36:53.222Z",
+  "approvedAt": "2026-09-28T13:45:58.285Z",
   "approvedBy": "human",
-  "reason": "v1.6 内核护栏初次固化（人审通过）",
+  "reason": "更新TODO",
   "files": {
     ".gitattributes": "3a1c9bcc69f84707",
     ".gitignore": "9225170f94d0afbc",
     "Core.md": "90f70a517c335d96",
     "README.md": "8fdc14ed4f7b61bd",
+    "TODO.md": "6288f10193fd0fd4",
     "core.mjs": "965264b964f46618",
     "guard.mjs": "4b07572c6f013e02",
     "package.json": "bae3ba29fa5e8898",
