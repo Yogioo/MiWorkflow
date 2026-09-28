@@ -1,0 +1,4 @@
+# 统一 LF，避免 Windows/macOS/Linux 之间来回抖动（§11 跨平台优先）
+* text=auto eol=lf
+*.png binary
+*.jpg binary

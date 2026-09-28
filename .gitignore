@@ -1,0 +1,10 @@
+node_modules/
+
+# 运行记录：本地产物，不进版本库（§12）
+logs/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

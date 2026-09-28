@@ -1,0 +1,10 @@
+{
+  "name": "miworkflow",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "view": "node viewer/serve.mjs",
+    "test": "node --test"
+  }
+}
