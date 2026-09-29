@@ -6,7 +6,7 @@
 //   miworkflow github_dev --max 3            最多做 3 个
 //   miworkflow github_dev --max-failures 1   连续失败 1 次就停（默认 3）
 //   miworkflow github_dev --issue 42         只做 #42（不看标签和依赖，人点名就跑）
-//   miworkflow github_dev --confirm          每次提交前 human 确认
+//   miworkflow github_dev --confirm          每次发布（推送 + 关单）前 human 确认
 //   miworkflow github_dev --dry-run          改 GitHub / git 的脚本只报会做什么
 import { fileURLToPath } from 'node:url';
 import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, LABELS } from '../config.mjs';
@@ -153,13 +153,14 @@ async function runIssue(issue, ctx) {
     }
   }
 
-  // 5. 带 --confirm 才找人点头；不带就无人值守
+  // 5. 带 --confirm 才找人点头；不带就无人值守。
+  // 注意：提交是本地的（Agent 已经提交过，或下面会补），这道门卡的是「发布」——推送 + 关单。
   if (args.confirm) {
-    const h = await human(`#${num} 改动就绪，提交并关单？`);
+    const h = await human(`#${num} 改动就绪（提交已在本地），推送并关单？`);
     if (h.status !== 'ok') return fail(num, '人工拒绝提交', base, ctx);
   }
 
-  // 6. 提交 + 推送
+  // 6. 提交 + 推送：Agent 一般已经自己提交了（提示词要求的），这里兜底；已提交就用当前 HEAD 走推送。
   const c = await script('git_commit', {
     message: `#${num} ${issue.title}`,
     body: `Closes #${num}`,
@@ -225,7 +226,8 @@ function devPrompt(issue, root) {
     '',
     '要求：',
     '- 直接改工作目录里的代码，把 issue 做出来；改完自己检查一遍，别留半成品',
-    '- 不要 git commit、不要 git push：提交与推送由工作流负责，你只把改动留在工作区',
+    `- 做完自己提交：\`git add -A && git commit -m '#${issue.number} ${issue.title}'\`，正文写一行 \`Closes #${issue.number}\``,
+    '- 不要 git push：推送与关单由工作流负责（提交信息按上面的格式；忘了提交也没关系，工作流会替你补一笔）',
     '- issue 不需要任何改动（已经满足，或信息不足无法判断）时，choice 用 no_change，reason 说明原因',
     '- 需要人补充信息才能继续时，status 用 need_human，reason 写你要问的问题',
     '',
@@ -245,7 +247,7 @@ function reviewPrompt(issue, root, changed) {
     issue.text,
     '',
     '看实际改动（git diff 等），审查：是否正确、是否真的解决了 issue、有没有引入问题。有问题就直接改。',
-    '- 不要 git commit、不要 git push：改了就留在工作区，提交与推送由工作流负责',
+    `- 你改了就直接提交，信息用：\`#${issue.number} 审查修正：<一句话>\`；不要 git push（推送与关单由工作流负责）`,
     '- 审查后你认为干净：choice=clean',
     '- 你做了修改或补充：choice=refined',
     '- 方向根本错了、应当放弃：choice=reject，并说明',
@@ -267,7 +269,7 @@ function fixPrompt(issue, root, verify, output) {
     issue.text,
     '',
     '直接改代码。修好了 choice=fixed；判断做不到 choice=give_up 并说明原因。',
-    '- 不要 git commit、不要 git push：改了就留在工作区，提交与推送由工作流负责',
+    `- 你改了就直接提交，信息用：\`#${issue.number} 验证不过修正：<一句话>\`；不要 git push（推送与关单由工作流负责）`,
     '',
     '最后只回一段 JSON：{status, choice, reason, data}；choice 只能是 fixed | give_up'
   ].join('\n');
