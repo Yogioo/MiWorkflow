@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 
-import { parseCliArgv, renderPrompt, stripFence } from '../agents/prompt.mjs';
+import { parseCliArgv, renderPrompt, stripFence, normalizeReply, extractJson } from '../agents/prompt.mjs';
 import { normalizeEvent } from '../agents/normalize-event.mjs';
 import { buildPiArgs } from '../agents/runners/pi.mjs';
 import { buildCodexArgs } from '../agents/runners/codex.mjs';
@@ -93,6 +93,38 @@ test('stripFence：只剥一层围栏，别的原样', () => {
   assert.equal(stripFence('```\n{"a":1}```'), '{"a":1}');
   assert.equal(stripFence('  {"a":1}\n'), '{"a":1}');
   assert.equal(stripFence('好了：\n```json\n{"a":1}\n```'), '好了：\n```json\n{"a":1}\n```', '围栏外有话就不猜');
+});
+
+// ── 纯函数：回话归一（§10.1）————————————————————————————————————————
+
+test('normalizeReply：纯 JSON / 围栏 / 夹在文字里，都取到契约 JSON', () => {
+  assert.deepEqual(normalizeReply('{"status":"ok","choice":"done"}'), {
+    text: '{"status":"ok","choice":"done"}', extracted: false
+  });
+  assert.deepEqual(normalizeReply('```json\n{"status":"ok","choice":"done"}\n```'), {
+    text: '{"status":"ok","choice":"done"}', extracted: false
+  });
+
+  // pi 真实出现过的形状：一大段人话总结 + 空行 + 契约 JSON
+  const mixed = normalizeReply('完成。改动如下：\n\n- run.mjs：加了占用锁\n\n{"status":"ok","choice":"done","data":{"n":1}}');
+  assert.equal(mixed.extracted, true);
+  assert.deepEqual(JSON.parse(mixed.text), { status: 'ok', choice: 'done', data: { n: 1 } });
+});
+
+test('normalizeReply：没有 JSON 就原样交回，让 core 判（不假装成功）', () => {
+  const r = normalizeReply('我做完了，但忘了输出 JSON');
+  assert.equal(r.extracted, false);
+  assert.equal(r.text, '我做完了，但忘了输出 JSON');
+});
+
+test('extractJson：串里的花括号、多个 JSON、尾部杂字都不影响', () => {
+  assert.equal(extractJson('用 {"pid": 1} 当锁\n{"status":"ok","choice":"done"}'), '{"status":"ok","choice":"done"}');
+  assert.equal(extractJson('{"status":"a","choice":"x"}\n\n{"status":"ok","choice":"done"}'), '{"status":"ok","choice":"done"}', '取最后一个');
+  assert.equal(extractJson('{"status":"ok","data":{"msg":"a } b { c"}}'), '{"status":"ok","data":{"msg":"a } b { c"}}', '串里的花括号不干扰');
+  assert.equal(extractJson('前言\n{"status":"ok","choice":"done"}\n后记'), '{"status":"ok","choice":"done"}');
+  assert.equal(extractJson('没有 JSON'), null);
+  assert.equal(extractJson('[1, 2, 3]'), null, '没对象就 null');
+  assert.equal(extractJson('[{"status":"ok","choice":"x"}]'), '{"status":"ok","choice":"x"}', '包在数组里的对象也认得');
 });
 
 test('parseJsonlChunk：半行留到下一块，最后回话取最新的一条', () => {

@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // agent_cli.mjs — 运行期 Agent 适配器（Core.md §10、§19.2）
 //   node agents/agent_cli.mjs <pi|codex|cursor> [--model m] [--thinking t] [--provider p] [-- 其余开关]
-// stdin：§10 任务包 → 渲染提示词 → 起那家 CLI → stdout：最后一条回话（剥掉至多一层围栏）。
+// stdin：§10 任务包 → 渲染提示词 → 起那家 CLI → stdout：最后一条回话（剥一层围栏；整段不是 JSON 就取最后一段 JSON）。
 // 合不合 §6.2 契约由 core 判；这里只在 CLI 起不来 / 非 0 退出 / 超时 / 没回话时写 agent_cli_failed（这是事实，不是猜）。
 // 过程翻成人话写 stderr；提示词、原始输出、归一事件落在 AGENTFLOW_AGENT_LOG（core 给的前缀）或临时目录。
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRunner } from './runners/index.mjs';
-import { parseCliArgv, renderPrompt, stripFence } from './prompt.mjs';
+import { parseCliArgv, renderPrompt, normalizeReply } from './prompt.mjs';
 
 let cli = 'agent';
 try {
@@ -72,7 +72,9 @@ try {
 
   const reply = readFileSync(files.outFile, 'utf8');
   if (!reply.trim()) throw new Error(`${cli} 没有给出最后回话`);
-  process.stdout.write(stripFence(reply));
+  const { text, extracted } = normalizeReply(reply);
+  if (extracted) say('  · 回话里除了 JSON 还有别的字，取了最后一段 JSON');
+  process.stdout.write(text);
 } catch (err) {
   process.stdout.write(JSON.stringify({ status: 'failed', choice: 'agent_cli_failed', reason: err.message, data: {} }));
   process.exitCode = 1;

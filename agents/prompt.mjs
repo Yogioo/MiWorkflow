@@ -62,3 +62,41 @@ export function stripFence(text) {
   const m = s.match(/^```[^\n]*\n([\s\S]*?)\n?```$/);
   return m ? m[1].trim() : s;
 }
+
+// 是不是一个 JSON 对象（数组 / 标量不算）
+function isJsonObject(text) {
+  const t = String(text ?? '').trim();
+  if (!t.startsWith('{') || !t.endsWith('}')) return false;
+  try {
+    const v = JSON.parse(t);
+    return v !== null && typeof v === 'object' && !Array.isArray(v);
+  } catch {
+    return false;
+  }
+}
+
+// 从一段话里取最后一段能解析的 JSON 对象（没有就 null）。
+// 从后往前扫：先定右括号，再往前找能配平的左括号。优先带 "status" 的，最像契约。
+export function extractJson(text) {
+  const s = String(text ?? '');
+  if (isJsonObject(s)) return s.trim();
+  let fallback = null;
+  for (let end = s.lastIndexOf('}'); end > 0; end = s.lastIndexOf('}', end - 1)) {
+    for (let start = s.lastIndexOf('{', end); start >= 0; start = start > 0 ? s.lastIndexOf('{', start - 1) : -1) {
+      const candidate = s.slice(start, end + 1).trim();
+      if (!isJsonObject(candidate)) continue;
+      if (candidate.includes('"status"')) return candidate;
+      fallback ??= candidate;
+    }
+  }
+  return fallback;
+}
+
+// 适配器回话归一（§10.1）：剥一层围栏；整段不是 JSON 就取最后一段 JSON；再没有就原样交回让 core 判（§6.2）。
+// 只做传输层归一，不补字段、不猜形状。`extracted` 只用来在 stderr 说明一句。
+export function normalizeReply(text) {
+  const fenced = stripFence(text);
+  if (isJsonObject(fenced)) return { text: fenced, extracted: false };
+  const json = extractJson(fenced);
+  return json ? { text: json, extracted: true } : { text: fenced, extracted: false };
+}
