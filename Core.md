@@ -114,8 +114,8 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 - 输入：结构化任务包，字段精简
 - 输出：`{ status, choice, reason, data }`
 - `status`：`'ok' | 'need_human' | 'failed'`
-- 必须结构化 JSON；缺 `status` / `choice` 或 `status` 不在枚举内 → core 直接判 `failed`
-  （`choice: 'agent_bad_output'`），不补默认值、不猜
+- 必须结构化 JSON；stdout 不是 JSON → core 直接判 `failed`（`choice: 'agent_invalid_json'`）；
+  缺 `status` / `choice` 或 `status` 不在枚举内 → `failed`（`choice: 'agent_bad_output'`），不补默认值、不猜
 - 没配 `AGENTFLOW_AGENT_CMD` → 不假装思考：`status: 'failed'`、`choice: 'agent_unavailable'`，`reason` 说明原因
 - 不输出 actions
 - 可直接写，默认全权限
@@ -656,6 +656,7 @@ node run.mjs demo
 9. ✅ 内核护栏：`core.lock.json` + `guard.mjs`，改内核要在终端显式 `approve`，否则 `node --test` 变红（§14.1）。
 10. 后续只往 `tasks/` 和 `scripts/` 沉淀（从复制 `examples/` 起步），不改内核。
 11. 自动进化 v2 再议。
+12. v1.7：沉淀离开内核仓库 + 运行期 Agent 适配器（§19，已定，未实现）。
 
 ---
 
@@ -677,3 +678,108 @@ node run.mjs demo
 
 > **用 mjs 做任务和脚本，用三个原语编排，用 Agent 做开放推理，用 Git 做进化。**  
 > **Agent 输出选择，不输出 actions（但自己动手）；任务不存在就报错；不自造 DSL，就是最好的极简。**
+
+---
+
+## 19. v1.7 变更（已定，未实现）
+
+> 本节是 2026-09-29 拍板的设计。§1–§18 仍描述已实现的 v1.6；实现 v1.7 时把本节折进正文、删掉本节。
+> 落地清单见 `TODO.md` 的 B2、C2。
+
+### 19.1 沉淀离开内核仓库
+
+**问题**：§3 要求 `tasks/`、`scripts/` 为空，测试查的是文件系统；§14 又要求沉淀后测试通过、
+把沉淀提交进 Git。两条同时成立，沉淀一开始测试就永远红，提交也进了内核仓库。
+根子是**内核仓库与沉淀仓库是同一个**。
+
+**决定**：内核装一份，沉淀跟着业务项目走。
+
+- **HOME**：`AGENTFLOW_HOME`，缺省为当前目录。`tasks/`、`scripts/`、`logs/` 都在 HOME 下找；
+  脚本子进程的 cwd 也是 HOME；viewer 读 HOME 的 `logs/`；`gitSha` 取 HOME 所在仓库的 HEAD
+  （记的是沉淀的版本，进化回滚看的就是它）。
+- **任务 import 包名**：`import { script, agent, human } from 'miworkflow'`，不再是 `'../core.mjs'`。
+  内核 `package.json` 加 `"exports": { ".": "./core.mjs" }` 与 `"bin": { "miworkflow": "./run.mjs" }`。
+- **业务仓库的样子**（以 Unity 项目为例）：
+
+  ```text
+  <Unity 项目>/.workflow/
+    package.json   # { "type": "module", "private": true,
+                   #   "devDependencies": { "miworkflow": "github:Yogioo/MiWorkflow" } }
+                   # 改内核时换成 "file:<本机内核路径>"
+    tasks/  scripts/  tests/
+    logs/          # gitignore
+  ```
+
+  跑：`cd .workflow && npx miworkflow unity_fix_tests`。沉淀的测试放它自己的 `tests/`（B1 随之消解），
+  进化的 commit 落在业务仓库，跟游戏代码一起回滚。
+- **内核仓库**：不再有 `tasks/`、`scripts/`。`examples/` 本身就是一个 HOME
+  （`examples/tasks/demo.mjs`、`examples/scripts/hello.mjs`），`AGENTFLOW_HOME=examples node run.mjs demo`
+  直接跑，不用复制；示例里的 `import 'miworkflow'` 靠包的自引用解析。§15「为什么平铺」的理由随之消失。
+- **护栏跟着挪**：
+  - 空目录测试改成「内核仓库根下没有 `tasks/`、`scripts/`」+「`examples/` 作为 HOME 能跑通」。
+  - 进化闭环跑的是**业务仓库**的测试，不再会顺带跑内核测试，所以内核被改只能在运行时拦：
+    `run.mjs` 起跑前调 `guard.inspect()`，内核与 `core.lock.json` 不一致就**拒跑**，提示去终端 `approve`。
+  - 内核仓库的可写面缩为 `logs/`、`examples/`。
+
+### 19.2 运行期 Agent 适配器
+
+`agents/agent_cli.mjs <pi|codex|cursor>`：一份适配器，一个参数选家。放在**内核**，
+与 `viewer/` 同类的外部工具（core 不 import 它），受 `core.lock.json` 保护 ——
+它带着全权限开关，不该被进化中的 Agent 静默改掉。
+
+**来源**：从 exec-review 技能的 runner 层**复制一份**起步（`scripts/runners/*.mjs` + `scripts/normalize-event.mjs`，
+零依赖、不读 `~/.afk/config.json`），之后**独立演进**，不回头同步、不依赖 exec-review。
+改动：入口换成 §10 任务包进、§6.2 选择出；去掉 exec-review 专有的 `role` / reviewer 只读、
+`sandbox` 映射（三家一律全权限，§10）和 `dryRun`。
+CLI 名用 `cursor`（exec-review 里叫 `agent`，跟原语重名）。
+
+- **选谁来干**：每次 `agent()` 都能单独指定 CLI、模型、思考等级：
+
+  ```js
+  await agent('修掉失败的测试', {
+    agent: { cli: 'codex', model: 'gpt-5.5', thinking: 'high' },
+    inputs: { cwd, failures }
+  });
+  ```
+
+  `opts.agent` 是对象 `{ cli, model?, thinking?, provider?, args? }`，或只写 CLI 名的字符串（`'pi'` = `{ cli: 'pi' }`）。
+  core 把它展开成 `node <内核>/agents/agent_cli.mjs <cli> [--model <m>] [--thinking <t>] [--provider <p>] [...args]`。
+  - 值**原样转交**，各家换成自己的开关，不翻译、不校验（沿用 runner 层已验证的映射）：
+    pi → `--model` / `--thinking` / `--provider`；codex → `-m` / `-c model_reasoning_effort=<t>`；
+    cursor → `--model <m>[effort=<t>]`，**只给 `thinking` 不给 `model` 就报错**，不静默丢掉。
+    `provider` 只有 pi 认，给别家就报错。值不对由 CLI 自己报错 → `agent_cli_failed`。
+  - `args` 是逃生口：其余开关原样追加给那家 CLI。
+  - codex 另用 `--output-schema` 把 §6.2 的输出形状交给 CLI 强制；pi / cursor 没有这个开关，靠提示词。
+- **默认值按什么顺序找**：`opts.cmd` → `opts.agent` → `AGENTFLOW_AGENT_CMD` → `AGENTFLOW_AGENT`（只写 CLI 名，
+  是这台机器的缺省）→ 都没有就 `agent_unavailable`（§6.2）。
+- **按任务配、按用途起名字，用的是 JS，不是机制**：内核只认单次调用的 `opts.agent`。
+  - 整个任务统一用一个：任务文件里写一个常量，或包一行 `const ask = (g, o) => agent(g, { agent: DEEP, ...o })`。
+  - 多个任务共用「快的 / 深度思考的」：HOME 里放一份普通模块，任务 import 它：
+
+    ```js
+    // .workflow/agents.mjs —— 模型换代只改这一处
+    export const FAST = { cli: 'pi', model: 'sonnet', thinking: 'low' };
+    export const DEEP = { cli: 'codex', model: 'gpt-5.5', thinking: 'high' };
+    ```
+
+  不加 `agents.json`、不加 profile 注册表、不在环境变量里拼 `codex:model:high` 这种串（§2.8、§2.11）。
+- **留痕**：`agent` 那条日志多记一个字段 `agent: { cli, model, thinking }`（§12）——
+  进化时才看得出「哪个模型在哪类任务上老失败」。
+- **进**：§10 任务包。适配器渲染成提示词：`goal`、`inputs`、`constraints`，末尾附输出契约
+  （最后只回一段 `{status, choice, reason, data}`；`choice` 只取 `inputs.choices`，给了的话）。
+- **出**：取最后一条回话，剥掉至多一层代码围栏，原样写 stdout。**合不合契约仍由 core 判**（§6.2），
+  适配器不补默认值。CLI 起不来 / 非 0 退出 → 适配器写
+  `{status:'failed', choice:'agent_cli_failed', reason}`（这是事实，不是猜）。
+- **运行目录**：`inputs.cwd`，缺省 HOME。内核不加 `opts.cwd`。
+- **过程**：各家事件流经 `normalize-event` 统一后翻成人话写 stderr（core 已透传到终端）。
+  统一后的事件另存进 HOME 的 `logs/`（命名实现时定）—— 这顺带就是 E3「长任务过程留痕」的底子。
+- **会话**：runner 层自带续会话能力表（pi 有就续没有就建、codex 只能续、cursor 不支持就报错）。
+  v1.7 **不开放**（C2-3），留着以后按需接 `inputs.session`。
+- **预算**：只有 `timeoutSec` 真生效；`maxTokens` / `maxTurns` 能映射就映射，不能就只写进提示词。
+- **权限**：三家都全权限（§10）。
+- **`choice` 不由 core 校验**：不加 `opts.choices`。可选值放 `inputs.choices` 给适配器渲染，
+  未知 `choice` 由任务 JS 自己 `throw`（§7 的写法）。
+
+### 19.3 不变的
+
+三个原语的签名与返回、§6.1 脚本协议、§6.3 / §13.5 决定通道、§12 日志字段、§16 的全部禁令。

@@ -1,14 +1,14 @@
 {
   "version": 1,
-  "approvedAt": "2026-09-28T13:45:58.285Z",
+  "approvedAt": "2026-09-29T09:34:39.611Z",
   "approvedBy": "human",
-  "reason": "更新TODO",
+  "reason": "规划 v1.7：沉淀离开内核仓库；Agent 适配器（复制 exec-review runner 层，按调用选 CLI/模型/思考等级）；C4 自组执行→审查；§6.2   补 agent_invalid_json",
   "files": {
     ".gitattributes": "3a1c9bcc69f84707",
     ".gitignore": "9225170f94d0afbc",
-    "Core.md": "90f70a517c335d96",
+    "Core.md": "d0671aa6b6c43b3e",
     "README.md": "8fdc14ed4f7b61bd",
-    "TODO.md": "6288f10193fd0fd4",
+    "TODO.md": "205e717f7dace87b",
     "core.mjs": "965264b964f46618",
     "guard.mjs": "4b07572c6f013e02",
     "package.json": "bae3ba29fa5e8898",
