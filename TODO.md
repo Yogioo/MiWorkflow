@@ -11,10 +11,10 @@
 2. **B3 零配置使用**（已定，设计见 `Core.md` §19.3）—— 排在 C2 前：它改任务写法（import → 传参），
    趁还没有真实任务改最便宜
 3. **C2 运行期 Agent 适配器**（已定放 `agents/`、choice 不由 core 校验，设计见 `Core.md` §19.2）
-4. **C4 首个真实工作流：Unity 跑测试 → 修 → 确认 → 提交**
+4. **C3 首个工作流：GitHub 开发**（`init` 可选的模板，依赖 B3 的 `init` / `args` 和 C2 的按调用选 Agent）
 5. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
-B1 随 B2 消解，C3 降为参考示例。
+B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项目专用的（如 Unity 跑测试）。
 
 2026-09-29：内核审批护栏（`guard.mjs` + `core.lock.json` + pre-commit）整套删除 —— 仓库分离后收益小于摩擦
 （`Core.md` §14.1）。下文拍板前的分析里提到「内核审批 / approve / 受 core.lock 保护」的，都是当时的记录。
@@ -95,17 +95,20 @@ B1 随 B2 消解，C3 降为参考示例。
       讨论过的三种形态：每项目 npm 包（B2 现状，步骤最多）；技能形态（装一次、全靠 AI —— 否决：跑任务也得经过 AI，别扭）；
       **全局命令 + 项目零配置（采纳）**：装 / 写 / 跑三件事分开，写可以交给 AI，跑不经过 AI。
       实现清单：
-      - `run.mjs`：`mod.default({ script, agent, human })`；HOME 按 `AGENTFLOW_HOME` → 往上找 `.workflow/` → 报错；
-        解析出的 HOME 写回 `AGENTFLOW_HOME` 再加载 core；子命令 `new <name>`、`view`
+      - `run.mjs`：`mod.default({ script, agent, human, args })`，`--key value` / `--flag` 解析成 `args`
+        （`--yes`、`--dry-run` 不进）；HOME 按 `AGENTFLOW_HOME` → 往上找 `.workflow/` → 报错；
+        解析出的 HOME 写回 `AGENTFLOW_HOME` 再加载 core；子命令 `init`、`new <name>`、`view`
+      - `init`：终端里选「空白 / GitHub 开发」，非终端 `--template blank|github`；从 `templates/<名字>/` 复制，已有文件不覆盖
+        （2026-09-29 定：原方案「没有 init、`new` 顺手建目录」改为 `init` 负责建目录 + 选模板，`new` 只加任务）
       - `package.json`：去掉 `exports` 与 `miworkflow-view`，`bin` 只剩 `miworkflow`
       - `examples/`：任务改成传参写法
       - viewer：`GET /api/tasks`（正则读 title，不 import）、`POST /api/run`（默认只收本机，`MIWORKFLOW_REMOTE_RUN=1` 放开；
         预生成 runId；`AGENTFLOW_HUMAN=web`；输出落 `logs/<runId>.out.log`）；页面加任务列表与「运行」按钮
       - `SKILL.md`（并入 C1）：写给 AI 的建任务说明
-      - 测试：往上找 HOME（子目录里能找到、找不到报错、env 优先）；`new` 建骨架且不覆盖；
-        传参调用；`/api/run` 拒绝非本机；示例不 import 内核
-      - 把 §19.3 折进 `Core.md` §3 / §5 / §7 / §9 / §15，README 重写用法
-      实测：`npm i -g` 装真 GitHub 地址后在一个空的 Unity 项目里走一遍 `new` → 跑 → 网页点运行。
+      - 测试：往上找 HOME（子目录里能找到、找不到报错、env 优先）；`init` 两种模板、重复 `init` 不覆盖；
+        `new` 建骨架且不覆盖、没 `.workflow/` 报错；`args` 解析；`/api/run` 拒绝非本机；示例不 import 内核
+      - 把 §19.3 折进 `Core.md` §3 / §5 / §7 / §9 / §15 / §16，README 重写用法
+      实测：`npm i -g` 装真 GitHub 地址后在一个空项目里走一遍 `init` → `new` → 跑 → 网页点运行。
 
 - [x] **B1. 「脚本测试放哪」没定死** —— 随 B2-① 消解：沉淀的测试放业务仓库 `.workflow/tests/`，不碰内核
       §8 要求「每个脚本配独立测试」，但 `guard.mjs` 的 `WRITABLE_DIRS` 只有
@@ -159,7 +162,7 @@ B1 随 B2 消解，C3 降为参考示例。
       **运行目录**：取 `inputs.cwd`，缺省为当前目录 —— 让 Agent 在 Unity 项目里干活，不必给内核加 `opts.cwd`。
       **过程可见**：事件流经 `normalize-event` 归一后翻成人话写 stderr；归一事件另存 HOME `logs/`（E3 的底子）。
       **预算**：只有 `timeoutSec` 真生效（core 在 `timeoutSec + 5` 秒杀进程）；`maxTokens` / `maxTurns`
-      能映射到 CLI 开关就映射，不能就写进提示词，文档写明「仅建议」。注意默认 120 秒对 Unity 修复远远不够，
+      能映射到 CLI 开关就映射，不能就写进提示词，文档写明「仅建议」。注意默认 120 秒对改代码这类长活远远不够，
       任务里要显式 `budget: { timeoutSec: ... }`。
       **权限**：三家都全权限（§10「默认全权限」）。
 
@@ -176,43 +179,61 @@ B1 随 B2 消解，C3 降为参考示例。
       - **C2-3 会话延续**：§7 的重试循环每次 `agent()` 都是新上下文。**推荐先不做**：重试时把上一次的
         `reason` 和失败输出放进 `inputs`。真出现「每次从头读项目、慢得不行」再加 `inputs.session`。
 
-- [ ] **C4. 首个真实工作流：Unity 跑测试 → 修 → 审查 → 确认 → 提交**（替代 C3 成为第一个真实工作流）
-      骨架就是 `Core.md` §7。落点：Unity 项目自己的 `.workflow/`（B2-①），依赖 B2、C2 先实现。
-      **不依赖 exec-review**（2026-09-29 定）：「执行 → 审查 → 提交」用三个原语自己组合 ——
-      这正是 §2.4 说的「确定的事固化成脚本，不确定的事交给 Agent」，也是 §19.2「每次调用选不同 Agent」的第一个用处：
-      ```js
-      const DEV = { cli: 'codex', thinking: 'high' };      // 放 .workflow/agents.mjs
-      const REVIEWER = { cli: 'pi', thinking: 'medium' };   // 执行与审查故意用不同家，互相兜底
+- [ ] **C3. 首个工作流：GitHub 开发（`templates/github/`）** —— **2026-09-29 定**
+      取代原 C3「GitHub Issues 摘要」示例。参考 afk-run（`~/.agents/skills/afk-run`）的 gh 任务源与状态机，
+      **不依赖 afk-run / exec-review**，用三个原语重组；issue 的写法（标签、优先级、依赖）与 afk-run 相同，同一个仓库两边可以互换着跑。
+      人在 GitHub 上把 issue 交给机器，机器逐个「认领 → 开发 → 审查 → 验证 → 提交 → 推送 → 关单」，失败就回滚、贴评论。
 
-      const base = await script('git_head', { cwd });                       // 记下起点，失败好回滚
-      const fix = await agent('修掉失败的测试', { agent: DEV,
-        inputs: { cwd, failures, choices: ['fixed', 'cannot_fix'] }, budget: { timeoutSec: 1800 } });
-      const changed = await script('git_changes', { cwd, since: base.data.sha }); // 真改了哪些文件，不信 Agent 自报
-      const review = await agent('审查这些改动是否真修好了、有没有副作用；有问题直接改', { agent: REVIEWER,
-        inputs: { cwd, goal: '修掉失败的测试', files: changed.data.files, choices: ['clean', 'refined', 'reject'] } });
-      // 再跑一次测试 → human('确认提交') → script('git_commit') 或 script('git_restore', { cwd, to: base.data.sha })
+      **issue 约定**（照搬 afk-run gh 源）：
+      - 入队：标签 `ready-for-agent`；排除带 `in-progress`（进行中）或 `afk-failed`（失败待人看）的
+      - 优先级：标签 `P0`~`P4`，没有就当 `P2`；同级按 issue 号升序
+      - 依赖：正文里 `- [ ] #123` 表示被 #123 挡着；勾上或 #123 已关就算满足。只认同仓库的 `#N`
+      - 正文 = issue 正文 + 全部评论（按时间，不截断）：人补充的说明、上次失败留下的评论，执行端都能看到（afk-run TAPD 源的经验）
+
+      **每个 issue 的流程**（任务 JS，确定的步骤都是脚本，只有「改代码」「审查」交给 Agent）：
+      1. 开跑前工作区必须干净，否则整轮不跑（跟 afk-run 一样，免得把人的改动混进提交或被回滚掉）
+      2. `gh_issue_mark claimed` 贴 `in-progress`；`gh_issue_view` 取正文 + 评论；`git_state` 记下起点 sha
+      3. `agent(DEV)`：`inputs: { cwd: 项目根, issue, choices: ['done', 'no_change'] }`，`budget.timeoutSec` 给足（默认 1800）
+         - `need_human`（Agent 问问题）→ 回滚，问题贴成评论 + `afk-failed`，下一个
+         - `no_change` 或 git 看不到改动 → 理由贴成评论 + `afk-failed`，等人判断（不重试、不关单）
+      4. `git_state` 列出**实际**改了哪些文件（信 git，不信 Agent 自报）
+      5. `agent(REVIEWER)`：看 issue + 改动，有问题直接改；`choices: ['clean', 'refined', 'reject']`。`reject` → 回滚 + 失败
+      6. 配了 `VERIFY` 就跑（`run_cmd` 脚本）；不过就把输出交回 DEV 再改，最多 `ROUNDS` 轮（默认 2），还不过就回滚 + 失败
+      7. 带 `--confirm` 时 `human('提交并关单？')`（终端或 viewer 点），拒绝就回滚 + 失败；不带就无人值守
+      8. `git_commit`：`git add -A` + 提交信息 `#N <标题>`，正文带 `Closes #N`；**默认推送**到当前分支的上游
+         - 推送失败（常见是远端有新提交）→ **不关单、整轮停下**，`say` 说明，留给人处理；本地提交保留
+      9. `gh_issue_mark done`：评论 `提交：<短 sha>` + 关单 + 摘掉 `ready-for-agent` / `in-progress`
+      - 任何一步失败：`git_restore` 回到起点（`reset --hard` + `clean -fd`；`logs/` 已被 `.workflow/.gitignore` 忽略，`clean -fd` 不碰），
+        `gh_issue_mark failed` 摘 `in-progress`、贴 `afk-failed` + 评论原因，保留 `ready-for-agent`（人摘掉 `afk-failed` 就重新入队）
+
+      **一轮跑多少**（`args`）：`--issue N` 只跑这一个（不看标签和依赖，人点名就跑）；否则按队列一直跑到空，
+      `--max N` 限个数，连续失败 `--max-failures N`（默认 3）就停。`--dry-run` 时改 GitHub / git 的脚本只报会做什么。
+      停下的原因写进最后一行 `say`（跑空 / 到上限 / 连续失败 / 推送失败）。
+
+      **模板内容**（`init` 选 GitHub 时复制进 `.workflow/`）：
+      ```text
+      templates/github/
+        config.mjs                 # 普通 JS 常量：DEV / REVIEWER（C2 的 agent 配置）、VERIFY（如 'npm test'，缺省不验证）、
+                                   #   ROUNDS、PUSH（默认 true）、标签名
+        tasks/github_dev.mjs       # 上面的流程，一个任务
+        scripts/gh_ready.mjs       # 列就绪 issue（标签 + 依赖 + 排序）
+        scripts/gh_issue_view.mjs  # 正文 + 评论
+        scripts/gh_issue_mark.mjs  # claimed / done / failed：改标签、评论、关单
+        scripts/git_state.mjs      # 当前 sha、是否干净、相对某 sha 改了哪些文件
+        scripts/git_commit.mjs     # 提交 + 推送
+        scripts/git_restore.mjs    # 回到某 sha
+        scripts/run_cmd.mjs        # 跑验证命令，回 { code, tail }
+        tests/                     # 假 gh、临时 git 仓库
       ```
-      跟 exec-review 的差别：审查结论是 `choice`，任务 JS 按它分支（`reject` 就回滚），而不是写死在一个脚本里；
-      每一步都进 trace，viewer 看得见，`human()` 卡在提交前。exec-review 的 `prompts/executor.md`、`reviewer.md`
-      可以参考着写提示词，但不引用。
-      新增沉淀脚本：`git_head`、`git_changes`（git 判改动，只报真脏的文件）、`git_commit`、`git_restore`。
-      跑稳后，把「执行 → 审查」抽成 `.workflow/` 里的一个普通 JS 函数给别的任务复用；要不要放进 `examples/` 当参考再议。
-      - `scripts/unity_run_tests.mjs`：`args = { project, platform: 'EditMode' | 'PlayMode' }`。
-        - Unity 路径：`UNITY_EXE` 优先；否则读 `ProjectSettings/ProjectVersion.txt` 拼
-          `C:\Program Files\Unity\Hub\Editor\<版本>\Editor\Unity.exe`。
-        - 跑 `Unity.exe -batchmode -projectPath <p> -runTests -testPlatform <平台> -testResults <xml> -logFile <log>`
-          （`-runTests` 不带 `-quit`）。
-        - 解析 NUnit XML → `data: { total, passed, failed, failures: [{ name, message, stack }] }`，
-          `say: 'EditMode 测试：12 个过，2 个挂'`。退出码含义实测后写进脚本注释。
-        - 项目在编辑器里开着会撞项目锁：识别出来返回 `failed`，`say: '项目在 Unity 里开着，batchmode 进不去'`。
-      - `tasks/unity_fix_tests.mjs`：跑测试 → 挂了走上面的「执行 → 审查」→ 再跑测试，最多 3 轮 →
-        `human('确认提交')` → `git_commit`；审查 `reject` 或 3 轮仍挂 → `git_restore` + `human()` 报告。
-      - `scripts/git_commit.mjs`：在 `args.cwd` 那个仓库里提交，`dryRun` 时只列出会提交什么。
-      待定：编辑器开着的场景要不要改走 unityMCP 的 `run_tests`（那是给 Agent 用的，脚本调不到）——先不做。
+      `gh` 调用照 afk-run `runGh` 的做法：`execFileSync` 不经 shell、网络类错误有限重试；仓库默认从 `remote.origin.url` 推断。
+      提示词（DEV / REVIEWER 各一段）写在任务 JS 里，可以参考 exec-review 的 `prompts/`，但不引用。
 
-- [ ] **C3. 参考示例：GitHub Issues 摘要**（降级为 `examples/` 里的参考）
-      拉 Issues → 按优先级排序 → 生成 md。分工：
-      `examples/scripts/{fetch_issues,render_md}.mjs` + 运行期 `agent()` 排序 + `examples/tasks/issues_digest.mjs` 编排。
+      **明确不做（这一版）**：分支 + PR（2026-09-29 定走直接提交）；多开抢单（afk-run 的 `tryClaim` 也只是尽力而为）；
+      定时 / 常驻监听（E1）；看板（viewer 的 trace 就是）。
+
+      测试（内核仓库）：假 `gh` 可执行文件 + 临时 git 仓库 + 假 Agent，覆盖 成功关单 / 审查拒绝回滚 / 验证超轮回滚 /
+      `need_human` / `no_change` / 推送失败停下 / 依赖挡住 / `--issue` 点名 / 工作区不干净拒跑。
+      实测：在一个自己的测试仓库上开两三个 issue，从 `init` 一路跑到关单。
 
 ## E. 来自 MiCan 的经验（先不做，写明什么时候做）
 

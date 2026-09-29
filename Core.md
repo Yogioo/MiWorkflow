@@ -646,8 +646,9 @@ AGENTFLOW_HOME=examples node run.mjs demo
 10. 后续只往 HOME 的 `tasks/` 和 `scripts/` 沉淀（可从拷 `examples/` 起步），不改内核。
 11. 自动进化 v2 再议。
 12. ✅ v1.7 沉淀离开内核仓库：HOME、包名 import、`bin`、`examples/` 即 HOME（§3、§15）。
-13. v1.7 零配置使用：全局命令、原语传参、往上找 `.workflow/`、`new` / `view`、网页运行按钮、`SKILL.md`（§19.3，已定，未实现）。
+13. v1.7 零配置使用：全局命令、原语与 `args` 传参、往上找 `.workflow/`、`init`（选模板）/ `new` / `view`、网页运行按钮、`SKILL.md`（§19.3，已定，未实现）。
 14. v1.7 运行期 Agent 适配器（§19.2，已定，未实现）。
+15. 首个工作流：GitHub 开发，作为 `init` 可选的模板 `templates/github/`（TODO C3，已定，未实现）。
 
 ---
 
@@ -751,39 +752,47 @@ CLI 名用 `cursor`（exec-review 里叫 `agent`，跟原语重名）。
 
 - **装内核：每台机器一次，全局命令**。`npm i -g github:Yogioo/MiWorkflow`；改内核时在内核目录 `npm link`。
   不按项目锁版本（单人使用可接受；以后真要锁，再允许 `.workflow/` 里放 `package.json` 作进阶用法）。
-- **原语传参，不 import**：`run.mjs` 调 `mod.default({ script, agent, human })`。
+- **原语和参数都传进来，不 import**：`run.mjs` 调 `mod.default({ script, agent, human, args })`。
+  `args` 来自命令行：`miworkflow <task> --issue 12 --max 5 --confirm` → `{ issue: '12', max: '5', confirm: true }`。
+  值一律是字符串，只写 `--flag` 就是 `true`，类型由任务自己转；`--yes`、`--dry-run` 归内核，不进 `args`。
 
   ```js
-  // .workflow/tasks/unity_fix_tests.mjs —— 不 import 内核，业务项目里没有 package.json
-  export const title = '跑 Unity 测试，挂了就修';
+  // .workflow/tasks/fix_tests.mjs —— 不 import 内核，业务项目里没有 package.json
+  export const title = '跑测试，挂了就修';
 
-  export default async function ({ script, agent, human }) {
-    const r = await script('unity_run_tests', { platform: 'EditMode' });
+  export default async function ({ script, agent, human, args }) {
+    const r = await script('run_tests', { filter: args.filter });
     // ...
   }
   ```
 
-  任务之间共用的东西仍可相对 import（如 §19.2 的 `../agents.mjs`）。测任务时直接传假原语进去。
+  任务之间共用的东西仍可相对 import（如 §19.2 的 `../agents.mjs`）。项目根目录由任务自己算
+  （`fileURLToPath(new URL('../..', import.meta.url))`），不另外注入。测任务时直接传假原语进去。
   去掉 `package.json` 的 `exports`、示例里的 `import 'miworkflow'`；§5、§7、§15 随之改写。
 - **HOME 自动找**：`AGENTFLOW_HOME` → 从当前目录**往上找 `.workflow/`**（像 git 找 `.git`）→ 都没有就报错，
-  提示用 `miworkflow new` 建一个。**不回落到当前目录**，免得分不清任务从哪找的。`examples/` 仍用 `AGENTFLOW_HOME=examples` 跑。
+  提示用 `miworkflow init`。**不回落到当前目录**，免得分不清任务从哪找的。`examples/` 仍用 `AGENTFLOW_HOME=examples` 跑。
   `.workflow/` 以点开头，Unity 不导入它。
-- **一个命令，三个子命令**（`bin` 只剩 `miworkflow`；`new`、`view` 是保留字，其余的词都当任务名）：
+- **一个命令，四个用法**（`bin` 只剩 `miworkflow`；`init`、`new`、`view` 是保留字，其余的词都当任务名）：
 
   | 命令 | 做什么 |
   |---|---|
-  | `miworkflow <task>` | 跑任务 |
-  | `miworkflow new <name>` | 建 `tasks/<name>.mjs` 骨架（`title` + 传参的 `default`），不覆盖已有；`.workflow/` 不存在就一并建出 `tasks/`、`scripts/` 和只含 `logs/` 的 `.workflow/.gitignore`（不碰项目原有的 `.gitignore`）。建在哪：git 仓库根，不在仓库里就当前目录 |
+  | `miworkflow init` | 建 `.workflow/`：`tasks/`、`scripts/`、只含 `logs/` 的 `.workflow/.gitignore`（不碰项目原有的 `.gitignore`）。建在 git 仓库根，不在仓库里就建在当前目录。终端里让人选模板：**空白**（只建目录）或 **GitHub 开发**（再复制 `templates/github/`，见 TODO C3）；非终端用 `--template blank\|github`。已存在 `.workflow/` 时只补模板文件，**已有的文件一个不覆盖**，跳过的列出来 |
+  | `miworkflow new <name>` | 建 `tasks/<name>.mjs` 骨架（`title` + 传参的 `default`），不覆盖已有；没有 `.workflow/` 就报错，提示先 `init` |
+  | `miworkflow <task> [--key value]` | 跑任务 |
   | `miworkflow view` | 用找到的 HOME 起 viewer |
 
+- **模板**：内核仓库的 `templates/<名字>/` 是一份完整的 HOME 片段（`tasks/`、`scripts/`、配置常量），**只在 `init` 时复制**，
+  不默认加载 —— 跟 §16「不内置具体任务 / 脚本」不冲突。复制过去就归项目所有，在项目里各自演进，**不回头同步**
+  （同 §19.2 复制 runner 层的做法）。模板的测试留在内核仓库（假 `gh` / 假 Agent），保证复制出去的那一刻是好的。
+
 - **写任务：AI 或 `new`**。内核仓库根放 `SKILL.md`（即 TODO C1）：怎么按 §2.4 拆、三个原语与传参写法、
-  §6.1 / §6.2 契约、放哪、怎么跑。愿意就把内核目录链成技能，不链也不影响；`miworkflow new` 打印它的路径，方便喂给 AI。
+  §6.1 / §6.2 契约、放哪、怎么跑。愿意就把内核目录链成技能，不链也不影响；`miworkflow init` / `new` 打印它的路径，方便喂给 AI。
 - **跑任务：终端或网页按钮，都不经过 AI**。viewer 加两个接口（仍是外部工具，内核不动）：
 
   | 接口 | 作用 |
   |---|---|
   | `GET /api/tasks` | 列 HOME 的 `tasks/*.mjs` 与 `title`（正则读 `export const title`，**不 import**，免得执行任务模块） |
-  | `POST /api/run` | 起 `run.mjs <task>`：预先生成 `runId` 回给页面直接跳过去；子进程 `AGENTFLOW_HUMAN=web`（审批走同一页面）；stdout/stderr 落 `logs/<runId>.out.log` |
+  | `POST /api/run` | `{ task, args? }` 起 `run.mjs <task> --key value…`：预先生成 `runId` 回给页面直接跳过去；子进程 `AGENTFLOW_HUMAN=web`（审批走同一页面）；stdout/stderr 落 `logs/<runId>.out.log` |
 
   `POST /api/run` **默认只收本机请求**：viewer 默认监听 `0.0.0.0`，局域网的人原来只能看和审批，
   能起任务就等于能起全权限 Agent。要放开得显式设 `MIWORKFLOW_REMOTE_RUN=1`。
