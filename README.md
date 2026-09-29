@@ -103,7 +103,8 @@ issue 约定与 afk-run 一致，同一个仓库两边可以换着跑：
 每个 issue 走：认领（贴 `in-progress`）→ Agent 开发 → Agent 审查（有问题直接改）→ 验证（`VERIFY` 配了才跑）→
 提交（默认推送，正文带 `Closes #N`）→ 关单。失败就 `git reset --hard` + `clean -fd` 回滚，
 摘 `in-progress`、贴 `afk-failed` + 评论原因，保留 `ready-for-agent`（人摘掉 `afk-failed` 就重新入队）。
-推送失败不关单、整轮停下，本地提交保留，留给人处理。
+推送失败不关单、整轮停下，本地提交保留，留给人处理。`PUSH = false`（只本地提交）同款语义：
+没发布就不算做完——评论注明「本地提交（未推送）：<sha>」、不关单、保留 `in-progress`、整轮停下。
 
 改行为就改 `.workflow/config.mjs`（`DEV` / `REVIEWER` / `VERIFY` / `ROUNDS` / `PUSH` / 标签名）；
 模板复制出去后归项目所有，各自演进，不回头同步内核。

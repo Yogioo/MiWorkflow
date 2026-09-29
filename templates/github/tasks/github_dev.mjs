@@ -66,6 +66,10 @@ export default async function ({ script, agent, human, args }) {
       pushStopped = true;
       stop = `推送失败（issue #${issue.number}）：本地提交保留，留给人处理`;
       break;
+    } else if (outcome === 'unpushed') {
+      pushStopped = true;
+      stop = `未推送（PUSH=false，issue #${issue.number}）：本地提交保留，留给人处理`;
+      break;
     } else { failures++; }
   }
 
@@ -90,7 +94,7 @@ async function pick(only, ctx) {
   return v.data;
 }
 
-// 一个 issue 走完全程；返回 'done' | 'failed' | 'push_failed'
+// 一个 issue 走完全程；返回 'done' | 'failed' | 'push_failed' | 'unpushed'
 async function runIssue(issue, ctx) {
   const { script, agent, human, args, root } = ctx;
   const num = issue.number;
@@ -163,10 +167,13 @@ async function runIssue(issue, ctx) {
     cwd: root
   });
   if (c.status !== 'ok') {
-    // 推送失败：本地提交保留，不关单、整轮停下
-    if (c.data?.committed) return 'push_failed';
+    // 推送失败：本地提交保留，不关单、保留 in-progress、整轮停下
+    if (c.data?.committed) return notPublished('push_failed', num, c.data.sha, ctx);
     return fail(num, `提交失败：${c.error}`, base, ctx);
   }
+
+  // 提交成功但没推送（PUSH=false）：跟推送失败同款语义——没发布就不算做完
+  if (c.data.pushed === false) return notPublished('unpushed', num, c.data.sha, ctx);
 
   // 7. 关单
   const marked = await script('gh_issue_mark', { number: num, action: 'done', sha: c.data.sha, labels: ctx.labels });
@@ -178,6 +185,13 @@ async function runIssue(issue, ctx) {
 
   console.log(`✔ #${num} ${issue.title}（${c.data.sha.slice(0, 7)}）`);
   return 'done';
+}
+
+// 提交成功但没发布（PUSH=false 或推送失败）：评论注明未推送、保留 in-progress、不关单，整轮停下留给人处理
+async function notPublished(outcome, num, sha, ctx) {
+  await ctx.script('gh_issue_mark', { number: num, action: 'unpushed', sha, labels: ctx.labels });
+  console.error(`✖ #${num} 本地提交（未推送）：${String(sha ?? '').slice(0, 7)}，issue 保持 OPEN`);
+  return outcome;
 }
 
 // 任何一步失败：回滚到起点，摘 in-progress、贴 afk-failed + 评论原因，保留 ready-for-agent

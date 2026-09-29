@@ -1,4 +1,4 @@
-// 改 issue 状态：认领（claimed）/ 完成关单（done）/ 失败待人看（failed）。
+// 改 issue 状态：认领（claimed）/ 完成关单（done）/ 未推送留人处理（unpushed）/ 失败待人看（failed）。
 // 入：{ number, action, comment?, sha?, repo?, labels?: {...}, dryRun? }
 // 出：{ status, say, data: { did: string[] } }
 import { main, readStdin, emit, runGh } from './_lib.mjs';
@@ -25,6 +25,11 @@ await main(async () => {
       ['issue', 'edit', n, '--remove-label', ready, ...repoArg],
       ['issue', 'edit', n, '--remove-label', inProgress, ...repoArg]
     ];
+  } else if (action === 'unpushed') {
+    // 本地提交了但没推出去：不关单、不动标签（保留 in-progress 提醒人处理），只留一条评论
+    plan = [
+      ['issue', 'comment', n, '--body', `本地提交（未推送）：${args.sha || '(未记录)'}`, ...repoArg]
+    ];
   } else if (action === 'failed') {
     plan = [
       ['issue', 'comment', n, '--body', `afk failed：${String(args.comment ?? '').slice(0, 300)}`, ...repoArg],
@@ -32,7 +37,7 @@ await main(async () => {
       ['issue', 'edit', n, '--remove-label', inProgress, ...repoArg]
     ];
   } else {
-    throw new Error(`不认识的 action：${action}（claimed / done / failed）`);
+    throw new Error(`不认识的 action：${action}（claimed / done / unpushed / failed）`);
   }
 
   const desc = plan.map((a) => a.join(' '));
@@ -52,6 +57,6 @@ await main(async () => {
     }
   }
 
-  const label = { claimed: '认领', done: '完成关单', failed: '标记失败' }[action];
+  const label = { claimed: '认领', done: '完成关单', unpushed: '记录未推送', failed: '标记失败' }[action];
   emit({ status: 'ok', say: `#${number} ${label}`, data: { did: desc } });
 });
