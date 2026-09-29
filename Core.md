@@ -31,41 +31,60 @@
 
 ## 3. 目录
 
-**内核装一份，沉淀跟着业务项目走。** 两边是两个仓库。
+**内核装一份，沉淀跟着业务项目走。** 两边是两个仓库。装 / 写 / 跑三件事分开：
+
+- **装**：每台机器一次，全局命令 `npm i -g github:Yogioo/MiWorkflow`；改内核时在内核目录 `npm link`。
+  不按项目锁版本（单人使用可接受）。
+- **写**：`miworkflow new <name>` 建骨架，或把内核根的 `SKILL.md` 交给 AI。
+- **跑**：终端 `miworkflow <task>`，或 viewer 的「运行」按钮（§13.6），都不经过 AI。
 
 内核仓库：
 
 ```text
 MiWorkflow/
-  run.mjs         # 唯一入口（bin: miworkflow）
-  core.mjs        # 三个原语（包入口：import ... from 'miworkflow'）
-  viewer/         # 实时视图 + 人工审批页，外部工具，不默认加载（bin: miworkflow-view）
+  run.mjs         # 唯一入口（bin: miworkflow）：init / new / view / 跑任务
+  core.mjs        # 三个原语，由 run.mjs 传给任务（§5）
+  viewer/         # 实时视图 + 人工审批 + 运行按钮，外部工具，不默认加载（miworkflow view）
+  templates/      # init 可选的模板，只在 init 时复制（§15）
   examples/       # 示例，本身就是一个 HOME，仅参考（§15）
   tests/          # 内核测试
-  package.json    # type: module + exports + bin + npm test / npm run view
+  SKILL.md        # 写给 AI 的建任务说明，可链成技能
+  package.json    # type: module + bin + npm test / npm run view
   README.md       # 怎么跑；规范以本文档为准
   .gitignore      # node_modules/、logs/
   .gitattributes  # 统一 LF（§11）
 ```
 
-沉淀所在叫 **HOME**：`AGENTFLOW_HOME`，缺省为当前目录。以 Unity 项目为例：
+沉淀所在叫 **HOME**，就是项目里的 `.workflow/`（以点开头，Unity 不导入它）。以 Unity 项目为例：
 
 ```text
 <Unity 项目>/.workflow/
-  package.json    # { "type": "module", "private": true,
-                  #   "devDependencies": { "miworkflow": "github:Yogioo/MiWorkflow" } }
-                  # 改内核时换成 "file:<本机内核路径>"
+  .gitignore      # 只有一行 logs/（不碰项目原有的 .gitignore）
   tasks/          # 任务，mjs
   scripts/        # 原子能力，mjs
   tests/          # 沉淀自己的测试
-  logs/           # 运行记录 JSONL（首跑时自动建，gitignore）
+  logs/           # 运行记录 JSONL（首跑时自动建）
 ```
 
+没有 `package.json`，不用 `npm install`：任务不 import 内核（§5）。
+
+- **HOME 怎么找**：`AGENTFLOW_HOME` → 从当前目录**往上找 `.workflow/`**（像 git 找 `.git`）→ 都没有就报错，
+  提示 `miworkflow init`。**不回落到当前目录**，免得分不清任务从哪找的。`run.mjs` 把找到的 HOME 写回
+  `AGENTFLOW_HOME` 再加载 core / viewer。
 - `tasks/`、`scripts/`、`logs/` 都在 HOME 下找；脚本与 Agent 子进程的 cwd 是 HOME；viewer 读 HOME 的 `logs/`。
-- 跑：`cd .workflow && npx miworkflow <task>`。进化的 commit 落在业务仓库，跟业务代码一起回滚（§14）。
+- 进化的 commit 落在业务仓库，跟业务代码一起回滚（§14）。
 - **内核仓库里没有 `tasks/`、`scripts/`**，测试断言它（§16）。
-- 同一次运行里 `run.mjs` 与任务必须加载**同一份** `core.mjs`（`seq` 在模块里）：用 `npx miworkflow` 跑，
-  不要拿另一份内核的 `run.mjs` 去跑装了别的内核的 HOME。
+
+一个命令，四个用法（`init`、`new`、`view` 是保留字，其余的词都当任务名）：
+
+| 命令 | 做什么 |
+|---|---|
+| `miworkflow init [--template <名字>]` | 建 `.workflow/`：`tasks/`、`scripts/`、`.gitignore`。建在 git 仓库根，不在仓库里就建在当前目录。终端里有模板可选时让人选（**空白** = 只建目录，或 `templates/` 下的某个）；非终端缺省空白。已存在 `.workflow/` 时只补缺的文件，**已有的文件一个不覆盖**，跳过的列出来 |
+| `miworkflow new <name>` | 建 `tasks/<name>.mjs` 骨架（`title` + 传参的 `default`），不覆盖已有；没有 `.workflow/` 就报错，提示先 `init` |
+| `miworkflow <task> [--key value]` | 跑任务 |
+| `miworkflow view` | 用找到的 HOME 起 viewer（§13.6） |
+
+`init` / `new` 打印 `SKILL.md` 的路径，方便喂给 AI。
 
 ---
 
@@ -95,7 +114,16 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 对任务而言只有这三个。另有 `log()` 供 `run.mjs` 写 run 级记录（run 开始 / 结束）。
 另导出常量 `HOME`、`LOGS_DIR`（HOME 与它的 `logs/` 的绝对路径），只给需要定位目录的调用方用，不属于任务接口。
 
-任务文件用包名 import 它们（`import { script, agent, human } from 'miworkflow'`），然后用 JS 自由组合：
+**原语和参数都传进来，不 import**：`run.mjs` 调 `mod.default({ script, agent, human, args })`。
+`args` 来自命令行：`miworkflow <task> --issue 12 --max=5 --confirm` → `{ issue: '12', max: '5', confirm: true }`。
+值一律是字符串，只写 `--flag` 就是 `true`，类型由任务自己转；`--yes`、`--dry-run` 归内核，不进 `args`。
+这样业务项目里不需要 `package.json`，同一次运行也天然只有一份 `core.mjs`（`seq` 在模块里）。
+
+- 任务之间共用的东西仍可相对 import（如 `../config.mjs`）。
+- 项目根目录由任务自己算（`fileURLToPath(new URL('../..', import.meta.url))`），不另外注入。
+- 测任务时直接传假原语进去。
+
+然后用 JS 自由组合：
 
 - 顺序：`await`
 - 分支：`if / else / switch`
@@ -118,7 +146,7 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 - `status`：`'ok' | 'failed'`
 - 日志：stderr
 - 失败：返回 `status: 'failed'` 或非 0 退出码；退出码非 0 时，即使 stdout 是合法 JSON 也判 `failed`
-- 支持 `dryRun`：`node run.mjs <task> --dry-run`（或 `AGENTFLOW_DRY_RUN=1`）时，core 在 args 里注入
+- 支持 `dryRun`：`miworkflow <task> --dry-run`（或 `AGENTFLOW_DRY_RUN=1`）时，core 在 args 里注入
   `dryRun: true`，脚本自己决定怎么干跑（写操作由脚本负责跳过）
 - 人话层：可选返回 `say`，缺省由 core 回落（§13）
 
@@ -150,12 +178,10 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 `tasks/fix_bug.mjs`
 
 ```js
-import { script, agent, human } from 'miworkflow';
-
 export const title = '修复 bug';
 
-export default async function () {
-  await script('prepare');
+export default async function ({ script, agent, human, args }) {
+  await script('prepare', { issue: args.issue });
 
   const decision = await agent('阅读 issue，定位问题，修改代码');
 
@@ -246,7 +272,7 @@ try {
 import { spawn, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
-// HOME：沉淀所在（§3）；子进程 cwd、gitSha 都取它
+// HOME：沉淀所在（§3），run.mjs 找到后写进 env；子进程 cwd、gitSha 都取它
 export const HOME = path.resolve(process.env.AGENTFLOW_HOME || process.cwd());
 export const LOGS_DIR = path.join(HOME, 'logs');
 
@@ -293,43 +319,37 @@ export async function human(prompt, opts = {}) {
 
 ```js
 #!/usr/bin/env node
-import { existsSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
-import { randomUUID } from 'node:crypto';
-import path from 'node:path';
+const { positional: [cmd, name], args, dryRun } = parseArgv(process.argv.slice(2));
 
-const task = process.argv[2];
+if (cmd === 'init') await init(args.template);        // §3
+else if (cmd === 'new') newTask(name);                 // §3
+else if (cmd === 'view') { useHome(); await import('./viewer/serve.mjs'); }
+else await runTask(cmd);
 
-if (!task) {
-  console.error('usage: miworkflow <task> [--yes] [--dry-run]');
-  process.exit(1);
-}
+async function runTask(task) {
+  useHome();              // AGENTFLOW_HOME → 往上找 .workflow/ → 报错；写回 env（§3）
+  // 先定 runId，再加载 core（core 里 runId 延迟解析）
+  process.env.AGENTFLOW_TASK = task;
+  process.env.AGENTFLOW_RUN_ID ??= randomUUID();
 
-// 先定 runId，再加载 core（core 里 runId 延迟解析）
-process.env.AGENTFLOW_TASK = task;
-process.env.AGENTFLOW_RUN_ID ??= randomUUID();
+  const { log, script, agent, human, HOME } = await import('./core.mjs');
+  const taskFile = path.join(HOME, 'tasks', `${task}.mjs`);
+  if (!existsSync(taskFile)) fail(`task not found: ${task}（在 ${path.join(HOME, 'tasks')} 下找）`);
 
-const { log, HOME } = await import('./core.mjs');
-const taskFile = path.join(HOME, 'tasks', `${task}.mjs`);
+  let title = task;
+  try {
+    const mod = await import(pathToFileURL(taskFile).href);   // 加载失败也记一条 failed
+    title = mod.title ?? task;
+    log({ primitive: 'run', status: 'running', title, say: `▶ ${title}` });
+    console.log(title);             // 人类可见：这次运行在干什么（§13.3）
 
-if (!existsSync(taskFile)) {
-  console.error(`task not found: ${task}（在 ${path.join(HOME, 'tasks')} 下找）`);
-  process.exit(1);
-}
-
-const mod = await import(pathToFileURL(taskFile).href);
-const title = mod.title ?? task;
-
-log({ primitive: 'run', status: 'running', title, say: `▶ ${title}` });
-console.log(title);               // 人类可见：这次运行在干什么（§13.3）
-
-try {
-  await mod.default();
-  log({ primitive: 'run', status: 'ok', title, say: `✔ ${title} 完成` });
-} catch (err) {
-  log({ primitive: 'run', status: 'failed', title, error: String(err.message),
-        say: `✖ ${title} 失败：${err.message}` });
-  process.exitCode = 1;
+    await mod.default({ script, agent, human, args });   // §5
+    log({ primitive: 'run', status: 'ok', title, say: `✔ ${title} 完成` });
+  } catch (err) {
+    log({ primitive: 'run', status: 'failed', title, error: String(err.message),
+          say: `✖ ${title} 失败：${err.message}` });
+    process.exitCode = 1;
+  }
 }
 ```
 
@@ -465,8 +485,8 @@ JSONL 最小字段：
 两档，任选，看到的是同一份数据：
 
 ```bash
-tail -f logs/$RUN.jsonl | jq -r .say      # CLI，零成本
-node viewer/serve.mjs                     # 网页，§13.6
+tail -f .workflow/logs/$RUN.jsonl | jq -r .say   # CLI，零成本
+miworkflow view                                  # 网页，§13.6
 ```
 
 外部渲染器（包括 HTML）只消费 `say`，不必解析其它字段。
@@ -515,27 +535,33 @@ human() 写一条 status:'pending' 记录，阻塞
 `viewer/` 是仓库里的外部工具，不是内核（§16）：
 
 ```text
-viewer/serve.mjs    零依赖静态服务 + 四个只读接口 + 一个写接口
-viewer/index.html   单文件视图：run 列表 / trace 时间线 / 待决定卡片
+viewer/serve.mjs    零依赖静态服务 + 五个只读接口 + 两个写接口
+viewer/index.html   单文件视图：任务列表与运行按钮 / run 列表 / trace 时间线 / 待决定卡片
 ```
 
-接口只有五个：
+接口只有七个：
 
 | 接口 | 作用 |
 |---|---|
+| `GET /api/tasks` | 列 HOME 的 `tasks/*.mjs` 与 `title`（正则读 `export const title`，**不 import**，免得执行任务模块） |
+| `POST /api/run` | `{ task, args? }` 起 `run.mjs <task> --key=value…`：预先生成 `runId` 回给页面直接跳过去；子进程 `AGENTFLOW_HUMAN=web`（审批走同一页面）；stdout/stderr 落 `logs/<runId>.out.log` |
 | `GET /api/runs` | 列出 run：标题、状态、待决定数 |
-| `GET /api/run/<id>?from=N` | 从第 N 字节起吐日志，只吐完整行 |
+| `GET /api/run/<id>?from=N` | 从第 N 字节起吐日志，只吐完整行；日志还没生成就吐空 |
 | `POST /api/decide` | 写决定文件（§13.5） |
 | `GET /health` | 存活探针，给反代 / 脚本用 |
 | `GET /` | 视图页 |
 
-两个刻意的选择：
+三个刻意的选择：
 
 - **实时靠 1 秒轮询 + 字节偏移增量拉取，不用 SSE。** 反代零坑，断线重连天然正确，
   最后一行没写完就留到下次（服务端只吐完整行）。
 - **服务端零业务判断。** 待决定状态由前端重放日志算出（`pending` 没被 `ref` 解决掉就算待决定）。
+  同一任务在跑时按钮置灰也是前端从 run 列表算的，只是提示，不是占用机制（被杀掉的 run 会一直显示在跑，
+  所以点了只再确认一次，不拦）。
+- **`POST /api/run` 默认只收本机请求。** viewer 默认监听 `0.0.0.0`，局域网的人只能看和审批；
+  能起任务就等于能起全权限 Agent，要放开得显式设 `MIWORKFLOW_REMOTE_RUN=1`。
 
-启动：`node viewer/serve.mjs`（`HOST=0.0.0.0` 即内网可访）。
+启动：`miworkflow view`（用找到的 HOME）；或 `AGENTFLOW_HOME=<HOME> node viewer/serve.mjs`。`HOST=0.0.0.0` 即内网可访。
 
 ### 13.7 不做什么
 
@@ -595,18 +621,22 @@ examples/
 ```
 
 ```bash
-AGENTFLOW_HOME=examples node run.mjs demo
+AGENTFLOW_HOME=examples node run.mjs demo --who 你
 ```
 
-示例任务写 `import ... from 'miworkflow'`：在内核仓库里靠包的自引用解析，
-拷进业务仓库的 `<HOME>/tasks/` 也**一个字不用改**。正式内容在业务仓库的 HOME 里由使用中沉淀。
+示例任务不 import 内核（§5），拷进业务仓库的 `.workflow/tasks/` **一个字不用改**，测试断言它。
+正式内容在业务仓库的 HOME 里由使用中沉淀。
+
+**模板**：`templates/<名字>/` 是一份完整的 HOME 片段（`tasks/`、`scripts/`、配置常量），**只在 `init` 时复制**，
+不默认加载 —— 跟 §16「不内置具体任务 / 脚本」不冲突。复制过去就归项目所有，在项目里各自演进，**不回头同步**。
+模板的测试留在内核仓库（假外部命令 / 假 Agent），保证复制出去的那一刻是好的。首个模板见 TODO C3。
 
 ---
 
 ## 16. 内核明确不做
 
-- 不内置具体任务（示例只在 `examples/`，§15）
-- 不内置具体脚本（示例只在 `examples/`，§15）
+- 不内置具体任务（示例只在 `examples/`，模板只在 `init` 时复制，§15）
+- 不内置具体脚本（同上）
 - 不内置 md / YAML / DSL 解析器
 - 不内置 registry / executor / schema
 - 不内置 DAG 引擎
@@ -646,7 +676,7 @@ AGENTFLOW_HOME=examples node run.mjs demo
 10. 后续只往 HOME 的 `tasks/` 和 `scripts/` 沉淀（可从拷 `examples/` 起步），不改内核。
 11. 自动进化 v2 再议。
 12. ✅ v1.7 沉淀离开内核仓库：HOME、包名 import、`bin`、`examples/` 即 HOME（§3、§15）。
-13. v1.7 零配置使用：全局命令、原语与 `args` 传参、往上找 `.workflow/`、`init`（选模板）/ `new` / `view`、网页运行按钮、`SKILL.md`（§19.3，已定，未实现）。
+13. ✅ v1.7 零配置使用：全局命令、原语与 `args` 传参、往上找 `.workflow/`、`init`（选模板）/ `new` / `view`、网页运行按钮、`SKILL.md`（§3、§5、§13.6、§15）。
 14. v1.7 运行期 Agent 适配器（§19.2，已定，未实现）。
 15. 首个工作流：GitHub 开发，作为 `init` 可选的模板 `templates/github/`（TODO C3，已定，未实现）。
 
@@ -676,7 +706,7 @@ AGENTFLOW_HOME=examples node run.mjs demo
 ## 19. v1.7 剩余变更（已定，未实现）
 
 > 2026-09-29 拍板的设计。§1–§18 描述已实现的部分；本节实现后折进正文、删掉。
-> 落地清单见 `TODO.md` 的 B3、C2。
+> 落地清单见 `TODO.md` 的 C2。
 
 ### 19.1 沉淀离开内核仓库（已实现）
 
@@ -743,60 +773,11 @@ CLI 名用 `cursor`（exec-review 里叫 `agent`，跟原语重名）。
 - **`choice` 不由 core 校验**：不加 `opts.choices`。可选值放 `inputs.choices` 给适配器渲染，
   未知 `choice` 由任务 JS 自己 `throw`（§7 的写法）。
 
-### 19.3 零配置使用：装一次，项目里什么都不用建
+### 19.3 零配置使用（已实现）
 
-**问题**：v1.7 的业务项目要手建 `.workflow/`、手写 `package.json`、`npm install`、`cd` 进去再 `npx` ——
-根子在任务要 `import 'miworkflow'`，Node 就得能解析这个包名。
-
-**决定**：把「装内核 / 写任务 / 跑任务」三件事分开，各自做到最省。
-
-- **装内核：每台机器一次，全局命令**。`npm i -g github:Yogioo/MiWorkflow`；改内核时在内核目录 `npm link`。
-  不按项目锁版本（单人使用可接受；以后真要锁，再允许 `.workflow/` 里放 `package.json` 作进阶用法）。
-- **原语和参数都传进来，不 import**：`run.mjs` 调 `mod.default({ script, agent, human, args })`。
-  `args` 来自命令行：`miworkflow <task> --issue 12 --max 5 --confirm` → `{ issue: '12', max: '5', confirm: true }`。
-  值一律是字符串，只写 `--flag` 就是 `true`，类型由任务自己转；`--yes`、`--dry-run` 归内核，不进 `args`。
-
-  ```js
-  // .workflow/tasks/fix_tests.mjs —— 不 import 内核，业务项目里没有 package.json
-  export const title = '跑测试，挂了就修';
-
-  export default async function ({ script, agent, human, args }) {
-    const r = await script('run_tests', { filter: args.filter });
-    // ...
-  }
-  ```
-
-  任务之间共用的东西仍可相对 import（如 §19.2 的 `../agents.mjs`）。项目根目录由任务自己算
-  （`fileURLToPath(new URL('../..', import.meta.url))`），不另外注入。测任务时直接传假原语进去。
-  去掉 `package.json` 的 `exports`、示例里的 `import 'miworkflow'`；§5、§7、§15 随之改写。
-- **HOME 自动找**：`AGENTFLOW_HOME` → 从当前目录**往上找 `.workflow/`**（像 git 找 `.git`）→ 都没有就报错，
-  提示用 `miworkflow init`。**不回落到当前目录**，免得分不清任务从哪找的。`examples/` 仍用 `AGENTFLOW_HOME=examples` 跑。
-  `.workflow/` 以点开头，Unity 不导入它。
-- **一个命令，四个用法**（`bin` 只剩 `miworkflow`；`init`、`new`、`view` 是保留字，其余的词都当任务名）：
-
-  | 命令 | 做什么 |
-  |---|---|
-  | `miworkflow init` | 建 `.workflow/`：`tasks/`、`scripts/`、只含 `logs/` 的 `.workflow/.gitignore`（不碰项目原有的 `.gitignore`）。建在 git 仓库根，不在仓库里就建在当前目录。终端里让人选模板：**空白**（只建目录）或 **GitHub 开发**（再复制 `templates/github/`，见 TODO C3）；非终端用 `--template blank\|github`。已存在 `.workflow/` 时只补模板文件，**已有的文件一个不覆盖**，跳过的列出来 |
-  | `miworkflow new <name>` | 建 `tasks/<name>.mjs` 骨架（`title` + 传参的 `default`），不覆盖已有；没有 `.workflow/` 就报错，提示先 `init` |
-  | `miworkflow <task> [--key value]` | 跑任务 |
-  | `miworkflow view` | 用找到的 HOME 起 viewer |
-
-- **模板**：内核仓库的 `templates/<名字>/` 是一份完整的 HOME 片段（`tasks/`、`scripts/`、配置常量），**只在 `init` 时复制**，
-  不默认加载 —— 跟 §16「不内置具体任务 / 脚本」不冲突。复制过去就归项目所有，在项目里各自演进，**不回头同步**
-  （同 §19.2 复制 runner 层的做法）。模板的测试留在内核仓库（假 `gh` / 假 Agent），保证复制出去的那一刻是好的。
-
-- **写任务：AI 或 `new`**。内核仓库根放 `SKILL.md`（即 TODO C1）：怎么按 §2.4 拆、三个原语与传参写法、
-  §6.1 / §6.2 契约、放哪、怎么跑。愿意就把内核目录链成技能，不链也不影响；`miworkflow init` / `new` 打印它的路径，方便喂给 AI。
-- **跑任务：终端或网页按钮，都不经过 AI**。viewer 加两个接口（仍是外部工具，内核不动）：
-
-  | 接口 | 作用 |
-  |---|---|
-  | `GET /api/tasks` | 列 HOME 的 `tasks/*.mjs` 与 `title`（正则读 `export const title`，**不 import**，免得执行任务模块） |
-  | `POST /api/run` | `{ task, args? }` 起 `run.mjs <task> --key value…`：预先生成 `runId` 回给页面直接跳过去；子进程 `AGENTFLOW_HUMAN=web`（审批走同一页面）；stdout/stderr 落 `logs/<runId>.out.log` |
-
-  `POST /api/run` **默认只收本机请求**：viewer 默认监听 `0.0.0.0`，局域网的人原来只能看和审批，
-  能起任务就等于能起全权限 Agent。要放开得显式设 `MIWORKFLOW_REMOTE_RUN=1`。
-  同一任务在跑时按钮置灰（只是页面上的提示，不是 E2 的占用机制）。
+已折进 §3（装 / 写 / 跑、HOME 往上找、`init` / `new` / `view`）、§5（原语与 `args` 传进来）、§7、§9、§13.6（任务列表与运行按钮）、§15（模板）。
+起因：v1.7 的业务项目要手建 `.workflow/`、手写 `package.json`、`npm install`、`cd` 进去再 `npx` —— 根子在任务要 `import 'miworkflow'`。
+以后真要按项目锁版本，再允许 `.workflow/` 里放 `package.json` 作进阶用法。
 
 ### 19.4 不变的
 

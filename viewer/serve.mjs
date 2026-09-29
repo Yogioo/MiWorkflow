@@ -1,18 +1,30 @@
 #!/usr/bin/env node
 // viewer/serve.mjs — 外部工具，不属于内核（§16）
-// 只做三件事：列 run、按字节切片吐日志、收决定。零依赖。
+// 只做这几件事：列 run、按字节切片吐日志、收决定、列任务、起任务。零依赖。
 import http from 'node:http';
-import { readFileSync, readdirSync, writeFileSync, renameSync, statSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import {
+  closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync
+} from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const RUN = path.join(HERE, '..', 'run.mjs');
 // 与 core 同一个 HOME（§3）：看的是沉淀那边的日志，不是内核目录
-const LOGS = path.resolve(process.env.AGENTFLOW_HOME || process.cwd(), 'logs');
+const HOME = path.resolve(process.env.AGENTFLOW_HOME || process.cwd());
+const LOGS = path.join(HOME, 'logs');
+const TASKS = path.join(HOME, 'tasks');
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? '0.0.0.0';
+// 起任务等于起全权限 Agent：默认只收本机，局域网只能看和审批
+const REMOTE_RUN = process.env.MIWORKFLOW_REMOTE_RUN === '1';
 const SAFE_ID = /^[A-Za-z0-9._-]+$/;
+const SAFE_TASK = /^[A-Za-z0-9_-]+$/;
+const SAFE_KEY = /^[A-Za-z][\w-]*$/;
+const TITLE = /export\s+const\s+title\s*=\s*(['"`])(.*?)\1/;
 
 const json = (res, body, code = 200) => {
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -69,7 +81,9 @@ function listRuns() {
 
 // 增量切片：只吃完整行，最后一行没写完就留到下次
 function sliceRun(runId, from) {
-  const buf = readFileSync(path.join(LOGS, `${runId}.jsonl`));
+  const file = path.join(LOGS, `${runId}.jsonl`);
+  if (!existsSync(file)) return { next: 0, records: [] }; // 刚起的 run 还没写第一行
+  const buf = readFileSync(file);
   if (from >= buf.length) return { next: buf.length, records: [] };
 
   const text = buf.subarray(from).toString('utf8');
@@ -88,6 +102,62 @@ async function readBody(req) {
   let data = '';
   for await (const chunk of req) data += chunk;
   return data ? JSON.parse(data) : {};
+}
+
+// 正则读 title，不 import：列任务不该执行任务模块
+function listTasks() {
+  let files;
+  try {
+    files = readdirSync(TASKS).filter((f) => f.endsWith('.mjs'));
+  } catch {
+    return [];
+  }
+  return files.map((f) => {
+    const name = f.slice(0, -'.mjs'.length);
+    let title = name;
+    try {
+      title = readFileSync(path.join(TASKS, f), 'utf8').match(TITLE)?.[2] ?? name;
+    } catch { /* 读不了就用文件名 */ }
+    return { name, title };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+const isLocal = (addr = '') => addr === '::1' || addr.startsWith('127.') || addr.startsWith('::ffff:127.');
+
+// { key: 'v' | true } → ['--key=v', '--flag']；用 --key=value，值以 -- 开头也不会被当成开关
+function toArgv(args) {
+  if (args == null) return [];
+  if (typeof args !== 'object' || Array.isArray(args)) return null;
+  const out = [];
+  for (const [k, v] of Object.entries(args)) {
+    if (!SAFE_KEY.test(k)) return null;
+    if (v === true) out.push(`--${k}`);
+    else if (typeof v === 'string' || typeof v === 'number') out.push(`--${k}=${v}`);
+    else return null;
+  }
+  return out;
+}
+
+// 预先生成 runId 回给页面；审批走同一页面（AGENTFLOW_HUMAN=web）
+function startRun(task, argv) {
+  const runId = randomUUID();
+  mkdirSync(LOGS, { recursive: true });
+  const out = openSync(path.join(LOGS, `${runId}.out.log`), 'a');
+  const child = spawn(process.execPath, [RUN, task, ...argv], {
+    cwd: HOME,
+    env: {
+      ...process.env,
+      AGENTFLOW_HOME: HOME,
+      AGENTFLOW_RUN_ID: runId,
+      AGENTFLOW_HUMAN: 'web',
+      PORT: String(server.address().port)
+    },
+    stdio: ['ignore', out, out],
+    windowsHide: true
+  });
+  closeSync(out);
+  child.on('error', () => {});
+  return runId;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -124,6 +194,23 @@ const server = http.createServer(async (req, res) => {
       return json(res, { ok: true });
     }
 
+    if (req.method === 'GET' && route === '/api/tasks') {
+      return json(res, listTasks());
+    }
+
+    if (req.method === 'POST' && route === '/api/run') {
+      if (!REMOTE_RUN && !isLocal(req.socket.remoteAddress)) {
+        return json(res, { error: 'local_only' }, 403);
+      }
+      const { task, args } = await readBody(req);
+      if (!SAFE_TASK.test(String(task)) || !existsSync(path.join(TASKS, `${task}.mjs`))) {
+        return json(res, { error: 'no_such_task' }, 400);
+      }
+      const argv = toArgv(args);
+      if (!argv) return json(res, { error: 'bad_args' }, 400);
+      return json(res, { runId: startRun(task, argv) });
+    }
+
     if (req.method === 'GET' && route === '/health') return json(res, { ok: true });
 
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
@@ -134,10 +221,11 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`viewer  本机   http://localhost:${PORT}`);
+  const port = server.address().port;
+  console.log(`viewer  本机   http://localhost:${port}`);
   const ips = Object.values(networkInterfaces()).flat()
     .filter((i) => i && i.family === 'IPv4' && !i.internal)
     .map((i) => i.address);
-  for (const ip of ips) console.log(`        内网   http://${ip}:${PORT}`);
-  console.log(`        日志   ${LOGS}`);
+  for (const ip of ips) console.log(`        内网   http://${ip}:${port}${REMOTE_RUN ? '' : '（只能看和审批）'}`);
+  console.log(`        HOME   ${HOME}`);
 });

@@ -46,6 +46,16 @@
   button.no { margin-left:8px; }
   button:disabled { opacity:.45; cursor:default; }
   .empty { color:var(--dim); }
+  aside h2 { font-size:11.5px; color:var(--dim); font-weight:600; margin:8px 10px 6px; letter-spacing:.5px; }
+  .task { padding:8px 10px; border-radius:8px; margin-bottom:4px; background:var(--panel); }
+  .task .t { font-weight:600; font-size:13px; word-break:break-all; }
+  .task .m { color:var(--dim); font-size:11.5px; margin:2px 0 6px; }
+  .task .row { display:flex; gap:6px; }
+  .task input { flex:1; min-width:0; font:12px ui-monospace,Consolas,monospace; padding:4px 6px;
+                border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  .task button { padding:4px 12px; background:#1c3a5c; border-color:#2a5a8c; }
+  .task.busy button { opacity:.45; }
+  .task.busy .m::after { content:' · 在跑'; color:var(--run); }
 </style>
 </head>
 <body>
@@ -54,7 +64,12 @@
   <span id="conn">连接中…</span>
 </header>
 <main>
-  <aside id="runs"></aside>
+  <aside>
+    <h2>任务</h2>
+    <div id="tasks"></div>
+    <h2>运行记录</h2>
+    <div id="runs"></div>
+  </aside>
   <section>
     <div id="pending"></div>
     <ol id="timeline"></ol>
@@ -67,6 +82,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':
 const time = (iso) => iso ? new Date(iso).toLocaleTimeString('zh-CN', { hour12:false }) : '';
 
 let runs = [];
+let tasksKey = '';   // 任务列表没变就不重画，免得冲掉输入框里的参数
 let cur = null;      // 当前 runId
 let offset = 0;      // 已读字节
 let records = [];
@@ -88,6 +104,61 @@ function renderRuns() {
       <div class="t"><span class="dot ${esc(r.status)}"></span>${esc(r.title)}</div>
       <div class="m">${time(r.startedAt)} · ${esc(r.status)}${r.pending ? ' · 待决定 ' + r.pending : ''}</div>
     </div>`).join('') || '<div class="empty">还没有运行记录</div>';
+}
+
+function renderTasks(list) {
+  const key = JSON.stringify(list);
+  if (key !== tasksKey) {
+    tasksKey = key;
+    $('#tasks').innerHTML = list.map((t) => `
+      <div class="task" data-task="${esc(t.name)}">
+        <div class="t">${esc(t.title)}</div>
+        <div class="m">${esc(t.name)}</div>
+        <div class="row">
+          <input placeholder="--key value" spellcheck="false" />
+          <button data-run="${esc(t.name)}">运行</button>
+        </div>
+      </div>`).join('') || '<div class="empty">tasks/ 里还没有任务</div>';
+  }
+  // 同一任务在跑只是提示，不是锁：进程被杀掉的 run 会一直显示在跑
+  const busy = new Set(runs.filter((r) => r.status === 'running' || r.status === 'waiting').map((r) => r.task));
+  for (const el of document.querySelectorAll('.task')) el.classList.toggle('busy', busy.has(el.dataset.task));
+}
+
+// 与 run.mjs 同规则：--key value / --key=value / --flag
+function parseArgs(text) {
+  const out = {};
+  const toks = text.trim().split(/\s+/).filter(Boolean);
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (!t.startsWith('--')) continue;
+    const eq = t.indexOf('=');
+    if (eq > 2) { out[t.slice(2, eq)] = t.slice(eq + 1); continue; }
+    const next = toks[i + 1];
+    out[t.slice(2)] = next && !next.startsWith('--') ? toks[++i] : true;
+  }
+  return out;
+}
+
+async function runTask(btn) {
+  const box = btn.closest('.task');
+  if (box.classList.contains('busy') && !confirm('这个任务已经在跑了，再起一次？')) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ task: btn.dataset.run, args: parseArgs(box.querySelector('input').value) })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error === 'local_only' ? '只有本机能起任务（viewer 设 MIWORKFLOW_REMOTE_RUN=1 放开）' : `起不来：${data.error}`);
+      return;
+    }
+    await select(data.runId);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function renderPending() {
@@ -144,6 +215,7 @@ async function tick() {
   try {
     runs = await (await fetch('/api/runs')).json();
     renderRuns();
+    renderTasks(await (await fetch('/api/tasks')).json());
     if (!cur && runs.length) await select(runs[0].runId);
   } catch {
     $('#conn').textContent = '连接断开';
@@ -151,6 +223,8 @@ async function tick() {
 }
 
 document.addEventListener('click', async (e) => {
+  const go = e.target.closest('button[data-run]');
+  if (go) return runTask(go);
   const btn = e.target.closest('button[data-seq]');
   if (btn) {
     btn.disabled = true;

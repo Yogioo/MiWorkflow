@@ -72,13 +72,14 @@ test('内核仓库不放沉淀：根下没有 tasks/、scripts/（§3）', () =>
   }
 });
 
-test('examples/ 是一个 HOME，示例任务 import 包名（§15）', () => {
+test('examples/ 是一个 HOME，示例任务不 import 内核（§5、§15）', () => {
   const dir = path.join(ROOT, 'examples', 'tasks');
   const tasks = readdirSync(dir).filter((f) => f.endsWith('.mjs'));
   assert.ok(tasks.length > 0, 'examples/tasks/ 里应至少有一个任务示例');
   for (const f of tasks) {
     const src = readFileSync(path.join(dir, f), 'utf8');
-    assert.match(src, /from 'miworkflow'/, `${f} 必须 import 'miworkflow'，拷进业务仓库才不用改`);
+    assert.doesNotMatch(src, /from\s+['"](miworkflow|[^'"]*core\.mjs)['"]/,
+      `${f} 不该 import 内核：原语由 run.mjs 传进来，业务项目里没有 package.json`);
   }
 });
 

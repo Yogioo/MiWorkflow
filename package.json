@@ -4,11 +4,7 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=18" },
-  "exports": { ".": "./core.mjs" },
-  "bin": {
-    "miworkflow": "./run.mjs",
-    "miworkflow-view": "./viewer/serve.mjs"
-  },
+  "bin": { "miworkflow": "./run.mjs" },
   "scripts": {
     "view": "node viewer/serve.mjs",
     "test": "node --test"

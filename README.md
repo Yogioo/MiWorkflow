@@ -2,62 +2,80 @@
 
 Agent 工作流极简方案 —— **确定性外壳 + 智能内核 + 受控进化 + 人类可见**。
 
-完整规范见 [Core.md](Core.md)。这里只讲怎么跑。
+完整规范见 [Core.md](Core.md)。这里只讲怎么用。
 
 ## 一句话
 
 > 用 mjs 做任务和脚本，用三个原语编排，用 Agent 做开放推理，用 Git 做进化。
 > Agent 输出选择，不输出 actions（但自己动手）；任务不存在就报错；不自造 DSL。
 
-## 形态
+## 装一次
 
-**内核装一份，沉淀跟着业务项目走。** 内核仓库（本仓库）：
+零依赖，Node.js 18+。每台机器装一次全局命令：
+
+```bash
+npm i -g github:Yogioo/MiWorkflow     # 改内核时：在内核目录 npm link
+```
+
+## 在项目里用
+
+项目里什么都不用手建，也没有 `package.json`：
+
+```bash
+miworkflow init                  # 在 git 仓库根建 .workflow/（终端里可选模板）
+miworkflow new fix_tests         # 建任务骨架 .workflow/tasks/fix_tests.mjs
+miworkflow fix_tests --filter login   # 跑；项目里任意子目录都行，往上找 .workflow/
+miworkflow view                  # 网页：点「运行」、看每一步、点「通过 / 拒绝」
+```
+
+```text
+<项目>/.workflow/
+  .gitignore     # 只有 logs/
+  tasks/         # 任务
+  scripts/       # 原子能力
+  tests/         # 沉淀自己的测试
+  logs/          # 运行记录，不进 Git
+```
+
+任务不 import 内核，原语和命令行参数由 `run.mjs` 传进来：
+
+```js
+export const title = '跑测试，挂了就修';
+
+export default async function ({ script, agent, human, args }) {
+  const r = await script('run_tests', { filter: args.filter });
+  // ...
+}
+```
+
+让 AI 写任务：把内核根的 [SKILL.md](SKILL.md) 交给它（`init` / `new` 会打印路径），或把内核目录链成技能。
+进化的 commit 落在业务仓库，跟业务代码一起回滚（[Core.md](Core.md) §3、§14）。
+
+## 内核仓库
 
 ```
-run.mjs     唯一入口（bin: miworkflow）
-core.mjs    三个原语：script / agent / human（包入口：import ... from 'miworkflow'）
-viewer/     实时视图 + 人工审批页（外部工具，bin: miworkflow-view）
+run.mjs     唯一入口（bin: miworkflow）：init / new / view / 跑任务
+core.mjs    三个原语：script / agent / human
+viewer/     实时视图 + 人工审批 + 运行按钮（外部工具）
+templates/  init 可选的模板，只在 init 时复制
 examples/   示例，本身就是一个 HOME，仅参考
+SKILL.md    写给 AI 的建任务说明
 tests/      node:test
 ```
 
-沉淀所在叫 **HOME**（`AGENTFLOW_HOME`，缺省为当前目录），里面是 `tasks/`、`scripts/`、`tests/`、`logs/`。
 内核仓库里**没有** `tasks/`、`scripts/`，这条由测试守着。
 
-## 快速开始：跑示例
+## 跑示例
 
-零依赖，Node.js 18+ 即可。`examples/` 就是一个 HOME，不用复制（PowerShell 用 `$env:AGENTFLOW_HOME='examples'`）：
-
-```bash
-AGENTFLOW_HOME=examples node run.mjs demo                        # 有终端 → 就地 y/N 确认
-AGENTFLOW_HOME=examples AGENTFLOW_HUMAN=web node run.mjs demo    # 无终端 → 挂起等网页决定
-
-AGENTFLOW_HOME=examples node viewer/serve.mjs                    # 另开一个终端，浏览器打开
-```
-
-`viewer` 会把本机与内网地址都打出来，内网设备直接访问即可看到实时 trace 并点「通过 / 拒绝」。
-
-## 在业务项目里用
-
-以 Unity 项目为例，建一个 `.workflow/` 当 HOME：
-
-```text
-<Unity 项目>/.workflow/
-  package.json   # { "type": "module", "private": true,
-                 #   "devDependencies": { "miworkflow": "github:Yogioo/MiWorkflow" } }
-  tasks/  scripts/  tests/
-  logs/          # 加进 .gitignore
-```
+`examples/` 就是一个 HOME，不用复制（PowerShell 用 `$env:AGENTFLOW_HOME='examples'`）：
 
 ```bash
-cd .workflow
-npm install
-npx miworkflow <task>        # 跑任务
-npx miworkflow-view          # 看 trace、网页审批
+AGENTFLOW_HOME=examples node run.mjs demo --who 你                  # 有终端 → 就地 y/N 确认
+AGENTFLOW_HOME=examples AGENTFLOW_HUMAN=web node run.mjs demo      # 无终端 → 挂起等网页决定
+AGENTFLOW_HOME=examples node run.mjs view                          # 另开一个终端，浏览器打开
 ```
 
-任务写 `import { script, agent, human } from 'miworkflow'`。改内核时把依赖换成 `"file:<本机内核路径>"`。
-进化的 commit 落在业务仓库，跟业务代码一起回滚（[Core.md](Core.md) §3、§14）。
+`view` 会把本机与内网地址都打出来：内网设备能看实时 trace、点「通过 / 拒绝」；「运行」按钮默认只有本机能用。
 
 ## 测试
 
@@ -65,24 +83,26 @@ npx miworkflow-view          # 看 trace、网页审批
 node --test
 ```
 
-测试断言内核仓库里没有 `tasks/`、`scripts/`，并把 `examples/` 当 HOME 端到端跑一遍 —— 原则是被测出来的，不是写在文档里就算。
+测试断言内核仓库里没有 `tasks/`、`scripts/`、示例任务不 import 内核，并端到端跑 `init` / `new` / 往上找 HOME / 网页起任务 ——
+原则是被测出来的，不是写在文档里就算。
 
 ## 环境变量
 
 | 变量 | 作用 |
 |---|---|
-| `AGENTFLOW_HOME` | 沉淀所在（`tasks/`、`scripts/`、`logs/`），缺省为当前目录；viewer 也读它 |
+| `AGENTFLOW_HOME` | 指定 HOME，优先于往上找 `.workflow/`；viewer 也读它 |
 | `AGENTFLOW_AGENT_CMD` | 外部 Agent 命令，如 `pi -p`；不配则 `agent()` 返回明确的 stub，不假装思考 |
 | `AGENTFLOW_HUMAN` | `stdin` / `web`，默认按有没有 TTY 自动选 |
 | `AGENTFLOW_YES=1` | CI 下自动通过所有 `human()` |
 | `PORT` / `HOST` | viewer 监听，默认 `8787` / `0.0.0.0` |
+| `MIWORKFLOW_REMOTE_RUN=1` | 允许非本机从网页起任务（能起任务 = 能起全权限 Agent） |
 
 ## 人类可见
 
 每行 trace 都带一个人话字段 `say`，渲染留在外部：
 
 ```bash
-tail -f logs/$RUN.jsonl | jq -r .say
+tail -f .workflow/logs/$RUN.jsonl | jq -r .say
 ```
 
 网页审批不需要改 `human()` 的签名 —— 它只是"决定通道"的第二个实现：
