@@ -251,6 +251,39 @@ test('init：不在 git 仓库里就建在当前目录', () => {
   assert.ok(existsSync(path.join(dir, '.workflow', 'tasks')));
 });
 
+test('init：项目根 AGENTS.md 没有就建、已有就追加、重复 init 不重复追加', () => {
+  const repo = tmpDir();
+  spawnSync('git', ['init', '-q'], { cwd: repo });
+  writeFileSync(path.join(repo, 'AGENTS.md'), '# 项目自己的规矩\n\n- 别碰 vendor/\n');
+
+  const r = cli(['init', '--template', 'blank'], { cwd: repo });
+  assert.equal(r.code, 0, r.stderr);
+  const rootAgents = path.join(repo, 'AGENTS.md');
+  const first = readFileSync(rootAgents, 'utf8');
+  assert.match(first, /^# 项目自己的规矩/, '原有内容不能被覆盖');
+  assert.match(first, /- 别碰 vendor\//);
+  assert.match(first, /<!-- miworkflow:begin -->/);
+  assert.match(first, /\.workflow\/AGENTS\.md/, '入口要指到 .workflow/AGENTS.md');
+  assert.match(r.stdout, /AGENTS\.md（已追加 MiWorkflow 段）/);
+
+  const again = cli(['init', '--template', 'blank'], { cwd: repo });
+  assert.equal(again.code, 0, again.stderr);
+  const second = readFileSync(rootAgents, 'utf8');
+  assert.equal(second, first, '重复 init 不动项目根 AGENTS.md');
+  assert.equal(second.split('<!-- miworkflow:begin -->').length - 1, 1, 'marker 只出现一次');
+  assert.match(again.stdout, /AGENTS\.md（已有 MiWorkflow 段，没动）/);
+});
+
+test('init：项目根没有 AGENTS.md 就建一个（不在 git 仓库里也是当前目录）', () => {
+  const dir = tmpDir();
+  const r = cli(['init', '--template', 'blank'], { cwd: dir });
+  assert.equal(r.code, 0, r.stderr);
+  const content = readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
+  assert.match(content, /<!-- miworkflow:begin -->/);
+  assert.match(content, /miworkflow skill/);
+  assert.match(r.stdout, /AGENTS\.md（新建）/);
+});
+
 test('init：复制模板，已有文件不覆盖并列出来；没有的模板报错', (t) => {
   const tpl = path.join(TEMPLATES, '__test_tpl');
   const hadTemplates = existsSync(TEMPLATES);

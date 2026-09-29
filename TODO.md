@@ -131,15 +131,22 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
       **方案 0（就是它）**：根 `AGENTS.md` 一条硬规则「无终端别跑带 `human()` 的任务，要跑就带 `--yes`」。
       方案 1（内层 run 快速失败，约 10 行）与上面这段分析留作记录，**不再做**。
 
-- [x] **B5. `Core.md` §3 说 `.workflow/AGENTS.md` 是「给 AI 的入口」—— 这句要收紧** —— **2026-09-29 定：不做**
+- [x] **B5. `Core.md` §3 说 `.workflow/AGENTS.md` 是「给 AI 的入口」—— 这句要收紧** —— **2026-09-29 定并实现（方案 ② 变体：追加）**
       实测：pi 只从 **cwd 往上**找 `AGENTS.md`（加全局 `~/.pi/agent/AGENTS.md`），**不找子目录**（pi README「Context Files」）。
       而 `github_dev` 里 Agent 的 cwd 是**项目根**（`agent_cli.mjs` 用 `pkg.inputs.cwd`，`github_dev` 传 `git rev-parse --show-toplevel`），
       `.workflow/` 是它的下一层 → 自动读不到。所以规则写在 `.workflow/AGENTS.md` 里，对「改项目代码的 Agent」是空转。
       两个方向选一个：① §3 改成「只在 AI 的 cwd 落在 `.workflow/` 里或它下面时才自动读」（编辑 `.workflow/tasks/x.mjs` 的场景会命中）；
       ② 让 `init` 在项目根放一个指向 `.workflow/AGENTS.md` 的 `AGENTS.md`。
+      **最终定：走 ②，但不「放一个」而是「追加一段」。** 项目根本来就可能有自己的 `AGENTS.md`（项目自己的规矩），
+      `init` 直接放会覆盖或抢戏；改成往项目根的 `AGENTS.md` 追加一段带 marker 的入口 —— 没有该文件就建，
+      有就追加到末尾，已含 marker 就不动（重复 `init` 不重复追加，也不覆盖项目原有内容）。
+      `Core.md` §3 / README / SKILL.md 同步改口径：AI 自动读到的是项目根那份（从 cwd 往上找，不找子目录），
+      硬规则正文仍在 `.workflow/AGENTS.md`。实现：`run.mjs` 的 `writeRootAgents()`；测试 +2（已有内容保留 + 幂等 / 没有就建）。
       顺带记一下现状：内核根这份 `AGENTS.md` 是 2026-09-29 新加的，C1 当时是用 `SKILL.md` 顶替它。
       两者分工：`SKILL.md` 讲「怎么在业务项目里写任务」（`miworkflow skill` 打印、可链成技能）；
-      根 `AGENTS.md` 讲「在这个内核仓库里干活时的规矩」（cwd 在仓库根的 Agent 自动读）。
+      内核仓库根的 `AGENTS.md` 讲「在这个内核仓库里干活时的规矩」（cwd 在仓库根的 Agent 自动读）。
+      注意三个 `AGENTS.md` 各管一段，别混：**内核仓库根**那份（内核规矩）、**业务项目根**那份（`init` 追加的
+      入口，指向 `.workflow/`）、**`.workflow/` 里**那份（业务项目的硬规则正文）。
 
 - [x] **B6. 父子 run 的身份边界（runId / HOME / 锁 / 日志目录）** —— **2026-09-29 定：同 B4，用 `AGENTS.md` 硬规则兜住，不改内核**
       子 run 全套靠环境变量从父 run 继承，`run.mjs` 的 `AGENTFLOW_RUN_ID ??=` 只是其中一处：
@@ -336,7 +343,6 @@ MiCan 在真实使用里踩出来的需求。MiWorkflow 现在都没有，但**�
 ## D. 明确不做
 
 - 不把上述任何自动化塞进内核（§16）；E 里标了「动内核」的，做之前单独拍板。
-- 不收紧 `Core.md` §3 「`.workflow/AGENTS.md` 给 AI 的入口」那句，也不在项目根另放 `AGENTS.md`（TODO B5，2026-09-29 定）。
 - 不做画布 / 图形化编排：流程就是 JS（§2.8）。viewer 只渲染运行时 trace，不做「把 JS 画成可编辑的图」。
 - 不做 Unity 编辑器菜单启动（2026-09-29）：启动走终端或 viewer 的「运行」按钮就够，不往业务项目里装编辑器包。
 - 不做「打包成只读内核」：JS/Node 打包拦不住 Agent，真想物理隔离用只读挂载 + 可写卷，

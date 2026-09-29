@@ -38,7 +38,7 @@ npm link                  # 全局 miworkflow → 这个目录
 项目里什么都不用手建，也没有 `package.json`：
 
 ```bash
-miworkflow init                  # 在 git 仓库根建 .workflow/（终端里可选模板）
+miworkflow init                  # 建 .workflow/，并往项目根 AGENTS.md 追加 AI 入口（终端里可选模板）
 miworkflow new fix_tests         # 建任务骨架 .workflow/tasks/fix_tests.mjs
 miworkflow fix_tests --filter login   # 跑；项目里任意子目录都行，往上找 .workflow/
 miworkflow view                  # 网页：点「运行」、看每一步、点「通过 / 拒绝」
@@ -46,13 +46,15 @@ miworkflow skill                 # 打印写任务的完整说明（给 AI 看�
 ```
 
 ```text
-<项目>/.workflow/
-  .gitignore     # 只有 logs/
-  AGENTS.md      # 给 AI 的入口：硬规则 + 「先跑 miworkflow skill」
-  tasks/         # 任务
-  scripts/       # 原子能力
-  tests/         # 沉淀自己的测试
-  logs/          # 运行记录，不进 Git
+<项目>/
+  AGENTS.md      # AI 的入口：init 建或追加的一段，指向 .workflow/AGENTS.md
+  .workflow/
+    .gitignore   # 只有 logs/
+    AGENTS.md    # 硬规则 + 「先跑 miworkflow skill」
+    tasks/       # 任务
+    scripts/     # 原子能力
+    tests/       # 沉淀自己的测试
+    logs/        # 运行记录，不进 Git
 ```
 
 任务不 import 内核，原语和命令行参数由 `run.mjs` 传进来：
@@ -78,8 +80,8 @@ AGENTFLOW_AGENT=codex miworkflow fix_tests     # PowerShell：$env:AGENTFLOW_AGE
 终端里能看到 Agent 每一步（`· 工具`、`» 说了什么`）；提示词、原始输出、事件落在 `.workflow/logs/<runId>/`。
 默认超时 2 小时，想早点失败就给 `budget.timeoutSec`。完整说明见 [Core.md](Core.md) §10.1。
 
-让 AI 写任务：`init` 放的 `.workflow/AGENTS.md` 会被 Cursor / Codex / Claude Code 自动读到，
-它让 AI 先跑 `miworkflow skill` 读完整写法（即内核的 [SKILL.md](SKILL.md)）；也可以把内核目录链成技能。
+让 AI 写任务：`init` 往项目根的 `AGENTS.md` 追加一段入口（没有就建、有就追加，项目原有内容一个不动），
+Cursor / Codex / Claude Code / pi 从 cwd 往上就能读到，它让 AI 先跑 `miworkflow skill` 读完整写法（即内核的 [SKILL.md](SKILL.md)）；也可以把内核目录链成技能。
 进化的 commit 落在业务仓库，跟业务代码一起回滚（[Core.md](Core.md) §3、§14）。
 
 ## 开箱即用：GitHub 开发

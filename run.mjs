@@ -39,6 +39,25 @@ const AGENTS_MD = [
   ''
 ].join('\n');
 
+// init 同时往项目根的 AGENTS.md 追加一段入口（§3）：AI 从 cwd 往上找的是它，
+// 而 `.workflow/` 是下一层，规则只写在那儿读不到。已有的 AGENTS.md 不覆盖：
+// 没有这段就追加到末尾，已经有（认 marker）就不动。
+const ROOT_AGENTS_MARK = '<!-- miworkflow:begin -->';
+const ROOT_AGENTS_MD = [
+  ROOT_AGENTS_MARK,
+  '## MiWorkflow',
+  '',
+  '这个项目用 MiWorkflow 跑 Agent 工作流：任务在 `.workflow/tasks/`，脚本在 `.workflow/scripts/`。',
+  '这一段是 `miworkflow init` 追加的入口，要改请改 `.workflow/AGENTS.md`。',
+  '',
+  '**动手写或改 `.workflow/` 之前，先读 `.workflow/AGENTS.md`，或运行 `miworkflow skill` 读完整写法。**',
+  '',
+  '- 跑任务：`miworkflow <task> [--key value]`；看运行 / 审批 / 点运行：`miworkflow view`',
+  '- 只改 `.workflow/` 里的文件，不改内核（全局装的 `miworkflow`）',
+  '<!-- miworkflow:end -->',
+  ''
+].join('\n');
+
 const argv = process.argv.slice(2);
 const { positional, args, dryRun } = parseArgv(argv);
 const [cmd, name] = positional;
@@ -119,17 +138,20 @@ async function init(template) {
   template ??= process.stdin.isTTY && choices.length > 1 ? await pickTemplate(choices) : 'blank';
   if (!choices.includes(template)) fail(`没有这个模板：${template}（可选：${choices.join(' / ')}）`);
 
-  const home = path.join(projectRoot(), '.workflow');
+  const root = projectRoot();
+  const home = path.join(root, '.workflow');
   const created = [];
   const skipped = [];
   for (const dir of ['tasks', 'scripts']) mkdirSync(path.join(home, dir), { recursive: true });
   place(path.join(home, '.gitignore'), home, created, skipped, (f) => writeFileSync(f, 'logs/\n'));
   place(path.join(home, 'AGENTS.md'), home, created, skipped, (f) => writeFileSync(f, AGENTS_MD));
   if (template !== 'blank') copyTree(path.join(TEMPLATES, template), home, home, created, skipped);
+  const rootAgents = writeRootAgents(root);
 
   console.log(`HOME  ${home}（模板：${template}）`);
   for (const f of created) console.log(`  + ${f}`);
   for (const f of skipped) console.log(`  = ${f}（已存在，没动）`);
+  console.log(`AI 入口  ${path.join(root, 'AGENTS.md')}（${rootAgents}）`);
   console.log('写任务：miworkflow new <name>，或让 AI 读 .workflow/AGENTS.md（完整写法：miworkflow skill）');
 }
 
@@ -176,6 +198,19 @@ function copyTree(src, dst, home, created, skipped) {
     if (e.isDirectory()) copyTree(from, to, home, created, skipped);
     else place(to, home, created, skipped, (f) => copyFileSync(from, f));
   }
+}
+
+// 返回值是「项目根 AGENTS.md 怎么处理了」，给 init 拼成一行输出
+function writeRootAgents(root) {
+  const file = path.join(root, 'AGENTS.md');
+  if (!existsSync(file)) {
+    writeFileSync(file, ROOT_AGENTS_MD);
+    return '新建';
+  }
+  const cur = readFileSync(file, 'utf8');
+  if (cur.includes(ROOT_AGENTS_MARK)) return '已有 MiWorkflow 段，没动';
+  writeFileSync(file, `${cur}${cur.endsWith('\n') ? '' : '\n'}\n${ROOT_AGENTS_MD}`);
+  return '已追加 MiWorkflow 段';
 }
 
 // ── new ───────────────────────────────────────────────────────────────────

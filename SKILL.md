@@ -12,12 +12,14 @@ description: 在业务项目里用 MiWorkflow 写、改、跑工作流（.workfl
 项目根下的 `.workflow/` 就是 HOME（没有就先跑 `miworkflow init`）：
 
 ```text
-.workflow/
-  AGENTS.md             # 给 AI 的入口（init 放的），可以按项目补充约定
-  tasks/<name>.mjs      # 任务：编排步骤
-  scripts/<action>.mjs  # 脚本：一个原子动作
-  tests/                # 脚本和任务的测试（node:test）
-  logs/                 # 运行记录，自动建，不进 Git
+<项目根>/
+  AGENTS.md             # AI 的入口（init 建或追加的一段，指向下面的 .workflow/AGENTS.md）
+  .workflow/
+    AGENTS.md           # 硬规则，可以按项目补充约定
+    tasks/<name>.mjs    # 任务：编排步骤
+    scripts/<action>.mjs # 脚本：一个原子动作
+    tests/              # 脚本和任务的测试（node:test）
+    logs/               # 运行记录，自动建，不进 Git
 ```
 
 只改 `.workflow/` 里的东西，不改内核（全局装的 `miworkflow`）。`.workflow/` 里没有 `package.json`，

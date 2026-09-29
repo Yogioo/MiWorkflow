@@ -35,7 +35,7 @@
 
 - **装**：每台机器一次，全局命令 `npm i -g github:Yogioo/MiWorkflow`；改内核时在内核目录 `npm link`。
   不按项目锁版本（单人使用可接受）。
-- **写**：`miworkflow new <name>` 建骨架，或交给 AI —— `init` 放的 `.workflow/AGENTS.md` 让 AI 先跑 `miworkflow skill` 读完整写法。
+- **写**：`miworkflow new <name>` 建骨架，或交给 AI —— `init` 在项目根追加的 `AGENTS.md` 让 AI 先跑 `miworkflow skill` 读完整写法。
 - **跑**：终端 `miworkflow <task>`，或 viewer 的「运行」按钮（§13.6），都不经过 AI。
 
 内核仓库：
@@ -59,13 +59,15 @@ MiWorkflow/
 沉淀所在叫 **HOME**，就是项目里的 `.workflow/`（以点开头，Unity 不导入它）。以 Unity 项目为例：
 
 ```text
-<Unity 项目>/.workflow/
-  .gitignore      # 只有一行 logs/（不碰项目原有的 .gitignore）
-  AGENTS.md       # 给 AI 的入口：这是什么、几条硬规则、完整写法跑 miworkflow skill
-  tasks/          # 任务，mjs
-  scripts/        # 原子能力，mjs
-  tests/          # 沉淀自己的测试
-  logs/           # 运行记录 JSONL（首跑时自动建）
+<Unity 项目>/
+  AGENTS.md       # AI 的入口：init 建或追加的一段（AI 从 cwd 往上找的就是它），指向下面的 .workflow/AGENTS.md
+  .workflow/
+    .gitignore    # 只有一行 logs/（不碰项目原有的 .gitignore）
+    AGENTS.md     # 硬规则正文：这是什么、几条硬规则、完整写法跑 miworkflow skill
+    tasks/        # 任务，mjs
+    scripts/      # 原子能力，mjs
+    tests/        # 沉淀自己的测试
+    logs/         # 运行记录 JSONL（首跑时自动建）
 ```
 
 没有 `package.json`，不用 `npm install`：任务不 import 内核（§5）。
@@ -83,14 +85,15 @@ MiWorkflow/
 |---|---|
 | `miworkflow --version` / `miworkflow -v` | 打印内核 `package.json` 的 `version`（不写死）到 stdout，退出 0 |
 | `miworkflow --help` / `miworkflow -h` | 打印用法（USAGE）到 stdout，退出 0；不带任何参数时 USAGE 打到 stderr、退出 1 |
-| `miworkflow init [--template <名字>]` | 建 `.workflow/`：`tasks/`、`scripts/`、`.gitignore`、`AGENTS.md`。建在 git 仓库根，不在仓库里就建在当前目录。终端里有模板可选时让人选（**空白** = 只建目录，或 `templates/` 下的某个）；非终端缺省空白。已存在 `.workflow/` 时只补缺的文件，**已有的文件一个不覆盖**，跳过的列出来 |
+| `miworkflow init [--template <名字>]` | 建 `.workflow/`：`tasks/`、`scripts/`、`.gitignore`、`AGENTS.md`，并往项目根的 `AGENTS.md` 追加一段 AI 入口（没有就建、有就追加、已含就不动）。建在 git 仓库根，不在仓库里就建在当前目录。终端里有模板可选时让人选（**空白** = 只建目录，或 `templates/` 下的某个）；非终端缺省空白。已存在 `.workflow/` 时只补缺的文件，**已有的文件一个不覆盖**，跳过的列出来 |
 | `miworkflow new <name>` | 建 `tasks/<name>.mjs` 骨架（`title` + 传参的 `default`），不覆盖已有；没有 `.workflow/` 就报错，提示先 `init` |
 | `miworkflow <task> [--key value]` | 跑任务 |
 | `miworkflow view` | 用找到的 HOME 起 viewer（§13.6） |
 | `miworkflow skill` | 打印内核的 `SKILL.md`（不需要 `.workflow/`） |
 
-给 AI 的文档分两层：`.workflow/AGENTS.md` 跟项目进 Git，只写硬规则、不写本机路径（Cursor / Codex / Claude Code 会自动读）；
-完整写法不复制，由 `miworkflow skill` 现打，换机器、升内核都不过时。
+给 AI 的文档分两层：项目根的 `AGENTS.md` 才是 AI 自动读到的入口（Cursor / Codex / Claude Code / pi 都从 cwd 往上找，
+不找子目录），`init` 只往里追加一小段，指向 `.workflow/`；硬规则正文在 `.workflow/AGENTS.md`，跟项目进 Git、
+只写硬规则、不写本机路径；完整写法不复制，由 `miworkflow skill` 现打，换机器、升内核都不过时。
 
 ---
 
