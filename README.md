@@ -82,6 +82,32 @@ AGENTFLOW_AGENT=codex miworkflow fix_tests     # PowerShell：$env:AGENTFLOW_AGE
 它让 AI 先跑 `miworkflow skill` 读完整写法（即内核的 [SKILL.md](SKILL.md)）；也可以把内核目录链成技能。
 进化的 commit 落在业务仓库，跟业务代码一起回滚（[Core.md](Core.md) §3、§14）。
 
+## 开箱即用：GitHub 开发
+
+`init` 选「GitHub 开发」模板（`--template github`），`.workflow/` 里就有一整条流水线：
+
+```bash
+miworkflow init --template github      # 复制模板（已有文件一个不覆盖）
+miworkflow github_dev                  # 把就绪 issue 逐个做完
+miworkflow github_dev --issue 42       # 只做 #42（不看标签和依赖，人点名就跑）
+miworkflow github_dev --max 3          # 最多 3 个；--max-failures 1 连续失败就停
+miworkflow github_dev --confirm        # 每次提交前 human 确认；--dry-run 只报会做什么
+```
+
+issue 约定与 afk-run 一致，同一个仓库两边可以换着跑：
+
+- 入队：issue 贴 `ready-for-agent`；排除 `in-progress`（在跑）和 `afk-failed`（失败待人看）
+- 优先级：标签 `P0`~`P4`，没有就当 `P2`；同级按 issue 号升序
+- 依赖：正文里 `- [ ] #123` 表示被 #123 挡着，勾上或 #123 关掉就算满足
+
+每个 issue 走：认领（贴 `in-progress`）→ Agent 开发 → Agent 审查（有问题直接改）→ 验证（`VERIFY` 配了才跑）→
+提交（默认推送，正文带 `Closes #N`）→ 关单。失败就 `git reset --hard` + `clean -fd` 回滚，
+摘 `in-progress`、贴 `afk-failed` + 评论原因，保留 `ready-for-agent`（人摘掉 `afk-failed` 就重新入队）。
+推送失败不关单、整轮停下，本地提交保留，留给人处理。
+
+改行为就改 `.workflow/config.mjs`（`DEV` / `REVIEWER` / `VERIFY` / `ROUNDS` / `PUSH` / 标签名）；
+模板复制出去后归项目所有，各自演进，不回头同步内核。
+
 ## 内核仓库
 
 ```
@@ -130,6 +156,7 @@ node --test
 | `AGENTFLOW_YES=1` | CI 下自动通过所有 `human()` |
 | `PORT` / `HOST` | viewer 监听，默认 `8787` / `0.0.0.0` |
 | `MIWORKFLOW_REMOTE_RUN=1` | 允许非本机从网页起任务（能起任务 = 能起全权限 Agent） |
+| `MIWORKFLOW_GH` | GitHub 模板改用它当 `gh`（一个 JS 文件，参数照传）；测试 / 替换 `gh` 用 |
 
 ## 人类可见
 

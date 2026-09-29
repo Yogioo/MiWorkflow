@@ -26,6 +26,10 @@ function cli(argv, { cwd = ROOT, env = {} } = {}) {
   for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_AGENT_CMD', 'AGENTFLOW_AGENT', 'AGENTFLOW_DRY_RUN', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES']) {
     delete base[k];
   }
+  // 测试目录在 os.tmpdir() 下；若跑测试的机器上 $HOME 恰好是 Git 仓库（dotfiles），
+  // `git rev-parse --show-toplevel` 会往上串到 $HOME，测的就不是当前目录了。
+  // 用 GIT_CEILING_DIRECTORIES 把 Git 的向上查找卡在临时目录边界。
+  base.GIT_CEILING_DIRECTORIES = TMP;
   const r = spawnSync(process.execPath, [path.join(ROOT, 'run.mjs'), ...argv], {
     cwd, env: { ...base, ...env }, encoding: 'utf8'
   });

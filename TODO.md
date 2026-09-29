@@ -10,7 +10,7 @@
 1. ✅ **B2 沉淀离开内核仓库**（已实现，见 `Core.md` §3、§15）
 2. ✅ **B3 零配置使用**（已实现并实测，见 `Core.md` §3、§5、§13.6、§15）
 3. ✅ **C2 运行期 Agent 适配器**（已实现并用三家真 CLI 实测，见 `Core.md` §10.1）
-4. **C3 首个工作流：GitHub 开发**（`init` 可选的模板，依赖 B3 的 `init` / `args` 和 C2 的按调用选 Agent）
+4. ✅ **C3 首个工作流：GitHub 开发**（`templates/github/`，已实现并用假 gh / 假 Agent / 临时 git 仓库测了 10 条路径）
 5. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
 B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项目专用的（如 Unity 跑测试）。
@@ -191,7 +191,19 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
       - **C2-3 会话延续**：§7 的重试循环每次 `agent()` 都是新上下文。**推荐先不做**：重试时把上一次的
         `reason` 和失败输出放进 `inputs`。真出现「每次从头读项目、慢得不行」再加 `inputs.session`。
 
-- [ ] **C3. 首个工作流：GitHub 开发（`templates/github/`）** —— **2026-09-29 定**
+- [x] **C3. 首个工作流：GitHub 开发（`templates/github/`）** —— **2026-09-29 定，已实现**
+      实现了 `config.mjs` / `tasks/github_dev.mjs` / `scripts/{gh_ready,gh_issue_view,gh_issue_mark,git_state,git_commit,git_restore,run_cmd,_lib}.mjs`。
+      实现时的取舍：
+      - 测试放**内核仓库** `tests/template-github.test.mjs`（§15「模板的测试留在内核仓库」），
+        不跟着模板进项目；用假 gh（`MIWORKFLOW_GH` 指向一个 JS 文件，参数照传）+ 假 Agent
+        （`AGENTFLOW_AGENT_CMD`）+ 临时 git 仓库跑，覆盖成功关单 / 审查拒绝 / 验证超轮 / need_human /
+        no_change / 推送失败 / 依赖挡住 / 优先级与 `--issue` 点名 / 工作区不干净。
+      - 推送失败让**整轮失败**（退出码 1），但本地提交保留、不关单、不贴 `afk-failed`，只留 `in-progress` 提醒人。
+      - `--dry-run` 比 TODO 原文收紧了：不是「脚本只报会做什么」（挡不住 Agent 改文件），
+        而是整个任务在 preflight 后只列出「今天会做哪几个 issue」就返回，不叫 Agent、不改盘。
+      - `VERIFY` 是字符串走 shell、是数组精确到参数；`run_cmd` 的 timeout 由任务传 `script(..., { timeoutMs })`
+        （core 的 script 默认 120 秒，对验证太短）。
+      - 假 gh 的注入点是环境变量 `MIWORKFLOW_GH`（路径）；这是给测试/替换留的缝，不是内核机制。
       取代原 C3「GitHub Issues 摘要」示例。参考 afk-run（`~/.agents/skills/afk-run`）的 gh 任务源与状态机，
       **不依赖 afk-run / exec-review**，用三个原语重组；issue 的写法（标签、优先级、依赖）与 afk-run 相同，同一个仓库两边可以互换着跑。
       人在 GitHub 上把 issue 交给机器，机器逐个「认领 → 开发 → 审查 → 验证 → 提交 → 推送 → 关单」，失败就回滚、贴评论。
