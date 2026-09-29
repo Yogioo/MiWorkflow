@@ -148,7 +148,7 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
       内层 run 会沿用父 run 的 `runId`、HOME、锁与日志目录。这次因为 HOME 不同（`examples` vs `.workflow`）没出事；
       HOME 相同就会**覆盖父 run 的 JSONL**。要讨论的是：run 的身份从哪来、哪些该继承哪些该重开。
 
-- [ ] **B7. GitHub 工作流：提交环节会「自己把自己搞死」，回滚还会吃掉别人的提交**（2026-09-29 实遇，#5）
+- [x] **B7. GitHub 工作流：提交环节会「自己把自己搞死」，回滚还会吃掉别人的提交** —— **2026-09-29 定并实现**
       经过：DEV Agent 自己 `git add -A && git commit`（`786d42f`），REVIEWER 又自己提交两笔修复（`53e0d09`、`0c9bb57`）；
       工作流的 `git_commit` 步骤再提交时工作区已经干净 → `git commit` 退出码 1 → 判成 `commit_failed` →
       整个 issue 走失败路径（钉 `afk-failed` + 评论）+ `git_restore`。
@@ -161,7 +161,16 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
         只回滚本轮产生的提交；碰到第一笔不是本轮的，就停手留给人（与「推送失败」同款：不关单、整轮停下）。
       - ③ 提示词没禁止 Agent 提交。DEV / REVIEWER 都有全部权限，看到仓库里「做完就提交」的先例就会自己提交；
         应写明「改完不要 `git commit`、不要 `git push`，提交由工作流负责」。
-      恢复：四笔提交一直在对象库里，`git tag backup/before-recover` 指着 `0c9bb57`（回滚前那一刻），已推。
+      恢复：四笔提交一直在对象库里（`0c9bb57`），已推；当时临时打的保险标签已删。
+      实现（`templates/github/`，测试 +2 → 82 全绿）：
+      - ① `git_commit`：`git add -A` 后先看 `git diff --cached`；为空就跳过提交，直接用当前 HEAD 继续推送，
+        `data` 多一个 `already`。任务的「推送失败」判据不用改（`committed: true` 依旧成立）。
+      - ② `git_restore`：回滚前把 `base..HEAD` 的提交 `update-ref` 到 `refs/afk-backup/<时间戳>-<sha>`
+        （可用 `prefix` 换名字），ref 与 `lost` 列表随 `data` 返回；`github_dev` 的 `fail()` 把它写进失败评论；
+        `gh_issue_mark` 的评论上限从 300 放宽到 900（失败原因常带几行测试输出，别把 ref 截掉）。
+      - ③ 三处提示词（DEV / REVIEWER / FIX）各加一条：「不要 `git commit`、不要 `git push`，提交与推送由工作流负责」。
+      实测：新增两个端到端用例 —— 「Agent 自己先提交 → 不判失败、照常推送关单」（旧代码在这条上就是 `commit_failed`）、
+      「回滚要丢掉的提交 → 先备份成 ref 再回滚，评论里带上 ref」；再给原有的回滚用例补一条「没提交要丢就不造 ref」。
 
 ## C. 初始工作流创建体验
 

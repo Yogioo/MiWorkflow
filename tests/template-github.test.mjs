@@ -56,10 +56,11 @@ writeFileSync(FAKE_GH, [
   ''
 ].join('\n'));
 
-// 假的 Agent：按 FAKE_AGENT_PLAN 数组逐次回话；step.file 时往 inputs.cwd 写文件
+// 假的 Agent：按 FAKE_AGENT_PLAN 数组逐次回话；step.file 时往 inputs.cwd 写文件；step.commit 时自己提交（模拟「Agent 先提交了」）
 const FAKE_AGENT = path.join(TMP, 'fake-agent.mjs');
 writeFileSync(FAKE_AGENT, [
   "import { readFileSync, writeFileSync } from 'node:fs';",
+  "import { spawnSync } from 'node:child_process';",
   "import path from 'node:path';",
   "let raw = '';",
   'for await (const c of process.stdin) raw += c;',
@@ -69,6 +70,10 @@ writeFileSync(FAKE_AGENT, [
   'const step = plan.shift();',
   'writeFileSync(planFile, JSON.stringify(plan));',
   'if (step.file) writeFileSync(path.join(pkg.inputs.cwd, step.file.name), step.file.content);',
+  'if (step.commit) {',
+  '  spawnSync("git", ["add", "-A"], { cwd: pkg.inputs.cwd });',
+  '  spawnSync("git", ["commit", "-qm", step.commit], { cwd: pkg.inputs.cwd });',
+  '}',
   'process.stdout.write(JSON.stringify({ status: step.status ?? "ok", choice: step.choice, reason: step.reason ?? "", data: step.data ?? {} }));',
   ''
 ].join('\n'));
@@ -199,6 +204,49 @@ test('审查拒绝 → 回滚改动 + afk-failed + 评论', () => {
   assert.ok(labelsOf(s, 1).includes('ready-for-agent'), '保留 ready，摘掉 afk-failed 后能重新入队');
   assert.match(comments(issueState(s, 1)), /方向根本错了/);
   assert.equal(gitOut(['log', '-1', '--pretty=%s'], s.root), 'init', '不该有提交');
+  assert.equal(gitOut(['for-each-ref', 'refs/afk-backup'], s.root), '', '没提交要丢时不该造备份 ref');
+});
+
+// TODO B7 ①：Agent 自己先提交过（工作区已经干净）不该判成 commit_failed
+test('Agent 自己先提交了 → 不判失败，照常推送关单', () => {
+  const s = setup({ issues: [issue(1, { title: '加个文件', labels: ['ready-for-agent'] })], push: true });
+  plan(s, [
+    {
+      choice: 'done',
+      reason: '写好并提交了',
+      file: { name: 'note.txt', content: 'hi' },
+      commit: '#1 加个文件'
+    },
+    { choice: 'clean', reason: '看着没问题' }
+  ]);
+
+  const r = cli(s, ['github_dev']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(issueState(s, 1).state, 'CLOSED');
+  assert.ok(!/commit_failed/.test(comments(issueState(s, 1))), '不该有 commit_failed 评论');
+  assert.equal(gitOut(['rev-list', '--count', 'HEAD'], s.root), '2', 'Agent 那笔就是这一轮的提交，不再造一笔');
+  assert.match(gitOut(['log', '-1', '--pretty=%s'], s.root), /^#1 加个文件/);
+  assert.match(gitOut(['log', '-1', '--pretty=%s', 'origin/main'], s.root), /^#1 加个文件/, '照样要推送');
+});
+
+// TODO B7 ②：回滚要丢掉的提交先备份成 ref，不静默销毁
+test('回滚要丢掉的提交 → 先备份成 ref 再回滚，评论里带上 ref', () => {
+  const s = setup({ issues: [issue(1, { labels: ['ready-for-agent'] })] });
+  plan(s, [
+    { choice: 'done', reason: '做了', file: { name: 'bad.txt', content: 'x' }, commit: '#1 做了' },
+    { choice: 'reject', reason: '方向根本错了' }
+  ]);
+
+  const r = cli(s, ['github_dev']);
+  assert.equal(r.code, 1);
+  assert.equal(gitOut(['log', '-1', '--pretty=%s'], s.root), 'init', 'HEAD 回到起点');
+  assert.ok(!existsSync(path.join(s.root, 'bad.txt')), '回滚应删掉 Agent 写的文件');
+
+  const refs = gitOut(['for-each-ref', '--format=%(refname)', 'refs/afk-backup'], s.root).split('\n').filter(Boolean);
+  assert.equal(refs.length, 1, '被回滚的提交要有一个备份 ref');
+  assert.match(refs[0], /^refs\/afk-backup\//);
+  assert.match(gitOut(['log', '-1', '--pretty=%s', refs[0]], s.root), /^#1 做了/, '备份 ref 指着被回滚那笔');
+  assert.match(comments(issueState(s, 1)), /afk-backup/, '评论要写明备份 ref，人才能捞回来');
 });
 
 test('验证不过、超过 ROUNDS → 回滚 + afk-failed', () => {

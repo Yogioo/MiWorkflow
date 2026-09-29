@@ -32,7 +32,7 @@ await main(async () => {
     ];
   } else if (action === 'failed') {
     plan = [
-      ['issue', 'comment', n, '--body', `afk failed：${String(args.comment ?? '').slice(0, 300)}`, ...repoArg],
+      ['issue', 'comment', n, '--body', `afk failed：${String(args.comment ?? '').slice(0, 900)}`, ...repoArg],
       ['issue', 'edit', n, '--add-label', failed, ...repoArg],
       ['issue', 'edit', n, '--remove-label', inProgress, ...repoArg]
     ];

@@ -195,11 +195,19 @@ async function notPublished(outcome, num, sha, ctx) {
 }
 
 // 任何一步失败：回滚到起点，摘 in-progress、贴 afk-failed + 评论原因，保留 ready-for-agent
+// 回滚如果要丢掉提交，git_restore 会先备份成 ref——把那个 ref 写进评论，人才能捞回来（TODO B7）
 async function fail(num, reason, base, ctx) {
   const { script } = ctx;
   console.error(`✖ #${num} ${reason}`);
-  if (base) await script('git_restore', { sha: base, cwd: ctx.root });
-  await script('gh_issue_mark', { number: num, action: 'failed', comment: reason, labels: ctx.labels });
+  let note = '';
+  if (base) {
+    const r = await script('git_restore', { sha: base, cwd: ctx.root });
+    if (r.data?.lost?.length) {
+      note = `\n（回滚掉的 ${r.data.lost.length} 笔提交备份在 ${r.data.backup}：${r.data.lost.map((l) => l.split(' ')[0]).join(' ')}）`;
+      console.error(`  回滚掉的提交备份在 ${r.data.backup}`);
+    }
+  }
+  await script('gh_issue_mark', { number: num, action: 'failed', comment: `${reason}${note}`, labels: ctx.labels });
   return 'failed';
 }
 
@@ -217,6 +225,7 @@ function devPrompt(issue, root) {
     '',
     '要求：',
     '- 直接改工作目录里的代码，把 issue 做出来；改完自己检查一遍，别留半成品',
+    '- 不要 git commit、不要 git push：提交与推送由工作流负责，你只把改动留在工作区',
     '- issue 不需要任何改动（已经满足，或信息不足无法判断）时，choice 用 no_change，reason 说明原因',
     '- 需要人补充信息才能继续时，status 用 need_human，reason 写你要问的问题',
     '',
@@ -236,6 +245,7 @@ function reviewPrompt(issue, root, changed) {
     issue.text,
     '',
     '看实际改动（git diff 等），审查：是否正确、是否真的解决了 issue、有没有引入问题。有问题就直接改。',
+    '- 不要 git commit、不要 git push：改了就留在工作区，提交与推送由工作流负责',
     '- 审查后你认为干净：choice=clean',
     '- 你做了修改或补充：choice=refined',
     '- 方向根本错了、应当放弃：choice=reject，并说明',
@@ -257,6 +267,7 @@ function fixPrompt(issue, root, verify, output) {
     issue.text,
     '',
     '直接改代码。修好了 choice=fixed；判断做不到 choice=give_up 并说明原因。',
+    '- 不要 git commit、不要 git push：改了就留在工作区，提交与推送由工作流负责',
     '',
     '最后只回一段 JSON：{status, choice, reason, data}；choice 只能是 fixed | give_up'
   ].join('\n');

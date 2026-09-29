@@ -779,6 +779,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 15. ✅ 首个工作流：GitHub 开发，作为 `init` 可选的模板 `templates/github/`（TODO C3，已实现）。
     人是给 issue 贴 `ready-for-agent`；任务 `github_dev` 逐个「认领 → 开发 → 审查 → 验证 → 提交 → 关单」，
     失败回滚 + 贴评论 + `afk-failed`。测试留内核仓库（假 gh / 假 Agent / 临时 git 仓库）。
+    回滚不销毁提交：`base..HEAD` 的提交先备份成 `refs/afk-backup/*` 再回滚，ref 写进失败评论（TODO B7）。
 
 ---
 
