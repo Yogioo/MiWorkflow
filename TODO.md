@@ -1,15 +1,5 @@
 # TODO
 
-> 与 `Core.md`、`README.md` 同级，**属于内核**：`guard.mjs` 的 `coreFiles()` 不看扩展名，
-> 凡不在 `tasks/ scripts/ logs/ examples/` 之下的都算内核（§14.1）。
-> 所以改本文档本身就需要一次人工审批：
->
-> ```bash
-> node guard.mjs approve --reason "TODO.md：规划 v1.7"
-> ```
->
-> 这是设计，不是 bug。理由：文档也是内核的一部分，改它同样要留一句人写的理由。
-
 来源：2026-09-28 关于「初始工作流创建」与「自进化」的两轮讨论；2026-09-29 与 MiCan 对比后定下
 「以 MiWorkflow 为主线，把 MiCan 踩过的坑当需求清单」。规范以 `Core.md` 为准。
 
@@ -23,6 +13,9 @@
 4. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
 B1 随 B2 消解，C3 降为参考示例。
+
+2026-09-29：内核审批护栏（`guard.mjs` + `core.lock.json` + pre-commit）整套删除 —— 仓库分离后收益小于摩擦
+（`Core.md` §14.1）。下文拍板前的分析里提到「内核审批 / approve / 受 core.lock 保护」的，都是当时的记录。
 
 ---
 

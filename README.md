@@ -16,7 +16,6 @@ Agent 工作流极简方案 —— **确定性外壳 + 智能内核 + 受控进�
 ```
 run.mjs     唯一入口（bin: miworkflow）
 core.mjs    三个原语：script / agent / human（包入口：import ... from 'miworkflow'）
-guard.mjs   内核护栏
 viewer/     实时视图 + 人工审批页（外部工具，bin: miworkflow-view）
 examples/   示例，本身就是一个 HOME，仅参考
 tests/      node:test
@@ -67,24 +66,6 @@ node --test
 ```
 
 测试断言内核仓库里没有 `tasks/`、`scripts/`，并把 `examples/` 当 HOME 端到端跑一遍 —— 原则是被测出来的，不是写在文档里就算。
-
-## 内核护栏
-
-**内核**（`run.mjs`、`core.mjs`、`guard.mjs`、`viewer/`、`tests/`、`Core.md` …）改动需要有人在终端确认；内核仓库里只有 `logs/`、`examples/` 随便改：
-
-```bash
-npm run guard                                    # 只读检查（= node guard.mjs check）
-node guard.mjs approve --reason "为什么改内核"
-```
-
-改了内核而没重新固化，`node --test` 会红，`run.mjs` 也会拒跑 —— 护栏不靠自觉（[Core.md](Core.md) §14.1）。
-`approve` 要求 stdin 是 TTY：Agent 通常在管道里跑，拿不到 TTY，所以过不来。
-
-可选，再拦一道提交：
-
-```bash
-node guard.mjs install      # 装 .git/hooks/pre-commit
-```
 
 ## 环境变量
 

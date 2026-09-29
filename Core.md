@@ -39,8 +39,6 @@
 MiWorkflow/
   run.mjs         # 唯一入口（bin: miworkflow）
   core.mjs        # 三个原语（包入口：import ... from 'miworkflow'）
-  guard.mjs       # 内核护栏：改内核要人审批（§14.1）
-  core.lock.json  # 内核指纹 + 最后一次审批的理由（§14.1）
   viewer/         # 实时视图 + 人工审批页，外部工具，不默认加载（bin: miworkflow-view）
   examples/       # 示例，本身就是一个 HOME，仅参考（§15）
   tests/          # 内核测试
@@ -65,7 +63,7 @@ MiWorkflow/
 
 - `tasks/`、`scripts/`、`logs/` 都在 HOME 下找；脚本与 Agent 子进程的 cwd 是 HOME；viewer 读 HOME 的 `logs/`。
 - 跑：`cd .workflow && npx miworkflow <task>`。进化的 commit 落在业务仓库，跟业务代码一起回滚（§14）。
-- **内核仓库里没有 `tasks/`、`scripts/`**，测试断言它（§16）；冒出来会被 guard 当成内核改动拦下（§14.1）。
+- **内核仓库里没有 `tasks/`、`scripts/`**，测试断言它（§16）。
 - 同一次运行里 `run.mjs` 与任务必须加载**同一份** `core.mjs`（`seq` 在模块里）：用 `npx miworkflow` 跑，
   不要拿另一份内核的 `run.mjs` 去跑装了别的内核的 HOME。
 
@@ -299,18 +297,11 @@ import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { inspect } from './guard.mjs';
 
 const task = process.argv[2];
 
 if (!task) {
   console.error('usage: miworkflow <task> [--yes] [--dry-run]');
-  process.exit(1);
-}
-
-// 内核被改而没审批就拒跑（§14.1）
-if (!inspect().ok) {
-  console.error('✖ 内核被改了但没有审批，拒跑：node guard.mjs approve --reason "..."');
   process.exit(1);
 }
 
@@ -580,38 +571,13 @@ v1.6 只要求：
 
 这些放到 v2，等最小闭环跑稳后再加。
 
-### 14.1 内核护栏
+### 14.1 内核边界
 
-「只往 HOME 沉淀，不改内核」不靠自觉，靠 `core.lock.json` 加两道闸。
+「只往 HOME 沉淀，不改内核」靠**仓库分离**，不靠审批机制：内核与沉淀是两个仓库（§3），
+进化闭环在业务仓库里改、测、提交，本来就碰不到内核。内核有改动，走内核仓库自己的 Git 与 `node --test`。
 
-- **可写面**：内核仓库里只有 `logs/`、`examples/` —— 随便改，不算数。沉淀本来就不在内核仓库（§3）。
-- **内核**：其余全部（`run.mjs`、`core.mjs`、`guard.mjs`、`viewer/`、`tests/`、`Core.md`、`package.json` …）。
-  内核根下冒出 `tasks/`、`scripts/` 同样算内核改动。
-- `core.lock.json` 记下内核每个文件的哈希，以及最后一次审批的时间、署名、理由。
-
-改了内核而没重新固化：
-
-1. **内核仓库的 `node --test` 直接红**（改内核的人会跑它）。
-2. **`run.mjs` 起跑前拒跑**。进化闭环第 3 步跑的是 HOME 的测试（§14），碰不到内核测试，
-   所以必须在运行时拦，否则装在 `node_modules` 里的内核被静默改掉也没人知道。
-
-重新固化必须有人在终端：
-
-```bash
-node guard.mjs check                                  # 只读检查，跑不坏东西
-node guard.mjs approve --reason "修 agent 超时没杀掉子进程"
-```
-
-`approve` 要求 stdin 是 TTY。Agent 通常在管道里跑，拿不到 TTY，所以这道闸对它天然有效。
-可选再加一道提交时的闸：
-
-```bash
-node guard.mjs install      # 装 .git/hooks/pre-commit
-```
-
-**边界要说清**：这不是防盗墙。Agent 有文件写权限，真想绕一定绕得过去。
-它拦的是「无意识的静默改动」，逼出一句人写的理由和一条可回滚的 Git 记录。
-要物理级隔离，用只读挂载 + 可写卷 —— 那是操作系统的事，不是打包的事。
+v1.7 曾有一道审批护栏（`guard.mjs` + `core.lock.json`：内核哈希、终端 `approve`、起跑前拒跑），
+仓库分离之后收益小于摩擦，已删除（§2.12）。要物理级隔离，用只读挂载 + 可写卷 —— 那是操作系统的事。
 
 ---
 
@@ -676,10 +642,10 @@ AGENTFLOW_HOME=examples node run.mjs demo
 7. ✅ Git 固化：`git init` + 首次提交，此后每条 trace 的 `gitSha` 都有值（§12）。
 8. ✅ v1.6 收口：`--dry-run` 注入 `args.dryRun`、脚本非 0 退出码即 failed、Agent 输出不合契约即 failed；
    文档同步实现（§6.1、§6.2、§13.6）。
-9. ✅ 内核护栏：`core.lock.json` + `guard.mjs`，改内核要在终端显式 `approve`，否则 `node --test` 变红（§14.1）。
+9. ~~内核护栏：`core.lock.json` + `guard.mjs`~~ —— 仓库分离后删除（§14.1）。
 10. 后续只往 HOME 的 `tasks/` 和 `scripts/` 沉淀（可从拷 `examples/` 起步），不改内核。
 11. 自动进化 v2 再议。
-12. ✅ v1.7 沉淀离开内核仓库：HOME、包名 import、`bin`、`examples/` 即 HOME、`run.mjs` 起跑前查内核（§3、§14.1、§15）。
+12. ✅ v1.7 沉淀离开内核仓库：HOME、包名 import、`bin`、`examples/` 即 HOME（§3、§15）。
 13. v1.7 运行期 Agent 适配器（§19.2，已定，未实现）。
 
 ---
@@ -712,15 +678,15 @@ AGENTFLOW_HOME=examples node run.mjs demo
 
 ### 19.1 沉淀离开内核仓库（已实现）
 
-已折进 §3（HOME、业务仓库布局）、§5 / §7（包名 import）、§9、§14、§14.1（起跑前查内核）、§15（`examples/` 即 HOME）。
+已折进 §3（HOME、业务仓库布局）、§5 / §7（包名 import）、§9、§14、§14.1（内核边界）、§15（`examples/` 即 HOME）。
 起因：旧版要求 `tasks/`、`scripts/` 为空、测试查文件系统，而进化闭环又要沉淀后测试通过、提交进 Git ——
 内核仓库与沉淀仓库是同一个，两条不可能同时成立。
 
 ### 19.2 运行期 Agent 适配器
 
 `agents/agent_cli.mjs <pi|codex|cursor>`：一份适配器，一个参数选家。放在**内核**，
-与 `viewer/` 同类的外部工具（core 不 import 它），受 `core.lock.json` 保护 ——
-它带着全权限开关，不该被进化中的 Agent 静默改掉。
+与 `viewer/` 同类的外部工具（core 不 import 它）—— 它带着全权限开关，放在内核仓库，
+不跟着业务仓库的进化一起被改。
 
 **来源**：从 exec-review 技能的 runner 层**复制一份**起步（`scripts/runners/*.mjs` + `scripts/normalize-event.mjs`，
 零依赖、不读 `~/.afk/config.json`），之后**独立演进**，不回头同步、不依赖 exec-review。

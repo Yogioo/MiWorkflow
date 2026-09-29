@@ -4,7 +4,6 @@ import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { inspect, describe } from './guard.mjs';
 
 const argv = process.argv.slice(2);
 const task = argv.find((a) => !a.startsWith('--'));
@@ -12,16 +11,6 @@ const dryRun = argv.includes('--dry-run');
 
 if (!task) {
   console.error('usage: miworkflow <task> [--yes] [--dry-run]');
-  process.exit(1);
-}
-
-// 进化闭环跑的是 HOME 的测试，碰不到内核测试，所以内核改动在起跑时拦（§14.1）
-const kernel = inspect();
-if (!kernel.ok) {
-  console.error(kernel.reason === 'no_lock'
-    ? '✖ 没有 core.lock.json：内核从未被审批过，拒跑（§14.1）。'
-    : `✖ 内核被改了但没有审批，拒跑（§14.1）：\n${describe(kernel.diff)}`);
-  console.error('  请在内核目录的终端跑：node guard.mjs approve --reason "为什么改内核"');
   process.exit(1);
 }
 
