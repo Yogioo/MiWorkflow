@@ -120,6 +120,34 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
       被判为内核改动，`node --test` 变红，要人 `approve`。
       最常见的场景（加**业务**脚本的测试）却触发**内核**审批，语义错配。
 
+- [ ] **B4. 「没人可批」时 `human()` 挂一小时**（2026-09-29 实遇）
+      复现：`github_dev` 的 DEV Agent 在无终端的 shell 里跑 `AGENTFLOW_HOME=examples node run.mjs demo --who x`
+      （它自己挑的验证命令）→ `demo` 有 `human()` → 没有终端，也没有 `--yes`，落到决定文件（§13.5），
+      默认等 `3_600_000` ms（`core.mjs` human 的 `opts.timeoutMs ??`）→ shell 不返回 → Agent 不动 → 整个 run 停住。
+      更别扭的是：看着的 viewer 也没用 —— 它的 HOME 是 `.workflow`，只写 `.workflow/logs/` 下的决定文件，
+      而那次 run 的 HOME 是 `examples`。
+      只影响两条窄路径：(a) 无人值守（CI / 定时 / nohup）忘了带 `--yes`；(b) Agent 代跑带 `human()` 的任务。
+      后果不是报错而是静默挂一小时，且 (b) 会反复撞（我们正拿 MiWorkflow 开发 MiWorkflow）。
+      **方案 0（已做）**：根 `AGENTS.md` 一条硬规则「无终端别跑带 `human()` 的任务，要跑就带 `--yes`」。
+      待定：**方案 1（约 10 行）** —— 内层 run 快速失败。`run.mjs` 起跑时 `AGENTFLOW_DEPTH + 1`；
+      `human()` 见「没终端 + 深度 ≥ 1 + 没 `--yes`」就不等，按 failed 直接返回，日志写「无人可批（内层 run）」。
+      深度是唯一能区分「旁边有人点 viewer」和「真没人」的判据（viewer 按钮起的 run 深度是 0，照旧等）。
+
+- [ ] **B5. `Core.md` §3 说 `.workflow/AGENTS.md` 是「给 AI 的入口」—— 这句要收紧**
+      实测：pi 只从 **cwd 往上**找 `AGENTS.md`（加全局 `~/.pi/agent/AGENTS.md`），**不找子目录**（pi README「Context Files」）。
+      而 `github_dev` 里 Agent 的 cwd 是**项目根**（`agent_cli.mjs` 用 `pkg.inputs.cwd`，`github_dev` 传 `git rev-parse --show-toplevel`），
+      `.workflow/` 是它的下一层 → 自动读不到。所以规则写在 `.workflow/AGENTS.md` 里，对「改项目代码的 Agent」是空转。
+      两个方向选一个：① §3 改成「只在 AI 的 cwd 落在 `.workflow/` 里或它下面时才自动读」（编辑 `.workflow/tasks/x.mjs` 的场景会命中）；
+      ② 让 `init` 在项目根放一个指向 `.workflow/AGENTS.md` 的 `AGENTS.md`。
+      顺带记一下现状：内核根这份 `AGENTS.md` 是 2026-09-29 新加的，C1 当时是用 `SKILL.md` 顶替它。
+      两者分工：`SKILL.md` 讲「怎么在业务项目里写任务」（`miworkflow skill` 打印、可链成技能）；
+      根 `AGENTS.md` 讲「在这个内核仓库里干活时的规矩」（cwd 在仓库根的 Agent 自动读）。
+
+- [ ] **B6. 父子 run 的身份边界（runId / HOME / 锁 / 日志目录）**
+      子 run 全套靠环境变量从父 run 继承，`run.mjs` 的 `AGENTFLOW_RUN_ID ??=` 只是其中一处：
+      内层 run 会沿用父 run 的 `runId`、HOME、锁与日志目录。这次因为 HOME 不同（`examples` vs `.workflow`）没出事；
+      HOME 相同就会**覆盖父 run 的 JSONL**。要讨论的是：run 的身份从哪来、哪些该继承哪些该重开。
+
 ## C. 初始工作流创建体验
 
 - [x] **C1. 补 `AGENTS.md`** —— 并入 B3：改为内核根的 `SKILL.md`，可链成技能（已写）
