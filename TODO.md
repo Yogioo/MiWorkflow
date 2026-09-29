@@ -7,10 +7,12 @@
 
 ## 推进顺序
 
-1. ✅ **B2 沉淀离开内核仓库**（已实现，见 `Core.md` §3、§14.1、§15）
-2. **C2 运行期 Agent 适配器**（已定放 `agents/`、choice 不由 core 校验，设计见 `Core.md` §19.2）
-3. **C4 首个真实工作流：Unity 跑测试 → 修 → 确认 → 提交**
-4. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
+1. ✅ **B2 沉淀离开内核仓库**（已实现，见 `Core.md` §3、§15）
+2. **B3 零配置使用**（已定，设计见 `Core.md` §19.3）—— 排在 C2 前：它改任务写法（import → 传参），
+   趁还没有真实任务改最便宜
+3. **C2 运行期 Agent 适配器**（已定放 `agents/`、choice 不由 core 校验，设计见 `Core.md` §19.2）
+4. **C4 首个真实工作流：Unity 跑测试 → 修 → 确认 → 提交**
+5. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
 B1 随 B2 消解，C3 降为参考示例。
 
@@ -88,6 +90,23 @@ B1 随 B2 消解，C3 降为参考示例。
         不改 import，但两层仓库嵌套，进化 commit 要进对仓库。
       选定后改 `Core.md` §3 / §14 / §15、README 快速开始、`tests/core.test.mjs`，需终端 `approve`。
 
+- [ ] **B3. 零配置使用：装一次，项目里什么都不用建** —— **2026-09-29 定**，设计见 `Core.md` §19.3
+      起因：B2 后业务项目仍要手建 `.workflow/`、写 `package.json`、`npm install`、`cd` 进去 `npx`。
+      讨论过的三种形态：每项目 npm 包（B2 现状，步骤最多）；技能形态（装一次、全靠 AI —— 否决：跑任务也得经过 AI，别扭）；
+      **全局命令 + 项目零配置（采纳）**：装 / 写 / 跑三件事分开，写可以交给 AI，跑不经过 AI。
+      实现清单：
+      - `run.mjs`：`mod.default({ script, agent, human })`；HOME 按 `AGENTFLOW_HOME` → 往上找 `.workflow/` → 报错；
+        解析出的 HOME 写回 `AGENTFLOW_HOME` 再加载 core；子命令 `new <name>`、`view`
+      - `package.json`：去掉 `exports` 与 `miworkflow-view`，`bin` 只剩 `miworkflow`
+      - `examples/`：任务改成传参写法
+      - viewer：`GET /api/tasks`（正则读 title，不 import）、`POST /api/run`（默认只收本机，`MIWORKFLOW_REMOTE_RUN=1` 放开；
+        预生成 runId；`AGENTFLOW_HUMAN=web`；输出落 `logs/<runId>.out.log`）；页面加任务列表与「运行」按钮
+      - `SKILL.md`（并入 C1）：写给 AI 的建任务说明
+      - 测试：往上找 HOME（子目录里能找到、找不到报错、env 优先）；`new` 建骨架且不覆盖；
+        传参调用；`/api/run` 拒绝非本机；示例不 import 内核
+      - 把 §19.3 折进 `Core.md` §3 / §5 / §7 / §9 / §15，README 重写用法
+      实测：`npm i -g` 装真 GitHub 地址后在一个空的 Unity 项目里走一遍 `new` → 跑 → 网页点运行。
+
 - [x] **B1. 「脚本测试放哪」没定死** —— 随 B2-① 消解：沉淀的测试放业务仓库 `.workflow/tests/`，不碰内核
       §8 要求「每个脚本配独立测试」，但 `guard.mjs` 的 `WRITABLE_DIRS` 只有
       `tasks/ scripts/ logs/ examples/` —— 给新脚本加测试会新增 `tests/` 文件，
@@ -96,7 +115,7 @@ B1 随 B2 消解，C3 降为参考示例。
 
 ## C. 初始工作流创建体验
 
-- [ ] **C1. 补 `AGENTS.md`**
+- [ ] **C1. 补 `AGENTS.md`** —— 并入 B3：改为内核根的 `SKILL.md`，可链成技能
       仓库现在没有面向编码 Agent 的规范文件，「创建初始工作流」只能现场喂
       `Core.md` + `examples/`。应写一份：怎么按 §2.4 拆（确定性 → `scripts/`，
       模糊 → 运行期 `agent()`）、只写沉淀区、不动内核、返回值契约（§6.1 / §6.2）。
@@ -212,5 +231,6 @@ MiCan 在真实使用里踩出来的需求。MiWorkflow 现在都没有，但**�
 
 - 不把上述任何自动化塞进内核（§16）；E 里标了「动内核」的，做之前单独拍板。
 - 不做画布 / 图形化编排：流程就是 JS（§2.8）。viewer 只渲染运行时 trace，不做「把 JS 画成可编辑的图」。
+- 不做 Unity 编辑器菜单启动（2026-09-29）：启动走终端或 viewer 的「运行」按钮就够，不往业务项目里装编辑器包。
 - 不做「打包成只读内核」：JS/Node 打包拦不住 Agent，真想物理隔离用只读挂载 + 可写卷，
   那是操作系统的事（§14.1 末尾）。
