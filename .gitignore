@@ -3,6 +3,10 @@ node_modules/
 # 运行记录：本地产物，不进版本库（§12）
 logs/
 
+# 本机自用工作流（拿 MiWorkflow 开发 MiWorkflow）：沉淀留在本机，不进内核仓库，
+# 保持「内核仓库里没有 tasks/、scripts/」的样子（§3、§15）。换机器重新 init 即可。
+.workflow/
+
 # 编辑器 / 系统
 .DS_Store
 Thumbs.db
