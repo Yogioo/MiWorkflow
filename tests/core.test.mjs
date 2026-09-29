@@ -223,7 +223,46 @@ test('agent：外部命令输出合契约 → 原样透传', async () => {
 
     assert.equal(r.status, 'need_human');
     assert.equal(r.choice, 'ask_human');
-    assert.equal(rows(runId)[0].say, '这事得人来拍板', 'say 取 reason（§13.1）');
+    const all = rows(runId);
+    assert.equal(all.at(-1).say, '这事得人来拍板', 'say 取 reason（§13.1）');
+    assert.equal(all[0].status, 'running', '开跑前先写 running 行（§13.1）');
+  } finally {
+    rmSync(fake.file, { force: true });
+    rmSync(logPath(runId), { force: true });
+  }
+});
+
+test('agent：先写带 events 的 running 行，结束后写带 ref 的终态行（§13.1、§13.5）', async () => {
+  const runId = uniq();
+  process.env.AGENTFLOW_TASK = 'unit';
+  process.env.AGENTFLOW_RUN_ID = runId;
+
+  const fake = writeFakeAgent('__test_agent_slow', [
+    'await new Promise((r) => setTimeout(r, 400));',
+    "process.stdout.write(JSON.stringify({ status: 'ok', choice: 'done', reason: '干完了' }));"
+  ].join('\n'));
+  try {
+    const { agent } = await import('../core.mjs');
+    const p = agent('把登录接口接好', { cmd: fake.cmd });
+
+    // 卡住时：running 行已经落盘，且带 events，viewer 据此先把过程按钮亮出来
+    let running;
+    for (let i = 0; i < 60; i++) {
+      await sleep(25);
+      running = rows(runId).find((r) => r.primitive === 'agent' && r.status === 'running');
+      if (running) break;
+    }
+    assert.ok(running, '动作结束前就应出现 running 行');
+    assert.match(running.events, new RegExp(`^${runId}/agent-\\d+\\.events\\.jsonl$`), 'running 行提前带 events');
+    assert.equal(running.say, '把登录接口接好', 'running 的 say 取 goal，不凭空编（§13.1）');
+
+    const r = await p;
+    assert.equal(r.status, 'ok');
+    const done = rows(runId).find((x) => x.primitive === 'agent' && x.status === 'ok');
+    assert.ok(done, '结束后应写终态行');
+    assert.equal(done.ref, running.seq, '终态行 ref 指回 running 行');
+    assert.equal(done.events, running.events, '终态行沿用同一条过程文件');
+    assert.equal(done.say, '干完了');
   } finally {
     rmSync(fake.file, { force: true });
     rmSync(logPath(runId), { force: true });
@@ -242,7 +281,7 @@ test('agent：输出缺 status / choice → failed，不补默认值（§6.2）'
 
     assert.equal(r.status, 'failed');
     assert.equal(r.choice, 'agent_bad_output');
-    assert.equal(rows(runId)[0].status, 'failed');
+    assert.equal(rows(runId).at(-1).status, 'failed');
   } finally {
     rmSync(fake.file, { force: true });
     rmSync(logPath(runId), { force: true });

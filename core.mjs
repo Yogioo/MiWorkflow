@@ -150,9 +150,26 @@ export async function agent(goal, opts = {}) {
   let choice;
   let reason;
   let data;
-  let events;
 
   const command = agentCommand(opts);
+
+  // 过程事件（§10.1、§13.6）：每次 agent 调用开跑前就分配好过程文件位置，
+  // 随 running 行一起给 viewer，过程按钮不必等终态。适配器会往里写归一事件；
+  // 自定义命令（opts.cmd）也可以写，不写就是空文件。覆盖继承来的 AGENTFLOW_AGENT_LOG，免得串到外层步骤。
+  let env = process.env;
+  let events;
+  if (command) {
+    const absBase = path.join(LOGS_DIR, rid(), `agent-${++agentCalls}`);
+    env = { ...process.env, AGENTFLOW_AGENT_LOG: absBase };
+    events = eventsRel(absBase);
+  }
+
+  // 进行中记录（§13.1）：动作已开始是既成事实，不是对结果的承诺。
+  // say 取 goal 本身（和 human 的 pending 取 prompt 同理），不凭空编「正在努力…」。
+  const runningSeq = command
+    ? log({ primitive: 'agent', name: 'agent', agent: command.agent, events, status: 'running', say: String(goal) })
+    : null;
+
   if (!command) {
     // 没配外部 Agent 时不假装思考：明确 failed，让任务自己决定怎么办（§6.2）
     status = 'failed';
@@ -160,13 +177,6 @@ export async function agent(goal, opts = {}) {
     reason = `未配置 Agent：设 AGENTFLOW_AGENT=pi|codex|cursor，或传 opts.agent / AGENTFLOW_AGENT_CMD；stub 收到 goal：${goal}`;
     data = {};
   } else {
-    // 适配器的提示词、原始输出、归一事件落进 logs/<runId>/agent-<n>.*（子目录，viewer 不当成运行）
-    let env = process.env;
-    if (command.agent) {
-      const base = `${rid()}/agent-${++agentCalls}`;
-      env = { ...process.env, AGENTFLOW_AGENT_LOG: path.join(LOGS_DIR, base) };
-      events = `${base}.events.jsonl`;
-    }
     const [bin, ...rest] = command.argv;
     const res = await run(bin, rest, JSON.stringify(pkg), (pkg.budget.timeoutSec + 5) * 1000, env);
     try {
@@ -196,6 +206,7 @@ export async function agent(goal, opts = {}) {
     name: 'agent',
     agent: command?.agent,
     events,
+    ref: runningSeq ?? undefined, // 指回进行中那条，viewer 据此判定步骤已结束（§13.5 的重放机制）
     status,
     choice,
     reason,
@@ -205,6 +216,11 @@ export async function agent(goal, opts = {}) {
   });
 
   return { status, choice, reason, data };
+}
+
+// events 一律记成相对 HOME logs/ 的路径（§12）：viewer 按 logs/<events> 拼文件
+function eventsRel(absBase) {
+  return path.relative(LOGS_DIR, absBase).split(path.sep).join('/') + '.events.jsonl';
 }
 
 // ── human（§6.3、§13.4、§13.5）────────────────────────────────────────────

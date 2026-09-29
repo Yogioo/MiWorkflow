@@ -12,6 +12,8 @@
          font:14px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
   header { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--line); }
   header h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.5px; }
+  .opt { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--dim); cursor:pointer; user-select:none; }
+  .opt input { accent-color:var(--run); margin:0; }
   #conn { margin-left:auto; font-size:12px; color:var(--dim); }
   main { display:grid; grid-template-columns:280px 1fr; height:calc(100vh - 49px); }
   aside { border-right:1px solid var(--line); overflow:auto; padding:8px; }
@@ -26,7 +28,12 @@
   .dot.waiting{background:var(--wait)} .dot.running{background:var(--run)}
   ol { list-style:none; margin:0; padding:0; }
   li { display:grid; grid-template-columns:48px 78px 1fr; gap:10px; padding:9px 0;
-       border-bottom:1px solid var(--line); align-items:start; }
+       border-bottom:1px solid var(--line); align-items:start; cursor:pointer; }
+  li.resolved .say { color:var(--dim); }
+  .chev { color:var(--dim); font-size:10px; margin-right:5px; }
+  .pill { font-size:10.5px; padding:1px 7px; border-radius:999px; margin-left:7px;
+          border:1px solid var(--line); color:var(--dim); vertical-align:1px; }
+  .pill.running { color:var(--run); border-color:#1c3a5c; }
   .sq { color:var(--dim); font:12px ui-monospace,Consolas,monospace; }
   .badge { font-size:11px; text-align:center; padding:2px 0; border-radius:5px;
            background:var(--panel); color:var(--dim); border:1px solid var(--line); }
@@ -73,6 +80,7 @@
 <body>
 <header>
   <h1>MiWorkflow</h1>
+  <label class="opt"><input type="checkbox" id="expandAll" /> 默认展开</label>
   <span id="conn">连接中…</span>
 </header>
 <main>
@@ -99,7 +107,36 @@ let cur = null;      // 当前 runId
 let offset = 0;      // 已读字节
 let records = [];
 const decided = new Set();
-const agentEvents = new Map(); // seq → { open, loading, items, error }：展开过的步骤，重画不丢
+const agentEvents = new Map(); // seq → { open, items, next, loading, error, done }：展开过的步骤，重画不丢
+const manual = new Map();      // seq → 手动展开(true)/收缩(false)；没点过的按全局默认
+
+// 「默认展开 / 默认收缩」（§13.6）：存 localStorage，刷新后仍生效
+const EXPAND_KEY = 'miworkflow.expand';
+const store = typeof localStorage !== 'undefined' ? localStorage : null;
+function readBool(key, dflt) { try { const v = store?.getItem(key); return v == null ? dflt : v === '1'; } catch { return dflt; } }
+function writeBool(key, v) { try { store?.setItem(key, v ? '1' : '0'); } catch { /* 隐私模式等，忽略 */ } }
+let expandAll = readBool(EXPAND_KEY, false); // 缺省收缩（§13.6）
+
+// 没手动点过就按全局默认；点过就尊重手动状态（§13.6）
+function isOpen(r) {
+  return r && r.seq != null && manual.has(r.seq) ? manual.get(r.seq) : expandAll;
+}
+
+function setExpandAll(v) {
+  expandAll = !!v;
+  writeBool(EXPAND_KEY, expandAll);
+  const box = $('#expandAll');
+  if (box) box.checked = expandAll;
+  renderTimeline();
+}
+
+// 终态行用 ref 指回进行中那条（§13.5 的重放机制）：被指过就不再是「进行中」
+function isResolved(seq) {
+  return records.some((r) => r.ref === seq);
+}
+function isActive(r) {
+  return r?.primitive === 'agent' && r.status === 'running' && !isResolved(r.seq);
+}
 
 function pendingList() {
   const pend = new Map();
@@ -264,10 +301,10 @@ function foldedHtml(rest, folded) {
 }
 
 function renderEvents(st) {
-  if (st.loading) return '<div class="evt-none">读取中…</div>';
   if (st.error) return `<div class="evt-none">读不到过程：${esc(st.error)}</div>`;
+  if (st.items == null) return '<div class="evt-none">读取中…</div>';
   const { lines, folded } = foldEvents(st.items);
-  if (!lines.length && !folded) return '<div class="evt-none">这一步还没有过程记录</div>';
+  if (!lines.length && !folded) return `<div class="evt-none">${st.done ? '这一步还没有过程记录' : '进行中…'}</div>`;
   const html = lines.map((l) => {
     if (l.kind === 'tool') {
       const res = l.result !== undefined ? resultBrief(l.result) : '';
@@ -286,30 +323,33 @@ function renderEvents(st) {
 function renderTimeline() {
   if (!records.length) { $('#timeline').innerHTML = '<li class="empty">等待中…</li>'; return; }
   $('#timeline').innerHTML = records.map((r) => {
+    const open = isOpen(r);
     const detail = [r.reason, r.error].filter(Boolean).join('\n');
     const meta = [r.name, r.status, r.durationMs != null ? r.durationMs + 'ms' : null, time(r.at)]
       .filter(Boolean).map(esc).join(' · ');
     const st = agentEvents.get(r.seq) ?? { open: false };
     const ev = r.events ? parseEventsPath(r.events) : null;
-    const evHtml = ev
+    // 过程按钮挂在 running 行（带 ref 的终态行不再重复一个按钮指同一份文件）
+    const evHtml = ev && r.ref == null
       ? `<div class="evt"><button data-ev="${r.seq}">过程 ${st.open ? '▾' : '▸'}</button>`
         + (st.open ? `<div class="evt-body">${renderEvents(st)}</div>` : '') + '</div>'
       : '';
-    return `<li>
+    const active = isActive(r);
+    return `<li class="row ${open ? 'open' : ''} ${r.status === 'running' && !active ? 'resolved' : ''}" data-seq="${r.seq ?? ''}">
       <span class="sq">${r.seq ?? ''}</span>
       <span class="badge ${esc(r.status ?? '')}">${esc(r.primitive ?? '')}</span>
       <div>
-        <div class="say">${esc(r.say ?? '')}</div>
+        <div class="say"><span class="chev">${open ? '▾' : '▸'}</span>${esc(r.say ?? '')}${r.status === 'running' ? `<span class="pill running">${active ? '进行中' : '已结束'}</span>` : ''}</div>
         <div class="meta">${meta}</div>
-        ${detail ? `<div class="detail">${esc(detail)}</div>` : ''}
-        ${evHtml}
+        ${open && detail ? `<div class="detail">${esc(detail)}</div>` : ''}
+        ${open ? evHtml : ''}
       </div>
     </li>`;
   }).join('');
 }
 
 async function select(id) {
-  cur = id; offset = 0; records = []; decided.clear(); agentEvents.clear();
+  cur = id; offset = 0; records = []; decided.clear(); agentEvents.clear(); manual.clear();
   renderRuns(); renderTimeline(); renderPending();
   await pump();
 }
@@ -324,6 +364,7 @@ async function pump() {
       records.push(...data.records);
       renderTimeline(); renderPending();
     }
+    await pollEvents(); // 展开着的「过程」跟着轮询长
     $('#conn').textContent = '已连接 · ' + new Date().toLocaleTimeString('zh-CN', { hour12:false });
   } catch {
     $('#conn').textContent = '连接断开';
@@ -341,27 +382,53 @@ async function tick() {
   }
 }
 
-// 点「过程 ▸」才拉事件；展开状态重画不丢，拉过一次就缓存
-async function toggleEvents(seq) {
-  const st = agentEvents.get(seq) ?? { open: false, items: null };
-  st.open = !st.open;
-  agentEvents.set(seq, st);
-  renderTimeline();
-  if (!st.open || st.items != null || st.loading) return;
+function evtState(seq) {
+  let st = agentEvents.get(seq);
+  if (!st) { st = { open: false, items: null, next: 0, loading: false, error: null, done: false }; agentEvents.set(seq, st); }
+  return st;
+}
+
+// 增量拉：服务端按字节吐 { next, items }，半行留到下次
+async function loadEvents(seq) {
+  const st = evtState(seq);
+  if (st.loading || st.error || st.done) return;
   const rec = records.find((r) => r.seq === seq);
   const target = rec ? parseEventsPath(rec.events) : null;
   if (!target) { st.error = 'events 字段不对'; renderTimeline(); return; }
   st.loading = true;
-  renderTimeline();
+  if (st.items == null) { st.items = []; renderTimeline(); }
   try {
-    const res = await fetch(`/api/run/${encodeURIComponent(target.runId)}/events/${encodeURIComponent(target.n)}`);
+    const from = st.next ?? 0;
+    const res = await fetch(`/api/run/${encodeURIComponent(target.runId)}/events/${encodeURIComponent(target.n)}?from=${from}`);
     if (!res.ok) throw new Error(String(res.status));
-    st.items = await res.json();
+    const data = await res.json();
+    st.next = data.next ?? from;
+    if (data.items?.length) st.items.push(...data.items);
   } catch (err) {
     st.error = String(err?.message ?? err);
   } finally {
     st.loading = false;
     renderTimeline();
+  }
+}
+
+// 点「过程 ▸」展开；状态重画不丢，已读的续读不重拉
+async function toggleEvents(seq) {
+  const st = evtState(seq);
+  st.open = !st.open;
+  renderTimeline();
+  if (st.open && st.items == null) await loadEvents(seq);
+}
+
+// 跟着 1 秒轮询刷新：进行中的步骤一直续读，到终态后再拉一次就停
+async function pollEvents() {
+  for (const [seq, st] of [...agentEvents]) {
+    if (!st.open || st.done || st.loading || st.error) continue;
+    const rec = records.find((r) => r.seq === seq);
+    if (!rec) continue;
+    const active = isActive(rec);
+    await loadEvents(seq);
+    if (!active) st.done = true;
   }
 }
 
@@ -383,9 +450,21 @@ document.addEventListener('click', async (e) => {
     return;
   }
   const item = e.target.closest('.run');
-  if (item && item.dataset.id !== cur) await select(item.dataset.id);
+  if (item && item.dataset.id !== cur) return select(item.dataset.id);
+  // 点整行展开 / 收起详情；点过程区（按钮、事件正文）不收起
+  const row = e.target.closest('li[data-seq]');
+  if (row && !e.target.closest('.evt')) {
+    const seq = Number(row.dataset.seq);
+    const rec = records.find((r) => r.seq === seq);
+    if (rec) { manual.set(seq, !isOpen(rec)); renderTimeline(); }
+  }
 });
 
+document.addEventListener('change', (e) => {
+  if (e.target?.id === 'expandAll') setExpandAll(e.target.checked);
+});
+
+$('#expandAll').checked = expandAll;
 setInterval(tick, 2000);
 setInterval(pump, 1000);
 tick();

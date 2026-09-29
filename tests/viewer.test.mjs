@@ -1,7 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -121,6 +121,31 @@ test('GET /api/run/<id>/events/<n>：坏行当 raw，不整段丢', async () => 
   assert.equal(list[1].payload, 'not json');
 });
 
+test('GET /api/run/<id>/events/<n>?from=N：半行留到下次，补全后增量取到新事件', async () => {
+  const dir = path.join(HOME, 'logs', 'evt-inc');
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'agent-1.events.jsonl');
+  // 第三行故意没写完（运行中文件会半行）
+  writeFileSync(file, '{"kind":"assistant","text":"a"}\n{"kind":"assistant","text":"b"}\n{"kind":"assist');
+
+  const r1 = await (await fetch(`${base}/api/run/evt-inc/events/1?from=0`)).json();
+  assert.deepEqual(r1.items.map((x) => x.text), ['a', 'b'], '半行不算数');
+
+  appendFileSync(file, 'ant","text":"c"}\n');
+  const r2 = await (await fetch(`${base}/api/run/evt-inc/events/1?from=${r1.next}`)).json();
+  assert.deepEqual(r2.items, [{ kind: 'assistant', text: 'c' }], '从字节偏移续读只吐新增');
+  assert.ok(r2.next > r1.next, 'next 往前走');
+
+  const r3 = await (await fetch(`${base}/api/run/evt-inc/events/1?from=${r2.next}`)).json();
+  assert.deepEqual(r3, { next: r2.next, items: [] }, '没新内容就吐空，不重复');
+});
+
+test('GET /api/run/<id>/events/<n>?from=N：文件不存在 → 空且稳', async () => {
+  const res = await fetch(`${base}/api/run/no-such-run/events/9?from=0`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { next: 0, items: [] });
+});
+
 // index.html 的渲染逻辑（纯函数，无依赖）：agent 过程渲染成人话，刷屏的原始事件折叠且有上限
 const loadPage = () => {
   const code = readFileSync(path.join(ROOT, 'viewer', 'index.html'), 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
@@ -128,7 +153,8 @@ const loadPage = () => {
   const ctx = {
     document: { addEventListener() {}, querySelector: el, getElementById: el },
     fetch: async () => ({ ok: true, json: async () => [] }),
-    setInterval: () => 0
+    setInterval: () => 0,
+    localStorage: { store: {}, getItem(k) { return this.store[k] ?? null; }, setItem(k, v) { this.store[k] = String(v); } }
   };
   vm.createContext(ctx);
   vm.runInContext(code, ctx);
@@ -156,6 +182,23 @@ test('index.html：agent 过程渲染成人话，原始 / 流式事件折叠且�
   assert.ok(out.includes('✖ &lt;炸了&gt;'), 'error 行且转义');
   assert.ok(out.includes('另有 25000 条流式 / 原始事件'), 'outcome / raw 折进 details');
   assert.ok(out.length < 60_000, `原始事件不该整段塞进 HTML（events.jsonl 会上到 10MB）：${out.length}`);
+});
+
+test('index.html：默认收缩，手动状态优先于全局默认（§13.6）', () => {
+  const ctx = loadPage();
+  const isOpen = (seq) => vm.runInContext('isOpen', ctx)({ seq });
+  const setExpandAll = (v) => vm.runInContext('setExpandAll', ctx)(v);
+
+  assert.equal(isOpen(1), false, '缺省收缩');
+
+  vm.runInContext('manual', ctx).set(1, true);
+  assert.equal(isOpen(1), true, '手动点过就展开');
+
+  vm.runInContext('manual', ctx).set(2, false);
+  setExpandAll(true);
+  assert.equal(isOpen(2), false, '手动收缩的行不跟默认走');
+  assert.equal(isOpen(3), true, '没手动点过的行跟随全局默认');
+  assert.equal(ctx.localStorage.store['miworkflow.expand'], '1', '选择落 localStorage');
 });
 
 test('GET /api/run/<id>/events/<n>：坏 id / 越界路径 → 400', async () => {

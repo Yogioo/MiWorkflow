@@ -80,17 +80,26 @@ function listRuns() {
 }
 
 // Agent 过程（§10.1）：logs/<runId>/agent-<n>.events.jsonl，一行一个归一事件。
-// 文件还没生成 / 步骤还在跑 → 空数组，不报错。坏行当 raw，不整段丢。
-function readEvents(file) {
-  let text;
+// 文件可能还没建 / 正在长 / 半行：只吃完整行，读不到就当没有。坏行当 raw，不整段丢。
+function sliceEvents(file, from) {
+  let buf;
   try {
-    text = readFileSync(file, 'utf8');
+    buf = readFileSync(file);
   } catch {
-    return [];
+    return { next: 0, items: [] }; // 步骤还没开始写（含刚建就没了）
   }
-  return text.split('\n').filter(Boolean).map((line) => {
+  if (from >= buf.length) return { next: buf.length, items: [] };
+
+  const text = buf.subarray(from).toString('utf8');
+  const nl = text.lastIndexOf('\n');
+  if (nl === -1) return { next: from, items: [] }; // 最后一行没写完，留到下次
+
+  const usable = text.slice(0, nl);
+  const consumed = Buffer.byteLength(usable, 'utf8') + 1;
+  const items = usable.split('\n').filter(Boolean).map((line) => {
     try { return JSON.parse(line); } catch { return { kind: 'raw', payload: line }; }
   });
+  return { next: from + consumed, items };
 }
 
 // 增量切片：只吃完整行，最后一行没写完就留到下次
@@ -196,7 +205,8 @@ const server = http.createServer(async (req, res) => {
       return json(res, sliceRun(m[1], from));
     }
 
-    // Agent 某一步的过程（只读）：runId 过 SAFE_ID、n 纯数字，拼出的路径必须还在 LOGS 内
+    // Agent 某一步的过程（只读）：runId 过 SAFE_ID、n 纯数字，拼出的路径必须还在 LOGS 内。
+    // 带 from 按字节增量吐 { next, items }；不带 from 吐全量数组（兼容老调用）。
     const me = route.match(/^\/api\/run\/([^/]+)\/events\/([^/]+)$/);
     if (req.method === 'GET' && me) {
       if (!SAFE_ID.test(me[1]) || !/^\d+$/.test(me[2])) return json(res, { error: 'bad_id' }, 400);
@@ -204,7 +214,10 @@ const server = http.createServer(async (req, res) => {
       if (!path.resolve(file).startsWith(path.resolve(LOGS) + path.sep)) {
         return json(res, { error: 'bad_id' }, 400); // 目录穿越（runId 里的 ..）
       }
-      return json(res, readEvents(file));
+      const fromParam = url.searchParams.get('from');
+      if (fromParam == null) return json(res, sliceEvents(file, 0).items);
+      const from = Math.max(0, Number(fromParam) || 0);
+      return json(res, sliceEvents(file, from));
     }
 
     if (req.method === 'POST' && route === '/api/decide') {

@@ -472,7 +472,8 @@ runner 层从 exec-review 技能复制起步，之后**独立演进**，不回�
 - **过程**：各家事件流统一成同一种形状（`agents/normalize-event.mjs`），翻成人话写 stderr（core 已透传到终端）：
   `· <工具> <参数>`、`» <说了什么>`、`✖ <错误>`。
   提示词、原始输出、统一后的事件落在 HOME `logs/<runId>/agent-<n>.{prompt.md,log,events.jsonl,out.txt}`
-  （子目录，viewer 不当成一次运行）；`agent` 那条日志用 `events` 字段指过去 —— 这顺带就是 E3「长任务过程留痕」的底子。
+  （子目录，viewer 不当成一次运行）；core 开跑前就给每次 `agent()` 分配好这个位置，写进日志的 `events` 字段
+  （§13.1 的进行中记录）—— 适配器会往里写，自定义命令（`opts.cmd`）也可以不写。这顺带就是 E3「长任务过程留痕」的底子。
 - **会话**：runner 层自带续会话能力表（pi 有就续没有就建、codex 只能续、cursor 不支持就报错）。
   v1.7 **不开放**，以后按需接 `inputs.session`。
 - **预算**：只有 `timeoutSec` 真生效 —— 适配器到点杀整棵进程树，core 在 `timeoutSec + 5` 秒兜底；
@@ -523,7 +524,7 @@ JSONL 最小字段：
 }
 ```
 
-`agent` / `events` 只出现在走内核适配器的 `agent` 记录上（§10.1）：进化时才看得出「哪个模型在哪类任务上老失败」，
+`agent` / `events` 只出现在 `agent` 记录上：`agent` 仅在走内核适配器时带上；`events` 在每次有外部命令的 `agent` 调用上都带（开跑前的进行中记录也带），指向 core 预先分配的过程文件，适配器往里写归一事件（§10.1、§13.1）。进化时才看得出「哪个模型在哪类任务上老失败」，
 复盘时能展开 Agent 每一步。
 
 原则：
@@ -532,7 +533,7 @@ JSONL 最小字段：
 - 人可读、可复盘，人与 AI 据此共同迭代（UI 在外部，内核不内置）
 - 每条记录带 `say`：一句话人话，规则见 §13
 - 一次运行一个 `runId`，三个原语共用，可按运行复盘
-- `seq` 在本次运行内单调递增，是稳定 key；`ref` 指向被解决的那条 `pending` 记录
+- `seq` 在本次运行内单调递增，是稳定 key；`ref` 指向被解决的那条进行中记录（`human` 的 `pending` / `agent` 的 `running`，§13.1）
 - `primitive: 'run'` 的两条记录（开始 / 结束）由 `run.mjs` 写，`title` 只出现在这里
 - 任务锁落在 `logs/<task>.lock`（占用标记，不是日志、不进 Git），约定见 §9
 - 不引入错误指纹
@@ -557,13 +558,18 @@ JSONL 最小字段：
 | 原语 | `say` 从哪来 |
 |---|---|
 | `script` | 脚本可选返回；缺省由 core 回落为 `<name>: <status>` |
-| `agent` | 取 Agent 已有的 `reason` |
+| `agent` | 终态取 Agent 已有的 `reason`；进行中取 `goal` 本身 |
 | `human` | 就是 `prompt` 本身 |
 
 三条硬规则：
 
 1. **动作发生后才写**，陈述已发生的事实，不是计划、不是承诺。
-2. **不许凭空手写**：`say` 只能由动作结果翻译而来（脚本返回 / `reason` / `prompt`）；禁止在任务文件里写 `say('正在努力…')`。
+   边界：**进行中记录**（`status:'running'` / `'pending'`）写的是「动作已经开始」这一既成事实，
+   不是对结果的承诺。`human` 的 `pending`（§13.5）与 `agent` 的 `running` 都属此类：
+   开跑前先写一条，带上此时已能算出的字段（如 `agent` 的 `events`），结束后再写一条带 `ref` 指回它的终态行。
+2. **不许凭空手写**：`say` 只能由动作结果或动作输入翻译而来（脚本返回 / `reason` / `prompt` / `goal`）；
+   禁止在任务文件里写 `say('正在努力…')`。进行中记录优先用输入的 `goal` 摘要，
+   编不出人话就不写 `say`，只留 `status:'running'` 由前端显示「进行中」。
 3. 一句话，不懂技术的人也能看懂。
 
 ### 13.2 实时
@@ -621,11 +627,11 @@ human() 写一条 status:'pending' 记录，阻塞
 `viewer/` 是仓库里的外部工具，不是内核（§16）：
 
 ```text
-viewer/serve.mjs    零依赖静态服务 + 五个只读接口 + 两个写接口
-viewer/index.html   单文件视图：任务列表与运行按钮 / run 列表 / trace 时间线 / 待决定卡片
+viewer/serve.mjs    零依赖静态服务 + 六个只读接口 + 两个写接口
+viewer/index.html   单文件视图：任务列表与运行按钮 / run 列表 / 可折叠 trace 时间线 / 待决定卡片
 ```
 
-接口只有七个：
+接口只有八个：
 
 | 接口 | 作用 |
 |---|---|
@@ -633,17 +639,22 @@ viewer/index.html   单文件视图：任务列表与运行按钮 / run 列表 /
 | `POST /api/run` | `{ task, args? }` 起 `run.mjs <task> --key=value…`：预先生成 `runId` 回给页面直接跳过去；子进程 `AGENTFLOW_HUMAN=web`（审批走同一页面）；stdout/stderr 落 `logs/<runId>.out.log` |
 | `GET /api/runs` | 列出 run：标题、状态、待决定数 |
 | `GET /api/run/<id>?from=N` | 从第 N 字节起吐日志，只吐完整行；日志还没生成就吐空 |
+| `GET /api/run/<id>/events/<n>?from=N` | Agent 某一步的过程事件；带 `from` 按字节增量吐 `{ next, items }`（半行 / 文件没建都稳），不带 `from` 吐全量数组（§10.1） |
 | `POST /api/decide` | 写决定文件（§13.5） |
 | `GET /health` | 存活探针，给反代 / 脚本用 |
 | `GET /` | 视图页 |
 
-三个刻意的选择：
+几个刻意的选择：
 
 - **实时靠 1 秒轮询 + 字节偏移增量拉取，不用 SSE。** 反代零坑，断线重连天然正确，
-  最后一行没写完就留到下次（服务端只吐完整行）。
+  最后一行没写完就留到下次（服务端只吐完整行）。`agent` 的进行中记录开跑前就写、提前带 `events`，
+  所以「过程 ▸」一开始就能点；展开的过程跟着同一个轮询按字节续读，步骤到终态就停。
 - **服务端零业务判断。** 待决定状态由前端重放日志算出（`pending` 没被 `ref` 解决掉就算待决定）。
   同一任务在跑时按钮置灰也是前端从 run 列表算的，只是提示，不是占用机制（被杀掉的 run 会一直显示在跑，
   所以点了只再确认一次，不拦）。
+- **每条 trace 默认收缩成一行**（`badge` + `say` + 时间 / 耗时），点击整行才展开 `reason` / `error` / 过程；
+  头部一个「默认展开」勾选框（存 `localStorage`，刷新仍生效）。没手动点过的行跟随全局默认，
+  手动点过的行尊重手动状态。
 - **`POST /api/run` 默认只收本机请求。** viewer 默认监听 `0.0.0.0`，局域网的人只能看和审批；
   能起任务就等于能起全权限 Agent，要放开得显式设 `MIWORKFLOW_REMOTE_RUN=1`。
 
