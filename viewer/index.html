@@ -406,7 +406,8 @@ async function loadEvents(seq) {
     if (!res.ok) throw new Error(String(res.status));
     const data = await res.json();
     st.next = data.next ?? from;
-    if (data.items?.length) st.items.push(...data.items);
+    // 用 concat 而不是 push(...)：一次能拉回上万条，spread 参数会爆栈（events.jsonl 上 10MB）
+    if (data.items?.length) st.items = st.items.concat(data.items);
   } catch (err) {
     st.error = String(err?.message ?? err);
   } finally {

@@ -219,6 +219,19 @@ test('index.html：「进行中 / 已结束」只标在 agent 的进行中行上
   assert.ok(html.includes('已结束'), '被 ref 指回的 agent 行显示「已结束」');
 });
 
+test('index.html：过程一次拉回上万条也不炸（events.jsonl 能上 10MB）', async () => {
+  const ctx = loadPage();
+  const big = Array.from({ length: 100_000 }, (_, i) => ({ kind: 'raw', i }));
+  ctx.fetch = async () => ({ ok: true, json: async () => ({ next: 1234, items: big }) });
+  vm.runInContext("records = [{ seq: 1, primitive: 'agent', status: 'running', events: 'r/agent-1.events.jsonl' }]", ctx);
+
+  await vm.runInContext('toggleEvents(1)', ctx);
+  const st = vm.runInContext('agentEvents.get(1)', ctx);
+  assert.equal(st.error, null, '不该因为一次拉太多而报错');
+  assert.equal(st.items.length, 100_000, '一次拉回的事件照单全收');
+  assert.equal(st.next, 1234, '字节偏移往前走');
+});
+
 test('GET /api/run/<id>/events/<n>：坏 id / 越界路径 → 400', async () => {
   // runId 里的 ..（%2f 绕过 URL 归一）必须被拦，否则会读出 LOGS 外
   assert.equal((await fetch(`${base}/api/run/..%2fevents/1`)).status, 400);
