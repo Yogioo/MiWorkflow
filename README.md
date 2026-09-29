@@ -14,8 +14,24 @@ Agent 工作流极简方案 —— **确定性外壳 + 智能内核 + 受控进�
 零依赖，Node.js 18+。每台机器装一次全局命令：
 
 ```bash
-npm i -g github:Yogioo/MiWorkflow     # 改内核时：在内核目录 npm link
+npm i -g github:Yogioo/MiWorkflow
 ```
+
+### 开发机：用本地内核（npm link）
+
+要改内核，就不装 GitHub 上的那份，把全局命令链到本地克隆：
+
+```bash
+git clone git@github.com:Yogioo/MiWorkflow.git
+cd MiWorkflow
+npm link                  # 全局 miworkflow → 这个目录
+```
+
+之后在任何项目里跑 `miworkflow`，用的都是这份源码：改完直接生效，不用重装。
+
+- 确认链上了：`npm ls -g miworkflow` 显示 `-> <本地路径>`
+- 取消：`npm unlink -g miworkflow`，再按上面的方式装 GitHub 版
+- Windows 控制台中文乱码：先 `chcp 65001`
 
 ## 在项目里用
 
