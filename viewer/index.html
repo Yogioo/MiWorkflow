@@ -37,6 +37,18 @@
   .say { font-size:14.5px; }
   .meta { color:var(--dim); font-size:11.5px; margin-top:3px; font-family:ui-monospace,Consolas,monospace; }
   .detail { color:var(--dim); font-size:12px; margin-top:4px; white-space:pre-wrap; }
+  .evt { margin-top:6px; }
+  .evt button { padding:1px 8px; font-size:11.5px; background:transparent; color:var(--dim); border-color:var(--line); }
+  .evt button:hover { color:var(--fg); }
+  .evt-body { margin:6px 0 2px 4px; padding:2px 0 2px 10px; border-left:2px solid var(--line); font-size:12.5px; }
+  .evt-body .line { white-space:pre-wrap; word-break:break-word; }
+  .evt-body .l-res, .evt-body .l-thinking, .evt-body .evt-none { color:var(--dim); }
+  .evt-body .l-thinking { font-style:italic; }
+  .evt-body .l-error { color:var(--bad); }
+  .evt-body details { color:var(--dim); margin-top:4px; }
+  .evt-body summary { cursor:pointer; font-size:11.5px; }
+  .evt-body pre { margin:4px 0 0; padding:6px 8px; background:var(--bg); border:1px solid var(--line);
+                  border-radius:6px; overflow:auto; max-height:220px; font-size:11px; }
   .card { border:1px solid #4a3a12; background:#1e1a0e; border-radius:10px; padding:14px 16px; margin-bottom:16px; }
   .card h3 { margin:0 0 6px; font-size:12.5px; color:var(--wait); font-weight:600; }
   .card p { margin:0 0 12px; font-size:15px; }
@@ -87,6 +99,7 @@ let cur = null;      // 当前 runId
 let offset = 0;      // 已读字节
 let records = [];
 const decided = new Set();
+const agentEvents = new Map(); // seq → { open, loading, items, error }：展开过的步骤，重画不丢
 
 function pendingList() {
   const pend = new Map();
@@ -171,12 +184,117 @@ function renderPending() {
     </div>`).join('');
 }
 
+// ── Agent 过程（§10.1）：events 指回 logs/<runId>/agent-<n>.events.jsonl，点开才拉 ──
+const clip = (s, n) => {
+  const t = String(s ?? '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n - 1) + '…' : t;
+};
+
+// events 字段："<runId>/agent-<n>.events.jsonl"
+function parseEventsPath(p) {
+  const m = String(p ?? '').match(/^(.*)\/agent-(\d+)\.events\.jsonl$/);
+  return m ? { runId: m[1], n: m[2] } : null;
+}
+
+function argBrief(args) {
+  if (args == null) return '';
+  if (typeof args !== 'object') return clip(args, 100);
+  const what = args.command ?? args.path ?? args.file_path ?? args.pattern ?? args.query ?? args.url ?? args.description;
+  if (what != null) return clip(Array.isArray(what) ? what.join(' ') : what, 100);
+  try { return clip(JSON.stringify(args), 100); } catch { return ''; }
+}
+
+function resultBrief(result) {
+  if (result == null) return '';
+  if (typeof result !== 'object') return clip(result, 140);
+  const bits = [];
+  if (result.exit_code != null || result.exitCode != null) bits.push('exit ' + (result.exit_code ?? result.exitCode));
+  const text = result.output ?? result.stdout ?? result.text ?? result.content ?? result.error;
+  if (text != null) bits.push(Array.isArray(text) ? text.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ') : String(text));
+  return bits.length ? clip(bits.join(' · '), 160) : '';
+}
+
+// 同一次工具调用的 start / done 合成一行；其余（outcome / raw / *_partial）折不刷屏
+function foldEvents(items) {
+  const lines = [];
+  const byCall = new Map();
+  let folded = 0;
+  for (const ev of Array.isArray(items) ? items : []) {
+    const kind = String(ev?.kind ?? 'raw');
+    if (kind === 'tool') {
+      // 有 callId 就按调用配对；没有（有些 CLI 不给）就把同名工具的上一条当同一次
+      const key = ev.callId || `name:${ev.toolName ?? 'tool'}`;
+      const hit = byCall.get(key);
+      if (ev.phase === 'done' && hit) {
+        if (ev.result !== undefined) hit.result = ev.result;
+        continue;
+      }
+      const line = { kind: 'tool', toolName: ev.toolName ?? 'tool', args: ev.args, result: ev.phase === 'done' ? ev.result : undefined };
+      byCall.set(key, line);
+      lines.push(line);
+    } else if (kind === 'assistant' || kind === 'thinking' || kind === 'error') {
+      if (ev.text) lines.push({ kind, text: ev.text });
+    } else {
+      folded++;
+    }
+  }
+  return { lines, folded };
+}
+
+// 流式 / 原始事件一次 agent 能出上万条（events.jsonl 上到 10MB），HTML 里只塞末尾一小截，
+// 否则 renderTimeline 的 innerHTML 直接卡死；完整原文在 logs/<runId>/agent-<n>.events.jsonl。
+const PRE_MAX = 200;
+const PRE_CHARS = 20000;
+
+function foldedHtml(rest, folded) {
+  if (!folded) return '';
+  const tail = rest.slice(-PRE_MAX);
+  const lines = [];
+  let chars = 0;
+  for (const ev of tail) {
+    let line;
+    try { line = JSON.stringify(ev) ?? String(ev); } catch { line = '[无法序列化]'; }
+    if (chars + line.length > PRE_CHARS) break;
+    chars += line.length;
+    lines.push(line);
+  }
+  const cut = folded > lines.length ? `（只示末尾 ${lines.length} 条）` : '';
+  return `<details><summary>另有 ${folded} 条流式 / 原始事件${cut}</summary>`
+    + `<pre>${esc(lines.join('\n'))}</pre></details>`;
+}
+
+function renderEvents(st) {
+  if (st.loading) return '<div class="evt-none">读取中…</div>';
+  if (st.error) return `<div class="evt-none">读不到过程：${esc(st.error)}</div>`;
+  const { lines, folded } = foldEvents(st.items);
+  if (!lines.length && !folded) return '<div class="evt-none">这一步还没有过程记录</div>';
+  const html = lines.map((l) => {
+    if (l.kind === 'tool') {
+      const res = l.result !== undefined ? resultBrief(l.result) : '';
+      return `<div class="line">· ${esc(l.toolName)} ${esc(argBrief(l.args))}`
+        + (res ? `<div class="line l-res">→ ${esc(res)}</div>` : '') + '</div>';
+    }
+    if (l.kind === 'assistant') return `<div class="line">» ${esc(clip(l.text, 2000))}</div>`;
+    if (l.kind === 'thinking') return `<div class="line l-thinking">… ${esc(clip(l.text, 1000))}</div>`;
+    return `<div class="line l-error">✖ ${esc(clip(l.text, 2000))}</div>`;
+  }).join('');
+  const rest = (Array.isArray(st.items) ? st.items : [])
+    .filter((ev) => !['tool', 'assistant', 'thinking', 'error'].includes(String(ev?.kind ?? 'raw')));
+  return html + foldedHtml(rest, folded);
+}
+
 function renderTimeline() {
   if (!records.length) { $('#timeline').innerHTML = '<li class="empty">等待中…</li>'; return; }
   $('#timeline').innerHTML = records.map((r) => {
     const detail = [r.reason, r.error].filter(Boolean).join('\n');
     const meta = [r.name, r.status, r.durationMs != null ? r.durationMs + 'ms' : null, time(r.at)]
       .filter(Boolean).map(esc).join(' · ');
+    const st = agentEvents.get(r.seq) ?? { open: false };
+    const ev = r.events ? parseEventsPath(r.events) : null;
+    const evHtml = ev
+      ? `<div class="evt"><button data-ev="${r.seq}">过程 ${st.open ? '▾' : '▸'}</button>`
+        + (st.open ? `<div class="evt-body">${renderEvents(st)}</div>` : '') + '</div>'
+      : '';
     return `<li>
       <span class="sq">${r.seq ?? ''}</span>
       <span class="badge ${esc(r.status ?? '')}">${esc(r.primitive ?? '')}</span>
@@ -184,13 +302,14 @@ function renderTimeline() {
         <div class="say">${esc(r.say ?? '')}</div>
         <div class="meta">${meta}</div>
         ${detail ? `<div class="detail">${esc(detail)}</div>` : ''}
+        ${evHtml}
       </div>
     </li>`;
   }).join('');
 }
 
 async function select(id) {
-  cur = id; offset = 0; records = []; decided.clear();
+  cur = id; offset = 0; records = []; decided.clear(); agentEvents.clear();
   renderRuns(); renderTimeline(); renderPending();
   await pump();
 }
@@ -222,7 +341,33 @@ async function tick() {
   }
 }
 
+// 点「过程 ▸」才拉事件；展开状态重画不丢，拉过一次就缓存
+async function toggleEvents(seq) {
+  const st = agentEvents.get(seq) ?? { open: false, items: null };
+  st.open = !st.open;
+  agentEvents.set(seq, st);
+  renderTimeline();
+  if (!st.open || st.items != null || st.loading) return;
+  const rec = records.find((r) => r.seq === seq);
+  const target = rec ? parseEventsPath(rec.events) : null;
+  if (!target) { st.error = 'events 字段不对'; renderTimeline(); return; }
+  st.loading = true;
+  renderTimeline();
+  try {
+    const res = await fetch(`/api/run/${encodeURIComponent(target.runId)}/events/${encodeURIComponent(target.n)}`);
+    if (!res.ok) throw new Error(String(res.status));
+    st.items = await res.json();
+  } catch (err) {
+    st.error = String(err?.message ?? err);
+  } finally {
+    st.loading = false;
+    renderTimeline();
+  }
+}
+
 document.addEventListener('click', async (e) => {
+  const evBtn = e.target.closest('button[data-ev]');
+  if (evBtn) return toggleEvents(Number(evBtn.dataset.ev));
   const go = e.target.closest('button[data-run]');
   if (go) return runTask(go);
   const btn = e.target.closest('button[data-seq]');

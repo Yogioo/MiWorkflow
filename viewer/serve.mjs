@@ -79,6 +79,20 @@ function listRuns() {
   return out.sort((a, b) => b.mtime - a.mtime);
 }
 
+// Agent 过程（§10.1）：logs/<runId>/agent-<n>.events.jsonl，一行一个归一事件。
+// 文件还没生成 / 步骤还在跑 → 空数组，不报错。坏行当 raw，不整段丢。
+function readEvents(file) {
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  return text.split('\n').filter(Boolean).map((line) => {
+    try { return JSON.parse(line); } catch { return { kind: 'raw', payload: line }; }
+  });
+}
+
 // 增量切片：只吃完整行，最后一行没写完就留到下次
 function sliceRun(runId, from) {
   const file = path.join(LOGS, `${runId}.jsonl`);
@@ -180,6 +194,17 @@ const server = http.createServer(async (req, res) => {
       if (!SAFE_ID.test(m[1])) return json(res, { error: 'bad_id' }, 400);
       const from = Math.max(0, Number(url.searchParams.get('from') ?? 0) || 0);
       return json(res, sliceRun(m[1], from));
+    }
+
+    // Agent 某一步的过程（只读）：runId 过 SAFE_ID、n 纯数字，拼出的路径必须还在 LOGS 内
+    const me = route.match(/^\/api\/run\/([^/]+)\/events\/([^/]+)$/);
+    if (req.method === 'GET' && me) {
+      if (!SAFE_ID.test(me[1]) || !/^\d+$/.test(me[2])) return json(res, { error: 'bad_id' }, 400);
+      const file = path.join(LOGS, me[1], `agent-${me[2]}.events.jsonl`);
+      if (!path.resolve(file).startsWith(path.resolve(LOGS) + path.sep)) {
+        return json(res, { error: 'bad_id' }, 400); // 目录穿越（runId 里的 ..）
+      }
+      return json(res, readEvents(file));
     }
 
     if (req.method === 'POST' && route === '/api/decide') {

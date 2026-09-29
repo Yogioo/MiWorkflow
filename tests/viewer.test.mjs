@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 
 // viewer 的任务列表与运行按钮（§13.6）：真起 serve.mjs，HOME 是临时目录
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -80,6 +81,89 @@ test('GET /api/run/<id>：日志还没生成 → 空，不报错', async () => {
   const res = await fetch(`${base}/api/run/not-yet`);
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { next: 0, records: [] });
+});
+
+// ── Agent 过程（§10.1）：viewer 展开某一步读 events.jsonl ──
+const events = [
+  { kind: 'tool', t: 1, callId: 'c1', phase: 'start', toolName: 'shell', args: { command: 'ls -a' } },
+  { kind: 'assistant', t: 2, text: '看完了，开始改' },
+  { kind: 'thinking', t: 3, text: '先读文件' },
+  { kind: 'tool', t: 4, callId: 'c1', phase: 'done', toolName: 'shell', result: { exit_code: 0, output: 'a b' } },
+  { kind: 'error', t: 5, text: '炸了' }
+];
+
+function writeEvents(runId, n, list) {
+  mkdirSync(path.join(HOME, 'logs', runId), { recursive: true });
+  writeFileSync(path.join(HOME, 'logs', runId, `agent-${n}.events.jsonl`),
+    list.map((e) => JSON.stringify(e)).join('\n') + '\n');
+}
+
+test('GET /api/run/<id>/events/<n>：返回写进 logs/<runId>/ 的事件', async () => {
+  writeEvents('evt-run', 1, events);
+  const res = await fetch(`${base}/api/run/evt-run/events/1`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), events);
+});
+
+test('GET /api/run/<id>/events/<n>：文件不存在 → []，不报错', async () => {
+  const res = await fetch(`${base}/api/run/still-running/events/2`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), []);
+});
+
+test('GET /api/run/<id>/events/<n>：坏行当 raw，不整段丢', async () => {
+  mkdirSync(path.join(HOME, 'logs', 'evt-partial'), { recursive: true });
+  writeFileSync(path.join(HOME, 'logs', 'evt-partial', 'agent-3.events.jsonl'),
+    '{"kind":"assistant","text":"在"}\nnot json\n');
+  const list = await (await fetch(`${base}/api/run/evt-partial/events/3`)).json();
+  assert.deepEqual(list[0], { kind: 'assistant', text: '在' });
+  assert.equal(list[1].kind, 'raw');
+  assert.equal(list[1].payload, 'not json');
+});
+
+// index.html 的渲染逻辑（纯函数，无依赖）：agent 过程渲染成人话，刷屏的原始事件折叠且有上限
+const loadPage = () => {
+  const code = readFileSync(path.join(ROOT, 'viewer', 'index.html'), 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+  const el = () => ({ innerHTML: '', textContent: '', dataset: {} });
+  const ctx = {
+    document: { addEventListener() {}, querySelector: el, getElementById: el },
+    fetch: async () => ({ ok: true, json: async () => [] }),
+    setInterval: () => 0
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx);
+  return ctx;
+};
+
+test('index.html：agent 过程渲染成人话，原始 / 流式事件折叠且不刷屏', () => {
+  const ctx = loadPage();
+  const raw = Array.from({ length: 25000 }, (_, i) => ({ kind: 'raw', t: i, payload: { i } }));
+  const out = vm.runInContext('renderEvents', ctx)({
+    open: true,
+    items: [
+      { kind: 'tool', callId: 'c1', phase: 'start', toolName: 'shell', args: { command: 'ls -a' } },
+      { kind: 'assistant', text: '看完了' },
+      { kind: 'thinking', text: '先读文件' },
+      { kind: 'tool', callId: 'c1', phase: 'done', toolName: 'shell', result: { exit_code: 0, output: 'a b' } },
+      { kind: 'error', text: '<炸了>' },
+      ...raw
+    ]
+  });
+  assert.ok(out.includes('· shell ls -a'), '工具行');
+  assert.ok(out.includes('→ exit 0 · a b'), 'start / done 合成一行，带结果摘要');
+  assert.ok(out.includes('» 看完了'), 'assistant 行');
+  assert.ok(out.includes('… 先读文件'), 'thinking 行');
+  assert.ok(out.includes('✖ &lt;炸了&gt;'), 'error 行且转义');
+  assert.ok(out.includes('另有 25000 条流式 / 原始事件'), 'outcome / raw 折进 details');
+  assert.ok(out.length < 60_000, `原始事件不该整段塞进 HTML（events.jsonl 会上到 10MB）：${out.length}`);
+});
+
+test('GET /api/run/<id>/events/<n>：坏 id / 越界路径 → 400', async () => {
+  // runId 里的 ..（%2f 绕过 URL 归一）必须被拦，否则会读出 LOGS 外
+  assert.equal((await fetch(`${base}/api/run/..%2fevents/1`)).status, 400);
+  assert.equal((await fetch(`${base}/api/run/bad%20id/events/1`)).status, 400);
+  assert.equal((await fetch(`${base}/api/run/evt-run/events/1a`)).status, 400);
+  assert.equal((await fetch(`${base}/api/run/evt-run/events/-1`)).status, 400);
 });
 
 test('POST /api/run：非本机请求 → 403', async (t) => {
