@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 const KERNEL = path.dirname(fileURLToPath(import.meta.url));
+const VERSION = JSON.parse(readFileSync(path.join(KERNEL, 'package.json'), 'utf8')).version;
 const TEMPLATES = path.join(KERNEL, 'templates');
 const SKILL = path.join(KERNEL, 'SKILL.md');
 const RESERVED = new Set(['init', 'new', 'view', 'skill']);
@@ -38,10 +39,14 @@ const AGENTS_MD = [
   ''
 ].join('\n');
 
-const { positional, args, dryRun } = parseArgv(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const { positional, args, dryRun } = parseArgv(argv);
 const [cmd, name] = positional;
 
-if (!cmd) fail(USAGE);
+// 内核自身的开关，早于任务分派。注意 -v / -h 不是 -- 开头，parseArgv 会当成任务名
+if (argv[0] === '--version' || argv[0] === '-v') process.stdout.write(`${VERSION}\n`);
+else if (argv[0] === '--help' || argv[0] === '-h') process.stdout.write(`${USAGE}\n`);
+else if (!cmd) fail(USAGE);
 else if (cmd === 'init') await init(args.template);
 else if (cmd === 'new') newTask(name);
 else if (cmd === 'view') {

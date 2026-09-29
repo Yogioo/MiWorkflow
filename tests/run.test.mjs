@@ -67,6 +67,35 @@ function runExample(task, extra = []) {
   return { ...r, rows };
 }
 
+// ── --version / --help ────────────────────────────────────────────────────
+
+test('version：--version / -v 打印 package.json 里的 version 到 stdout 并退出 0', () => {
+  const version = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+  for (const flag of ['--version', '-v']) {
+    const r = cli([flag]);
+    assert.equal(r.code, 0, `${flag}: ${r.stderr}`);
+    assert.equal(r.stdout, `${version}\n`, flag);
+    assert.equal(r.stderr, '', flag);
+  }
+});
+
+test('help：--help / -h 打印 USAGE 到 stdout 并退出 0', () => {
+  for (const flag of ['--help', '-h']) {
+    const r = cli([flag]);
+    assert.equal(r.code, 0, `${flag}: ${r.stderr}`);
+    assert.match(r.stdout, /^usage:/, flag);
+    assert.match(r.stdout, /miworkflow init/, flag);
+    assert.equal(r.stderr, '', flag);
+  }
+});
+
+test('无参数：USAGE 打到 stderr 并退出 1（现状不变）', () => {
+  const r = cli([]);
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /^usage:/);
+});
+
 // ── 跑任务 ────────────────────────────────────────────────────────────────
 
 test('run：examples/ 作为 HOME 端到端跑通 demo，参数传进任务', () => {

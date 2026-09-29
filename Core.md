@@ -77,10 +77,12 @@ MiWorkflow/
 - 进化的 commit 落在业务仓库，跟业务代码一起回滚（§14）。
 - **内核仓库里没有 `tasks/`、`scripts/`**，测试断言它（§16）。
 
-一个命令，五个用法（`init`、`new`、`view`、`skill` 是保留字，其余的词都当任务名）：
+一个命令，五个用法（`init`、`new`、`view`、`skill` 是保留字，其余的词都当任务名）；另有两个内核开关，在任务分派之前处理：
 
 | 命令 | 做什么 |
 |---|---|
+| `miworkflow --version` / `miworkflow -v` | 打印内核 `package.json` 的 `version`（不写死）到 stdout，退出 0 |
+| `miworkflow --help` / `miworkflow -h` | 打印用法（USAGE）到 stdout，退出 0；不带任何参数时 USAGE 打到 stderr、退出 1 |
 | `miworkflow init [--template <名字>]` | 建 `.workflow/`：`tasks/`、`scripts/`、`.gitignore`、`AGENTS.md`。建在 git 仓库根，不在仓库里就建在当前目录。终端里有模板可选时让人选（**空白** = 只建目录，或 `templates/` 下的某个）；非终端缺省空白。已存在 `.workflow/` 时只补缺的文件，**已有的文件一个不覆盖**，跳过的列出来 |
 | `miworkflow new <name>` | 建 `tasks/<name>.mjs` 骨架（`title` + 传参的 `default`），不覆盖已有；没有 `.workflow/` 就报错，提示先 `init` |
 | `miworkflow <task> [--key value]` | 跑任务 |
@@ -326,9 +328,13 @@ export async function human(prompt, opts = {}) {
 
 ```js
 #!/usr/bin/env node
-const { positional: [cmd, name], args, dryRun } = parseArgv(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const { positional: [cmd, name], args, dryRun } = parseArgv(argv);
 
-if (cmd === 'init') await init(args.template);        // §3
+// 内核开关早于任务分派；-v / -h 不是 -- 开头，parseArgv 会把它们当任务名
+if (argv[0] === '--version' || argv[0] === '-v') process.stdout.write(`${VERSION}\n`);
+else if (argv[0] === '--help' || argv[0] === '-h') process.stdout.write(`${USAGE}\n`);
+else if (cmd === 'init') await init(args.template);   // §3
 else if (cmd === 'new') newTask(name);                 // §3
 else if (cmd === 'view') { useHome(); await import('./viewer/serve.mjs'); }
 else await runTask(cmd);
