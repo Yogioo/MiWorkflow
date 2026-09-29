@@ -10,6 +10,10 @@
 - **在无终端的 shell 里跑任务之前，先想 `human()`。** 没有终端时 `human()` 等「决定文件」，默认一小时（`Core.md` §13.5）；
   没人能批就挂死。要么带 `--yes`，要么别跑带 `human()` 的任务（`examples/tasks/demo.mjs` 就有一个）。
   CI、定时、由 Agent 代跑，一律按「无终端」处理。
+- **别嵌套跑 run：一次 shell 里的 run 就是一次 run。** 子 run 的身份全套靠环境变量从父 run 继承
+  （`run.mjs` 的 `AGENTFLOW_RUN_ID ??=` 只是其中一处）：`runId`、HOME、锁、日志目录。HOME 相同时，
+  子 run 会写进父 run 的同一个 JSONL，把父 run 的记录搅乱（`Core.md` §12）。
+  要单独验证就退出父 run、在干净 shell 里跑；确实要嵌套，就显式换 `AGENTFLOW_HOME`，别让子 run 继承 `AGENTFLOW_RUN_ID`。
 - **改内核，`node --test` 必须全绿。** 测试在 `tests/`。零依赖，只用 Node 内置模块，不加 npm 依赖。
 - **`run.mjs` 是唯一入口**（`init` / `new` / `view` / `skill` 是保留字）；`core.mjs` 放三个原语。
   `agents/`、`viewer/`、`templates/`、`examples/` 是外部工具、模板与示例，不是内核（§16）。
