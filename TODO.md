@@ -148,6 +148,21 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
       内层 run 会沿用父 run 的 `runId`、HOME、锁与日志目录。这次因为 HOME 不同（`examples` vs `.workflow`）没出事；
       HOME 相同就会**覆盖父 run 的 JSONL**。要讨论的是：run 的身份从哪来、哪些该继承哪些该重开。
 
+- [ ] **B7. GitHub 工作流：提交环节会「自己把自己搞死」，回滚还会吃掉别人的提交**（2026-09-29 实遇，#5）
+      经过：DEV Agent 自己 `git add -A && git commit`（`786d42f`），REVIEWER 又自己提交两笔修复（`53e0d09`、`0c9bb57`）；
+      工作流的 `git_commit` 步骤再提交时工作区已经干净 → `git commit` 退出码 1 → 判成 `commit_failed` →
+      整个 issue 走失败路径（钉 `afk-failed` + 评论）+ `git_restore`。
+      而当时 `node --test` 80/80 全绿，代码和审查都没毛病 —— 失败是**记账**失败，不是干活失败。
+      三处缺陷：
+      - ① `git_commit` 把「无内容可提交」当失败。应先看 `git status --porcelain`：已经提交过就跳过 ——
+        这一轮的目标是「工作区干净 + 有提交」，不是「由我提交」。
+      - ② `git_restore` 是 `reset --hard <本轮起点 sha>` + `clean -fd`，会把**本轮期间不属于本轮**的提交一起抹掉：
+        这次连 22:35 人提交的 `604c8c4`（根 `AGENTS.md` + TODO）一起没了。应改成：回滚前 `git log <起点>..HEAD`，
+        只回滚本轮产生的提交；碰到第一笔不是本轮的，就停手留给人（与「推送失败」同款：不关单、整轮停下）。
+      - ③ 提示词没禁止 Agent 提交。DEV / REVIEWER 都有全部权限，看到仓库里「做完就提交」的先例就会自己提交；
+        应写明「改完不要 `git commit`、不要 `git push`，提交由工作流负责」。
+      恢复：四笔提交一直在对象库里，`git tag backup/before-recover` 指着 `0c9bb57`（回滚前那一刻），已推。
+
 ## C. 初始工作流创建体验
 
 - [x] **C1. 补 `AGENTS.md`** —— 并入 B3：改为内核根的 `SKILL.md`，可链成技能（已写）
