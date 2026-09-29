@@ -9,7 +9,7 @@
 
 1. ✅ **B2 沉淀离开内核仓库**（已实现，见 `Core.md` §3、§15）
 2. ✅ **B3 零配置使用**（已实现并实测，见 `Core.md` §3、§5、§13.6、§15）
-3. **C2 运行期 Agent 适配器**（已定放 `agents/`、choice 不由 core 校验，设计见 `Core.md` §19.2）
+3. ✅ **C2 运行期 Agent 适配器**（已实现并用三家真 CLI 实测，见 `Core.md` §10.1）
 4. **C3 首个工作流：GitHub 开发**（`init` 可选的模板，依赖 B3 的 `init` / `args` 和 C2 的按调用选 Agent）
 5. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
@@ -128,8 +128,16 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
       模糊 → 运行期 `agent()`）、只写沉淀区、不动内核、返回值契约（§6.1 / §6.2）。
       注意 `AGENTS.md` 同样算内核，新增需 `approve`。等 B2 定了再写（沉淀区的位置会变）。
 
-- [ ] **C2. 运行期 Agent 适配器：pi / codex / cursor agent** —— **2026-09-29 定**：C2-1 放 `agents/`；
-      C2-2 不做；C2-3 先不做。契约见 `Core.md` §19.2，下文保留三家差异与分析。
+- [x] **C2. 运行期 Agent 适配器：pi / codex / cursor agent** —— **2026-09-29 定并实现**（`Core.md` §10.1）
+      实现时的取舍：codex **不用** `--output-schema` —— 它走 OpenAI 严格模式，要求每个对象 `additionalProperties: false`，
+      §6.2 自由形状的 `data` 被 API 直接拒（`invalid_json_schema`），改为三家都靠提示词；
+      codex 的错误走 stdout 事件流不走 stderr，归一成 `kind: 'error'`，`agent_cli_failed` 的 `reason` 优先取它；
+      适配器自己按 `timeoutSec` 杀整棵进程树（core 的 `+5` 秒只杀得到适配器，杀不到孙进程）；
+      过程文件放 `logs/<runId>/agent-<n>.*` 子目录，免得 viewer 把 `.events.jsonl` 当成一次运行；
+      exec-review 的 `spawn-turn.mjs`（非流式）没用上，没复制。
+      `agent()` 默认 `timeoutSec` 由 120 改为 7200（2 小时，2026-09-29 定）：120 秒连一次改代码都不够。
+      实测：本机 pi / codex / cursor 各在临时 git 仓库里建一个文件并按契约交回，一次过（codex 在去掉 schema 后）。
+      以下为拍板时的记录。C2-1 放 `agents/`；C2-2 不做；C2-3 先不做。
       2026-09-29 补：每次调用可单独选 CLI + 模型 + 思考等级（`opts.agent = { cli, model, thinking, provider, args }`），
       按任务 / 按用途的默认值用普通 JS 常量，不加配置机制。
       2026-09-29 再补：**从 exec-review 的 runner 层复制一份起步，之后独立演进**，不依赖、不回头同步 exec-review。
@@ -197,7 +205,7 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
       **每个 issue 的流程**（任务 JS，确定的步骤都是脚本，只有「改代码」「审查」交给 Agent）：
       1. 开跑前工作区必须干净，否则整轮不跑（跟 afk-run 一样，免得把人的改动混进提交或被回滚掉）
       2. `gh_issue_mark claimed` 贴 `in-progress`；`gh_issue_view` 取正文 + 评论；`git_state` 记下起点 sha
-      3. `agent(DEV)`：`inputs: { cwd: 项目根, issue, choices: ['done', 'no_change'] }`，`budget.timeoutSec` 给足（默认 1800）
+      3. `agent(DEV)`：`inputs: { cwd: 项目根, issue, choices: ['done', 'no_change'] }`，`budget.timeoutSec` 用默认（7200）
          - `need_human`（Agent 问问题）→ 回滚，问题贴成评论 + `afk-failed`，下一个
          - `no_change` 或 git 看不到改动 → 理由贴成评论 + `afk-failed`，等人判断（不重试、不关单）
       4. `git_state` 列出**实际**改了哪些文件（信 git，不信 Agent 自报）

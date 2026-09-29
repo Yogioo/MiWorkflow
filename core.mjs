@@ -3,12 +3,14 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 // HOME：沉淀所在（§3）。tasks/ scripts/ logs/ 都在这里，缺省为当前目录
 export const HOME = path.resolve(process.env.AGENTFLOW_HOME || process.cwd());
 export const LOGS_DIR = path.join(HOME, 'logs');
 const SCRIPTS_DIR = path.join(HOME, 'scripts');
+const AGENT_CLI = fileURLToPath(new URL('./agents/agent_cli.mjs', import.meta.url));
 
 // 一次运行一个 runId（§12）。延迟解析：run.mjs 先写好 env，再加载本模块。
 let runIdCache = null;
@@ -49,9 +51,9 @@ export function log(record) {
 
 // ── 子进程 ────────────────────────────────────────────────────────────────
 // 无 shell 依赖（§11）；stderr 原样透传，方便人当场看（§6.1）
-function run(cmd, argv, input, timeoutMs) {
+function run(cmd, argv, input, timeoutMs, env = process.env) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, argv, { cwd: HOME, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(cmd, argv, { cwd: HOME, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '';
     let stderr = '';
     let done = false;
@@ -114,30 +116,59 @@ export async function script(name, args = {}, opts = {}) {
 }
 
 // ── agent（§6.2、§10）─────────────────────────────────────────────────────
+let agentCalls = 0;
+
+// 找 Agent 命令（§19.2）：opts.cmd → opts.agent → AGENTFLOW_AGENT_CMD → AGENTFLOW_AGENT → 没有
+function agentCommand(opts) {
+  const split = (s) => s.split(/\s+/).filter(Boolean);
+  if (opts.cmd) return { argv: split(opts.cmd) };
+  if (opts.agent) return adapterCommand(opts.agent);
+  if (process.env.AGENTFLOW_AGENT_CMD) return { argv: split(process.env.AGENTFLOW_AGENT_CMD) };
+  if (process.env.AGENTFLOW_AGENT) return adapterCommand(process.env.AGENTFLOW_AGENT);
+  return null;
+}
+
+// opts.agent（对象或只写 CLI 名）展开成内核适配器；值原样转交，不翻译、不校验
+function adapterCommand(spec) {
+  const a = typeof spec === 'string' ? { cli: spec } : spec;
+  const argv = [process.execPath, AGENT_CLI, String(a.cli)];
+  for (const k of ['model', 'thinking', 'provider']) if (a[k]) argv.push(`--${k}`, String(a[k]));
+  if (a.args?.length) argv.push('--', ...a.args.map(String));
+  return { argv, agent: { cli: a.cli, model: a.model, thinking: a.thinking } };
+}
+
 export async function agent(goal, opts = {}) {
   const startedAt = Date.now();
   const pkg = {
     goal,
     inputs: opts.inputs ?? {},
     constraints: opts.constraints ?? [],
-    budget: { maxTokens: 20000, timeoutSec: 120, maxTurns: 8, ...(opts.budget ?? {}) }
+    budget: { maxTokens: 20000, timeoutSec: 7200, maxTurns: 8, ...(opts.budget ?? {}) }
   };
 
   let status;
   let choice;
   let reason;
   let data;
+  let events;
 
-  const cmd = opts.cmd ?? process.env.AGENTFLOW_AGENT_CMD;
-  if (!cmd) {
+  const command = agentCommand(opts);
+  if (!command) {
     // 没配外部 Agent 时不假装思考：明确 failed，让任务自己决定怎么办（§6.2）
     status = 'failed';
     choice = 'agent_unavailable';
-    reason = `未配置 AGENTFLOW_AGENT_CMD；stub 收到 goal：${goal}`;
+    reason = `未配置 Agent：设 AGENTFLOW_AGENT=pi|codex|cursor，或传 opts.agent / AGENTFLOW_AGENT_CMD；stub 收到 goal：${goal}`;
     data = {};
   } else {
-    const [bin, ...rest] = cmd.split(/\s+/).filter(Boolean);
-    const res = await run(bin, rest, JSON.stringify(pkg), (pkg.budget.timeoutSec + 5) * 1000);
+    // 适配器的提示词、原始输出、归一事件落进 logs/<runId>/agent-<n>.*（子目录，viewer 不当成运行）
+    let env = process.env;
+    if (command.agent) {
+      const base = `${rid()}/agent-${++agentCalls}`;
+      env = { ...process.env, AGENTFLOW_AGENT_LOG: path.join(LOGS_DIR, base) };
+      events = `${base}.events.jsonl`;
+    }
+    const [bin, ...rest] = command.argv;
+    const res = await run(bin, rest, JSON.stringify(pkg), (pkg.budget.timeoutSec + 5) * 1000, env);
     try {
       const out = JSON.parse(res.stdout);
       // 输出不合契约（§6.2）就 failed：不补默认值，不猜，不隐式回落
@@ -156,13 +187,15 @@ export async function agent(goal, opts = {}) {
       status = 'failed';
       choice = 'agent_invalid_json';
       reason = 'agent_invalid_json';
-      data = { stderr: res.stderr.slice(-2000) };
+      data = { stdout: res.stdout.slice(-2000), stderr: res.stderr.slice(-2000) };
     }
   }
 
   log({
     primitive: 'agent',
     name: 'agent',
+    agent: command?.agent,
+    events,
     status,
     choice,
     reason,

@@ -74,9 +74,17 @@ const args = raw ? JSON.parse(raw) : {};
 process.stdout.write(JSON.stringify({ status: 'ok', say: '...', data: {} }));
 ```
 
-**`agent(goal, { inputs?, constraints?, budget? })`** 返回 `{ status: 'ok' | 'need_human' | 'failed', choice, reason, data }`。
+**`agent(goal, { agent?, inputs?, constraints?, budget? })`** 返回 `{ status: 'ok' | 'need_human' | 'failed', choice, reason, data }`。
 按 `choice` 分支，未知的 `choice` 自己 `throw`。可选值放 `inputs.choices`。Agent 不输出 actions，它自己改文件。
-没配外部 Agent 时返回 `failed` / `agent_unavailable`，不要假装它成功了。
+
+- **谁来干**：`agent: { cli: 'pi' | 'codex' | 'cursor', model?, thinking?, provider?, args? }`，或只写 CLI 名 `'codex'`。
+  不写就用本机的 `AGENTFLOW_AGENT`。cursor 的 `thinking` 必须配 `model`；`provider` 只有 pi 认。
+  多个任务共用的配置写成 `.workflow/agents.mjs` 里的普通常量（`export const DEEP = { cli: 'codex', thinking: 'high' }`），任务 import 它。
+- **在哪干**：`inputs.cwd`（通常是项目根），缺省 `.workflow/`。
+- **超时**：默认 `budget.timeoutSec` 是 7200（2 小时），够改代码、审查这类长活；短活想早点失败就给小一点的值。
+- **失败怎么看**：`agent_unavailable` = 没配 Agent；`agent_cli_failed` = CLI 起不来 / 报错 / 超时 / 没回话（`reason` 写了原因）；
+  `agent_invalid_json` / `agent_bad_output` = 回话不合契约。都是 `failed`，不要假装它成功了。
+- 重试时把上一次的 `reason` 放进 `inputs`：每次 `agent()` 都是新上下文。
 
 **`human(prompt, { answer?, timeoutMs? })`** 返回 `{ status: 'ok' | 'skipped' | 'failed' }`。
 终端里就地问 y/N，没终端就等网页点；`--yes` 全部自动通过。

@@ -44,6 +44,7 @@
 MiWorkflow/
   run.mjs         # 唯一入口（bin: miworkflow）：init / new / view / skill / 跑任务
   core.mjs        # 三个原语，由 run.mjs 传给任务（§5）
+  agents/         # 运行期 Agent 适配器 agent_cli.mjs（pi / codex / cursor），外部工具，core 只当命令起它（§10）
   viewer/         # 实时视图 + 人工审批 + 运行按钮，外部工具，不默认加载（miworkflow view）
   templates/      # init 可选的模板，只在 init 时复制（§15）
   examples/       # 示例，本身就是一个 HOME，仅参考（§15）
@@ -160,7 +161,9 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 - `status`：`'ok' | 'need_human' | 'failed'`
 - 必须结构化 JSON；stdout 不是 JSON → core 直接判 `failed`（`choice: 'agent_invalid_json'`）；
   缺 `status` / `choice` 或 `status` 不在枚举内 → `failed`（`choice: 'agent_bad_output'`），不补默认值、不猜
-- 没配 `AGENTFLOW_AGENT_CMD` → 不假装思考：`status: 'failed'`、`choice: 'agent_unavailable'`，`reason` 说明原因
+- 没配 Agent（`opts.cmd` / `opts.agent` / `AGENTFLOW_AGENT_CMD` / `AGENTFLOW_AGENT` 都没有，§10）→ 不假装思考：
+  `status: 'failed'`、`choice: 'agent_unavailable'`，`reason` 说明怎么配
+- 内核适配器起不来 / 非 0 退出 / 超时 / 没回话 → `failed`（`choice: 'agent_cli_failed'`），`reason` 写哪家、原因
 - 不输出 actions
 - 可直接写，默认全权限
 - 任务 JS 根据 `choice` 分支，再调 `script()`
@@ -302,9 +305,10 @@ export async function script(name, args = {}, opts = {}) {
 }
 
 export async function agent(goal, opts = {}) {
-  // 组任务包（§10）→ 调 AGENTFLOW_AGENT_CMD → 解析 { status, choice, reason, data }
-  // 输出不合契约（§6.2）或未配置外部命令 → failed，不猜默认值
-  log({ primitive: 'agent', status, choice, reason, say: reason || `agent: ${choice}` });
+  // 组任务包（§10）→ 找命令：opts.cmd → opts.agent → AGENTFLOW_AGENT_CMD → AGENTFLOW_AGENT
+  // （opts.agent / AGENTFLOW_AGENT 展开成 node agents/agent_cli.mjs <cli> ...）→ 解析 { status, choice, reason, data }
+  // 输出不合契约（§6.2）或未配置 → failed，不猜默认值
+  log({ primitive: 'agent', agent, events, status, choice, reason, say: reason || `agent: ${choice}` });
   return { status, choice, reason, data };
 }
 
@@ -382,7 +386,7 @@ Agent 输入：结构化任务包
   "constraints": [],
   "budget": {
     "maxTokens": 20000,
-    "timeoutSec": 120,
+    "timeoutSec": 7200,
     "maxTurns": 8
   }
 }
@@ -405,6 +409,67 @@ Agent 输出：结构化选择
 - 不输出 actions
 - 任务 JS 根据 `choice` 分支，再调 `script()`
 - 高风险业务步骤前加 `human()`
+
+### 10.1 内核适配器 `agents/agent_cli.mjs`
+
+`node agents/agent_cli.mjs <pi|codex|cursor> [--model m] [--thinking t] [--provider p] [-- 其余开关]`：
+一份适配器，一个参数选家。与 `viewer/` 同类的外部工具（core 不 import 它，只当命令起它）——
+它带着全权限开关，放在内核仓库，不跟着业务仓库的进化一起被改。
+runner 层从 exec-review 技能复制起步，之后**独立演进**，不回头同步、不依赖 exec-review。
+
+- **选谁来干**：每次 `agent()` 都能单独指定 CLI、模型、思考等级：
+
+  ```js
+  await agent('修掉失败的测试', {
+    agent: { cli: 'codex', model: 'gpt-5.5', thinking: 'high' },
+    inputs: { cwd, failures, choices: ['fixed', 'give_up'] }
+  });
+  ```
+
+  `opts.agent` 是对象 `{ cli, model?, thinking?, provider?, args? }`，或只写 CLI 名的字符串（`'pi'` = `{ cli: 'pi' }`）。
+  core 把它展开成 `node <内核>/agents/agent_cli.mjs <cli> [--model <m>] [--thinking <t>] [--provider <p>] [-- ...args]`。
+  - 值**原样转交**，各家换成自己的开关，不翻译、不校验：
+    pi → `--model` / `--thinking` / `--provider`；codex → `-m` / `-c model_reasoning_effort=<t>`；
+    cursor → `--model <m>[effort=<t>]`，**只给 `thinking` 不给 `model` 就报错**，不静默丢掉。
+    `provider` 只有 pi 认，给别家就报错。值不对由 CLI 自己报错 → `agent_cli_failed`。
+  - `args` 是逃生口：其余开关原样追加给那家 CLI。
+  - 可执行文件默认 `pi` / `codex` / `agent`，可用 `PI_BIN` / `CODEX_BIN` / `CURSOR_AGENT_BIN` 覆盖；
+    Windows 上绕开 npm 的 `.cmd` / `.ps1` 包装，直接 `node <js>` 起。
+- **默认值按什么顺序找**：`opts.cmd` → `opts.agent` → `AGENTFLOW_AGENT_CMD` → `AGENTFLOW_AGENT`（只写 CLI 名，
+  是这台机器的缺省）→ 都没有就 `agent_unavailable`（§6.2）。
+- **按任务配、按用途起名字，用的是 JS，不是机制**：内核只认单次调用的 `opts.agent`。
+  - 整个任务统一用一个：任务文件里写一个常量，或包一行 `const ask = (g, o) => agent(g, { agent: DEEP, ...o })`。
+  - 多个任务共用「快的 / 深度思考的」：HOME 里放一份普通模块，任务 import 它：
+
+    ```js
+    // .workflow/agents.mjs —— 模型换代只改这一处
+    export const FAST = { cli: 'pi', model: 'sonnet', thinking: 'low' };
+    export const DEEP = { cli: 'codex', model: 'gpt-5.5', thinking: 'high' };
+    ```
+
+  不加 `agents.json`、不加 profile 注册表、不在环境变量里拼 `codex:model:high` 这种串（§2.8、§2.11）。
+- **进**：§10 任务包。适配器渲染成提示词：`goal`、`inputs`、`constraints`、预算，末尾附输出契约
+  （最后只回一段 `{status, choice, reason, data}`；`choice` 只取 `inputs.choices`，给了的话）。
+  三家都靠提示词约束输出形状 —— codex 的 `--output-schema` 走严格模式，要求每个对象 `additionalProperties: false`，
+  容不下自由形状的 `data`，所以不用。
+- **出**：取最后一条回话，剥掉至多一层代码围栏，原样写 stdout。**合不合契约仍由 core 判**（§6.2），
+  适配器不补默认值。CLI 起不来 / 非 0 退出 / 超时 / 没回话 → 适配器写
+  `{status:'failed', choice:'agent_cli_failed', reason}`（这是事实，不是猜）；`reason` 优先取事件流里的错误
+  （codex 的错误不走 stderr），其次 stderr 首句。
+- **运行目录**：`inputs.cwd`，缺省 HOME。内核不加 `opts.cwd`。
+- **过程**：各家事件流统一成同一种形状（`agents/normalize-event.mjs`），翻成人话写 stderr（core 已透传到终端）：
+  `· <工具> <参数>`、`» <说了什么>`、`✖ <错误>`。
+  提示词、原始输出、统一后的事件落在 HOME `logs/<runId>/agent-<n>.{prompt.md,log,events.jsonl,out.txt}`
+  （子目录，viewer 不当成一次运行）；`agent` 那条日志用 `events` 字段指过去 —— 这顺带就是 E3「长任务过程留痕」的底子。
+- **会话**：runner 层自带续会话能力表（pi 有就续没有就建、codex 只能续、cursor 不支持就报错）。
+  v1.7 **不开放**，以后按需接 `inputs.session`。
+- **预算**：只有 `timeoutSec` 真生效 —— 适配器到点杀整棵进程树，core 在 `timeoutSec + 5` 秒兜底；
+  `maxTokens` / `maxTurns` 三家都没有对应开关，只写进提示词。默认 7200 秒（2 小时），按改代码这类长活定的；
+  短活想早点失败就显式给小一点的 `budget: { timeoutSec }`。
+- **权限**：三家都全权限（§10）：pi 不排除工具；codex `--dangerously-bypass-approvals-and-sandbox`；
+  cursor `--force --approve-mcps --sandbox disabled --trust`。
+- **`choice` 不由 core 校验**：不加 `opts.choices`。可选值放 `inputs.choices` 给适配器渲染，
+  未知 `choice` 由任务 JS 自己 `throw`（§7 的写法）。
 
 ---
 
@@ -440,9 +505,14 @@ JSONL 最小字段：
   "say": "...",
   "error": "...",
   "ref": 3,
+  "agent": { "cli": "codex", "model": "...", "thinking": "..." },
+  "events": "<runId>/agent-1.events.jsonl",
   "durationMs": 0
 }
 ```
+
+`agent` / `events` 只出现在走内核适配器的 `agent` 记录上（§10.1）：进化时才看得出「哪个模型在哪类任务上老失败」，
+复盘时能展开 Agent 每一步。
 
 原则：
 
@@ -680,7 +750,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 11. 自动进化 v2 再议。
 12. ✅ v1.7 沉淀离开内核仓库：HOME、包名 import、`bin`、`examples/` 即 HOME（§3、§15）。
 13. ✅ v1.7 零配置使用：全局命令、原语与 `args` 传参、往上找 `.workflow/`、`init`（选模板）/ `new` / `view`、网页运行按钮、`SKILL.md`（§3、§5、§13.6、§15）。
-14. v1.7 运行期 Agent 适配器（§19.2，已定，未实现）。
+14. ✅ v1.7 运行期 Agent 适配器：`agents/agent_cli.mjs`（pi / codex / cursor）、`opts.agent`、`AGENTFLOW_AGENT`（§10.1）。
 15. 首个工作流：GitHub 开发，作为 `init` 可选的模板 `templates/github/`（TODO C3，已定，未实现）。
 
 ---
@@ -706,10 +776,9 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 
 ---
 
-## 19. v1.7 剩余变更（已定，未实现）
+## 19. v1.7 变更记录
 
-> 2026-09-29 拍板的设计。§1–§18 描述已实现的部分；本节实现后折进正文、删掉。
-> 落地清单见 `TODO.md` 的 C2。
+> 2026-09-29 拍板的设计，均已实现并折进正文；这里只留去向与起因。
 
 ### 19.1 沉淀离开内核仓库（已实现）
 
@@ -717,64 +786,10 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 起因：旧版要求 `tasks/`、`scripts/` 为空、测试查文件系统，而进化闭环又要沉淀后测试通过、提交进 Git ——
 内核仓库与沉淀仓库是同一个，两条不可能同时成立。
 
-### 19.2 运行期 Agent 适配器
+### 19.2 运行期 Agent 适配器（已实现）
 
-`agents/agent_cli.mjs <pi|codex|cursor>`：一份适配器，一个参数选家。放在**内核**，
-与 `viewer/` 同类的外部工具（core 不 import 它）—— 它带着全权限开关，放在内核仓库，
-不跟着业务仓库的进化一起被改。
-
-**来源**：从 exec-review 技能的 runner 层**复制一份**起步（`scripts/runners/*.mjs` + `scripts/normalize-event.mjs`，
-零依赖、不读 `~/.afk/config.json`），之后**独立演进**，不回头同步、不依赖 exec-review。
-改动：入口换成 §10 任务包进、§6.2 选择出；去掉 exec-review 专有的 `role` / reviewer 只读、
-`sandbox` 映射（三家一律全权限，§10）和 `dryRun`。
-CLI 名用 `cursor`（exec-review 里叫 `agent`，跟原语重名）。
-
-- **选谁来干**：每次 `agent()` 都能单独指定 CLI、模型、思考等级：
-
-  ```js
-  await agent('修掉失败的测试', {
-    agent: { cli: 'codex', model: 'gpt-5.5', thinking: 'high' },
-    inputs: { cwd, failures }
-  });
-  ```
-
-  `opts.agent` 是对象 `{ cli, model?, thinking?, provider?, args? }`，或只写 CLI 名的字符串（`'pi'` = `{ cli: 'pi' }`）。
-  core 把它展开成 `node <内核>/agents/agent_cli.mjs <cli> [--model <m>] [--thinking <t>] [--provider <p>] [...args]`。
-  - 值**原样转交**，各家换成自己的开关，不翻译、不校验（沿用 runner 层已验证的映射）：
-    pi → `--model` / `--thinking` / `--provider`；codex → `-m` / `-c model_reasoning_effort=<t>`；
-    cursor → `--model <m>[effort=<t>]`，**只给 `thinking` 不给 `model` 就报错**，不静默丢掉。
-    `provider` 只有 pi 认，给别家就报错。值不对由 CLI 自己报错 → `agent_cli_failed`。
-  - `args` 是逃生口：其余开关原样追加给那家 CLI。
-  - codex 另用 `--output-schema` 把 §6.2 的输出形状交给 CLI 强制；pi / cursor 没有这个开关，靠提示词。
-- **默认值按什么顺序找**：`opts.cmd` → `opts.agent` → `AGENTFLOW_AGENT_CMD` → `AGENTFLOW_AGENT`（只写 CLI 名，
-  是这台机器的缺省）→ 都没有就 `agent_unavailable`（§6.2）。
-- **按任务配、按用途起名字，用的是 JS，不是机制**：内核只认单次调用的 `opts.agent`。
-  - 整个任务统一用一个：任务文件里写一个常量，或包一行 `const ask = (g, o) => agent(g, { agent: DEEP, ...o })`。
-  - 多个任务共用「快的 / 深度思考的」：HOME 里放一份普通模块，任务 import 它：
-
-    ```js
-    // .workflow/agents.mjs —— 模型换代只改这一处
-    export const FAST = { cli: 'pi', model: 'sonnet', thinking: 'low' };
-    export const DEEP = { cli: 'codex', model: 'gpt-5.5', thinking: 'high' };
-    ```
-
-  不加 `agents.json`、不加 profile 注册表、不在环境变量里拼 `codex:model:high` 这种串（§2.8、§2.11）。
-- **留痕**：`agent` 那条日志多记一个字段 `agent: { cli, model, thinking }`（§12）——
-  进化时才看得出「哪个模型在哪类任务上老失败」。
-- **进**：§10 任务包。适配器渲染成提示词：`goal`、`inputs`、`constraints`，末尾附输出契约
-  （最后只回一段 `{status, choice, reason, data}`；`choice` 只取 `inputs.choices`，给了的话）。
-- **出**：取最后一条回话，剥掉至多一层代码围栏，原样写 stdout。**合不合契约仍由 core 判**（§6.2），
-  适配器不补默认值。CLI 起不来 / 非 0 退出 → 适配器写
-  `{status:'failed', choice:'agent_cli_failed', reason}`（这是事实，不是猜）。
-- **运行目录**：`inputs.cwd`，缺省 HOME。内核不加 `opts.cwd`。
-- **过程**：各家事件流经 `normalize-event` 统一后翻成人话写 stderr（core 已透传到终端）。
-  统一后的事件另存进 HOME 的 `logs/`（命名实现时定）—— 这顺带就是 E3「长任务过程留痕」的底子。
-- **会话**：runner 层自带续会话能力表（pi 有就续没有就建、codex 只能续、cursor 不支持就报错）。
-  v1.7 **不开放**（C2-3），留着以后按需接 `inputs.session`。
-- **预算**：只有 `timeoutSec` 真生效；`maxTokens` / `maxTurns` 能映射就映射，不能就只写进提示词。
-- **权限**：三家都全权限（§10）。
-- **`choice` 不由 core 校验**：不加 `opts.choices`。可选值放 `inputs.choices` 给适配器渲染，
-  未知 `choice` 由任务 JS 自己 `throw`（§7 的写法）。
+已折进 §3（`agents/`）、§6.2（`agent_cli_failed`）、§9、§10.1（适配器全文）、§12（`agent` / `events` 字段）。
+与拍板时的差别：codex 不用 `--output-schema`（严格模式容不下自由形状的 `data`，实测被 API 拒绝），三家都靠提示词。
 
 ### 19.3 零配置使用（已实现）
 

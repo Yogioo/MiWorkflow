@@ -196,13 +196,14 @@ test('agent：没配外部命令 → 明确 failed，不假装思考', async () 
   process.env.AGENTFLOW_TASK = 'unit';
   process.env.AGENTFLOW_RUN_ID = runId;
   delete process.env.AGENTFLOW_AGENT_CMD;
+  delete process.env.AGENTFLOW_AGENT;
 
   const { agent } = await import('../core.mjs');
   const r = await agent('写一句结束语');
 
   assert.equal(r.status, 'failed');
   assert.equal(r.choice, 'agent_unavailable');
-  assert.match(r.reason, /未配置 AGENTFLOW_AGENT_CMD/);
+  assert.match(r.reason, /未配置 Agent：设 AGENTFLOW_AGENT/);
   assert.equal(rows(runId)[0].primitive, 'agent');
   assert.equal(rows(runId)[0].status, 'failed');
   rmSync(logPath(runId), { force: true });

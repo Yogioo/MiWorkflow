@@ -23,7 +23,7 @@ const tmpDir = () => {
 // 默认不带 AGENTFLOW_HOME：HOME 靠往上找 .workflow/
 function cli(argv, { cwd = ROOT, env = {} } = {}) {
   const base = { ...process.env };
-  for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_AGENT_CMD', 'AGENTFLOW_DRY_RUN', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES']) {
+  for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_AGENT_CMD', 'AGENTFLOW_AGENT', 'AGENTFLOW_DRY_RUN', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES']) {
     delete base[k];
   }
   const r = spawnSync(process.execPath, [path.join(ROOT, 'run.mjs'), ...argv], {

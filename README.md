@@ -66,6 +66,18 @@ export default async function ({ script, agent, human, args }) {
 }
 ```
 
+### 接上 Agent
+
+`agent()` 由内核适配器起本机的 pi / codex / Cursor CLI（三家都全权限）。设一次本机缺省就能用：
+
+```bash
+AGENTFLOW_AGENT=codex miworkflow fix_tests     # PowerShell：$env:AGENTFLOW_AGENT='codex'
+```
+
+也可以每次调用单独选：`agent(goal, { agent: { cli: 'pi', model: 'sonnet', thinking: 'high' } })`。
+终端里能看到 Agent 每一步（`· 工具`、`» 说了什么`）；提示词、原始输出、事件落在 `.workflow/logs/<runId>/`。
+默认超时 2 小时，想早点失败就给 `budget.timeoutSec`。完整说明见 [Core.md](Core.md) §10.1。
+
 让 AI 写任务：`init` 放的 `.workflow/AGENTS.md` 会被 Cursor / Codex / Claude Code 自动读到，
 它让 AI 先跑 `miworkflow skill` 读完整写法（即内核的 [SKILL.md](SKILL.md)）；也可以把内核目录链成技能。
 进化的 commit 落在业务仓库，跟业务代码一起回滚（[Core.md](Core.md) §3、§14）。
@@ -75,6 +87,7 @@ export default async function ({ script, agent, human, args }) {
 ```
 run.mjs     唯一入口（bin: miworkflow）：init / new / view / skill / 跑任务
 core.mjs    三个原语：script / agent / human
+agents/     运行期 Agent 适配器（pi / codex / cursor），core 当命令起它
 viewer/     实时视图 + 人工审批 + 运行按钮（外部工具）
 templates/  init 可选的模板，只在 init 时复制
 examples/   示例，本身就是一个 HOME，仅参考
@@ -110,7 +123,9 @@ node --test
 | 变量 | 作用 |
 |---|---|
 | `AGENTFLOW_HOME` | 指定 HOME，优先于往上找 `.workflow/`；viewer 也读它 |
-| `AGENTFLOW_AGENT_CMD` | 外部 Agent 命令，如 `pi -p`；不配则 `agent()` 返回明确的 stub，不假装思考 |
+| `AGENTFLOW_AGENT` | 本机缺省 Agent：`pi` / `codex` / `cursor`，走内核适配器；单次调用的 `opts.agent` 优先 |
+| `AGENTFLOW_AGENT_CMD` | 自定义 Agent 命令（stdin 任务包、stdout 选择），优先于 `AGENTFLOW_AGENT`；都不配则 `agent()` 返回 `agent_unavailable`，不假装思考 |
+| `PI_BIN` / `CODEX_BIN` / `CURSOR_AGENT_BIN` | 覆盖三家 CLI 的可执行文件（默认 `pi` / `codex` / `agent`） |
 | `AGENTFLOW_HUMAN` | `stdin` / `web`，默认按有没有 TTY 自动选 |
 | `AGENTFLOW_YES=1` | CI 下自动通过所有 `human()` |
 | `PORT` / `HOST` | viewer 监听，默认 `8787` / `0.0.0.0` |
