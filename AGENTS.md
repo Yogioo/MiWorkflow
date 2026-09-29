@@ -24,3 +24,15 @@
 ## 提交
 
 - 一行说清落点：`run.mjs：同一任务在跑就跳过（按 task 建锁）`；对应 issue 就带上号：`#4 …`。
+
+<!-- miworkflow:begin -->
+## MiWorkflow
+
+这个项目用 MiWorkflow 跑 Agent 工作流：任务在 `.workflow/tasks/`，脚本在 `.workflow/scripts/`。
+这一段是 `miworkflow init` 追加的入口，要改请改 `.workflow/AGENTS.md`。
+
+**动手写或改 `.workflow/` 之前，先读 `.workflow/AGENTS.md`，或运行 `miworkflow skill` 读完整写法。**
+
+- 跑任务：`miworkflow <task> [--key value]`；看运行 / 审批 / 点运行：`miworkflow view`
+- 只改 `.workflow/` 里的文件，不改内核（全局装的 `miworkflow`）
+<!-- miworkflow:end -->
