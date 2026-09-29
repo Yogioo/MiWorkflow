@@ -366,6 +366,11 @@ async function runTask(task) {
 }
 ```
 
+`runTask` 起跑前按 task 建锁：`logs/<task>.lock`，内容 `{ pid, runId, at }`（`logs/` 不进 Git）。已在跑就打印
+`<task> 已在跑（pid …，run …）` 并退出码 `0`——有意跳过，不是出错，不执行任务体。锁里的 pid 已不在（被杀、断电、
+Ctrl-C）按陈锁接管；跨平台判活用 `process.kill(pid, 0)` + try/catch。正常结束、任务抛异常、进程收到 `SIGINT`/`SIGTERM`
+都删锁。只有「跑任务」加锁，`init` / `new` / `view` / `skill` 不加；不同 task 各锁各的。
+
 这就是内核：
 
 - **一次运行一个 `runId`，三个原语共用**（§12）——按运行复盘的唯一线索。
@@ -529,6 +534,7 @@ JSONL 最小字段：
 - 一次运行一个 `runId`，三个原语共用，可按运行复盘
 - `seq` 在本次运行内单调递增，是稳定 key；`ref` 指向被解决的那条 `pending` 记录
 - `primitive: 'run'` 的两条记录（开始 / 结束）由 `run.mjs` 写，`title` 只出现在这里
+- 任务锁落在 `logs/<task>.lock`（占用标记，不是日志、不进 Git），约定见 §9
 - 不引入错误指纹
 - 不做自动聚类
 - 不做 tokens 统计

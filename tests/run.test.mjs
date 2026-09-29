@@ -163,6 +163,61 @@ test('HOME：AGENTFLOW_HOME 优先于往上找', () => {
   assert.ok(existsSync(path.join(other, 'out.json')));
 });
 
+// ── 任务锁（§9）：同一 task 同时只跑一个 ────────────────────────────────
+
+const lockPath = (home, task) => path.join(home, 'logs', `${task}.lock`);
+const readLock = (home, task) => JSON.parse(readFileSync(lockPath(home, task), 'utf8'));
+const writeLock = (home, task, pid, runId) => {
+  mkdirSync(path.join(home, 'logs'), { recursive: true });
+  writeFileSync(lockPath(home, task), JSON.stringify({ pid, runId, at: new Date().toISOString() }));
+};
+// 一个已退出的进程，拿它的 pid 当「不存在的 pid」
+const deadPid = () => spawnSync(process.execPath, ['-e', '']).pid;
+
+test('lock：同一 task 已在跑 → 跳过，不执行任务体，退出码 0', () => {
+  const home = makeHome(tmpDir());
+  writeLock(home, 'echo', process.pid, 'holder'); // 当前测试进程还活着 → 锁有效
+
+  const r = cli(['echo', '--yes'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'second' } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /echo 已在跑/);
+  assert.match(r.stdout, new RegExp(`pid ${process.pid}`));
+  assert.match(r.stdout, /run holder/);
+  assert.equal(existsSync(path.join(home, 'out.json')), false, '第二次不应执行任务体');
+  assert.equal(readLock(home, 'echo').runId, 'holder', '没抢到锁，不该动锁');
+});
+
+test('lock：运行结束（正常 / 抛异常）都释放锁', () => {
+  const home = makeHome(tmpDir(), { good: ECHO_TASK, bad: "export default async function () { throw new Error('炸了'); }\n" });
+
+  assert.equal(cli(['good'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'r-good' } }).code, 0);
+  assert.equal(existsSync(lockPath(home, 'good')), false, '正常结束后锁要没');
+
+  assert.equal(cli(['bad'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'r-bad' } }).code, 1);
+  assert.equal(existsSync(lockPath(home, 'bad')), false, '任务抛异常后锁也要没');
+});
+
+test('lock：陈锁（pid 已不在）被接管并覆盖', () => {
+  const home = makeHome(tmpDir());
+  writeLock(home, 'echo', deadPid(), 'dead');
+
+  const r = cli(['echo'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'taker' } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(existsSync(path.join(home, 'out.json')), '陈锁不该挡住任务');
+  assert.equal(existsSync(lockPath(home, 'echo')), false, '跑完释放锁');
+});
+
+test('lock：A 在跑，不同 task B 照跑，且不动 A 的锁', () => {
+  const home = makeHome(tmpDir(), { a: ECHO_TASK, b: ECHO_TASK });
+  writeLock(home, 'a', process.pid, 'holder');
+
+  const r = cli(['b'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'b-run' } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(existsSync(path.join(home, 'out.json')), 'B 不该被 A 的锁挡住');
+  assert.equal(readLock(home, 'a').runId, 'holder', 'B 不该删 A 的锁');
+  assert.equal(existsSync(lockPath(home, 'b')), false, 'B 自己的锁跑完要释放');
+});
+
 // ── init ──────────────────────────────────────────────────────────────────
 
 test('init：空白模板建在 git 仓库根，.gitignore 只含 logs/，AGENTS.md 指向 miworkflow skill', () => {

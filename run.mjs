@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // run.mjs — 唯一入口（§9）：miworkflow init | new <name> | view | skill | <task> [--key value]
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -203,6 +203,60 @@ function newTask(task) {
   console.log(`跑：miworkflow ${task}；写法：miworkflow skill`);
 }
 
+// ── 任务锁（§9）──────────────────────────────────────────────────────────
+// 同一 task 同时只允许一个 run：起跑前在 logs/ 下建 <task>.lock（logs/ 不进 Git，§12）。
+// 锁里是 { pid, runId, at }；进程没了（被杀 / 断电 / Ctrl-C）的锁视为陈锁，直接接管。
+function lockFile(HOME, task) {
+  return path.join(HOME, 'logs', `${task}.lock`);
+}
+
+function readLock(file) {
+  try {
+    const j = JSON.parse(readFileSync(file, 'utf8'));
+    return j && typeof j === 'object' ? j : null;
+  } catch {
+    return null; // 没有 / 半截 / 坏 JSON：都当拿不到锁信息，按陈锁处理
+  }
+}
+
+// 跨平台判活：signal 0 只探测不真发；EPERM 说明进程在，只是不归我们管（§9）
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+// 用 'wx'（只在不存在时创建）原子抢锁；已存在且 pid 还活着 → held:false 交给调用方跳过
+function acquireLock(HOME, task, runId) {
+  const file = lockFile(HOME, task);
+  mkdirSync(path.dirname(file), { recursive: true });
+  const body = `${JSON.stringify({ pid: process.pid, runId, at: new Date().toISOString() })}\n`;
+  for (let i = 0; i < 5; i++) {
+    try {
+      writeFileSync(file, body, { flag: 'wx' });
+      return { file, held: true, existing: null };
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      const existing = readLock(file);
+      if (existing && pidAlive(existing.pid)) return { file, held: false, existing };
+      rmSync(file, { force: true }); // 陈锁 / 坏文件：删掉重抢（下一轮 wx 要么我拿到，要么别人拿到）
+    }
+  }
+  writeFileSync(file, body); // 极端竞争兜底：直接接管，别死循环
+  return { file, held: true, existing: null };
+}
+
+function releaseLock(lock) {
+  if (!lock?.held) return;
+  try {
+    rmSync(lock.file, { force: true });
+  } catch { /* 已经没了就算了 */ }
+}
+
 // ── 跑任务 ────────────────────────────────────────────────────────────────
 async function runTask(task) {
   useHome();
@@ -214,6 +268,22 @@ async function runTask(task) {
   const { log, script, agent, human, HOME } = await import('./core.mjs');
   const taskFile = path.join(HOME, 'tasks', `${task}.mjs`);
   if (!existsSync(taskFile)) fail(`task not found: ${task}（在 ${path.join(HOME, 'tasks')} 下找）`);
+
+  const lock = acquireLock(HOME, task, process.env.AGENTFLOW_RUN_ID);
+  if (!lock.held) {
+    // 有意跳过：不是出错，退出码 0（§9）
+    console.log(`${task} 已在跑（pid ${lock.existing.pid}，run ${lock.existing.runId}）`);
+    return;
+  }
+
+  // 正常结束 / 抛异常都靠 finally 释放；Ctrl-C / kill 走信号，删完锁再把信号抛回去
+  const onSignal = (sig) => {
+    releaseLock(lock);
+    process.removeListener(sig, onSignal);
+    process.kill(process.pid, sig);
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
 
   let title = task;
   try {
@@ -229,5 +299,9 @@ async function runTask(task) {
     log({ primitive: 'run', status: 'failed', title, error: message, say: `✖ ${title} 失败：${message}` });
     console.error(err);
     process.exitCode = 1;
+  } finally {
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
+    releaseLock(lock);
   }
 }
