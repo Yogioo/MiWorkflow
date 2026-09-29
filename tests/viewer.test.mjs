@@ -149,7 +149,8 @@ test('GET /api/run/<id>/events/<n>?from=N：文件不存在 → 空且稳', asyn
 // index.html 的渲染逻辑（纯函数，无依赖）：agent 过程渲染成人话，刷屏的原始事件折叠且有上限
 const loadPage = () => {
   const code = readFileSync(path.join(ROOT, 'viewer', 'index.html'), 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const el = () => ({ innerHTML: '', textContent: '', dataset: {} });
+  const els = new Map();
+  const el = (s) => { if (!els.has(s)) els.set(s, { innerHTML: '', textContent: '', dataset: {} }); return els.get(s); };
   const ctx = {
     document: { addEventListener() {}, querySelector: el, getElementById: el },
     fetch: async () => ({ ok: true, json: async () => [] }),
@@ -199,6 +200,23 @@ test('index.html：默认收缩，手动状态优先于全局默认（§13.6）'
   assert.equal(isOpen(2), false, '手动收缩的行不跟默认走');
   assert.equal(isOpen(3), true, '没手动点过的行跟随全局默认');
   assert.equal(ctx.localStorage.store['miworkflow.expand'], '1', '选择落 localStorage');
+});
+
+test('index.html：「进行中 / 已结束」只标在 agent 的进行中行上，run 行不误标', () => {
+  const ctx = loadPage();
+  const render = (recs) => {
+    vm.runInContext(`records = ${JSON.stringify(recs)}; renderTimeline();`, ctx);
+    return ctx.document.querySelector('#timeline').innerHTML;
+  };
+  const runningAgent = { seq: 2, primitive: 'agent', status: 'running', say: '干活', events: 'r/agent-1.events.jsonl' };
+
+  let html = render([{ seq: 1, primitive: 'run', status: 'running', say: '▶ 演示' }, runningAgent]);
+  const runSeg = html.slice(0, html.indexOf('干活'));
+  assert.ok(!runSeg.includes('pill'), `run 的 running 行不该显示「已结束」：${runSeg}`);
+  assert.ok(html.includes('进行中'), 'agent 的 running 行显示「进行中」');
+
+  html = render([runningAgent, { seq: 3, primitive: 'agent', status: 'ok', ref: 2, say: '干完了' }]);
+  assert.ok(html.includes('已结束'), '被 ref 指回的 agent 行显示「已结束」');
 });
 
 test('GET /api/run/<id>/events/<n>：坏 id / 越界路径 → 400', async () => {

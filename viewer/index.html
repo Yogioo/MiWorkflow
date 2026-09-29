@@ -335,11 +335,13 @@ function renderTimeline() {
         + (st.open ? `<div class="evt-body">${renderEvents(st)}</div>` : '') + '</div>'
       : '';
     const active = isActive(r);
-    return `<li class="row ${open ? 'open' : ''} ${r.status === 'running' && !active ? 'resolved' : ''}" data-seq="${r.seq ?? ''}">
+    // 「进行中 / 已结束」只属于 agent 的进行中记录：run 的那条 status:'running' 是运行开始，不是步骤（§13.1）
+    const runningAgent = r.primitive === 'agent' && r.status === 'running';
+    return `<li class="row ${open ? 'open' : ''} ${runningAgent && !active ? 'resolved' : ''}" data-seq="${r.seq ?? ''}">
       <span class="sq">${r.seq ?? ''}</span>
       <span class="badge ${esc(r.status ?? '')}">${esc(r.primitive ?? '')}</span>
       <div>
-        <div class="say"><span class="chev">${open ? '▾' : '▸'}</span>${esc(r.say ?? '')}${r.status === 'running' ? `<span class="pill running">${active ? '进行中' : '已结束'}</span>` : ''}</div>
+        <div class="say"><span class="chev">${open ? '▾' : '▸'}</span>${esc(r.say ?? '')}${runningAgent ? `<span class="pill running">${active ? '进行中' : '已结束'}</span>` : ''}</div>
         <div class="meta">${meta}</div>
         ${open && detail ? `<div class="detail">${esc(detail)}</div>` : ''}
         ${open ? evHtml : ''}
@@ -388,13 +390,14 @@ function evtState(seq) {
   return st;
 }
 
-// 增量拉：服务端按字节吐 { next, items }，半行留到下次
+// 增量拉：服务端按字节吐 { next, items }，半行留到下次；失败可重试（下一次轮询再来）
 async function loadEvents(seq) {
   const st = evtState(seq);
-  if (st.loading || st.error || st.done) return;
+  if (st.loading || st.done) return;
   const rec = records.find((r) => r.seq === seq);
   const target = rec ? parseEventsPath(rec.events) : null;
   if (!target) { st.error = 'events 字段不对'; renderTimeline(); return; }
+  st.error = null;
   st.loading = true;
   if (st.items == null) { st.items = []; renderTimeline(); }
   try {
@@ -423,7 +426,7 @@ async function toggleEvents(seq) {
 // 跟着 1 秒轮询刷新：进行中的步骤一直续读，到终态后再拉一次就停
 async function pollEvents() {
   for (const [seq, st] of [...agentEvents]) {
-    if (!st.open || st.done || st.loading || st.error) continue;
+    if (!st.open || st.done || st.loading) continue;
     const rec = records.find((r) => r.seq === seq);
     if (!rec) continue;
     const active = isActive(rec);
