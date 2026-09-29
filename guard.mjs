@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // guard.mjs — 内核护栏（§14.1）
 //
-// 可写面：tasks/ scripts/ logs/ examples/ —— 沉淀的地方，随便改，不算数。
-// 内核  ：其余全部                      —— 改了就得有人跑 approve 重新固化，
-//                                          否则 node --test 变红（而测试通过是进化闭环的第 3 步）。
+// 可写面：logs/ examples/ —— 随便改，不算数。沉淀（tasks/ scripts/）不在内核仓库，在 HOME（§3）。
+// 内核  ：其余全部        —— 改了就得有人跑 approve 重新固化，
+//                            否则 node --test 变红，run.mjs 也拒跑。
 //
 // 它拦的不是「恶意」，是「静默」：Agent 有写权限，想绕总能绕。
 // 它保证的是：内核每次变动，都留下一条人写的理由和一条可回滚的 Git 记录。
@@ -15,11 +15,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const LOCK = path.join(ROOT, 'core.lock.json');
 
-// 可写面（§16：内容可沉淀，内核零业务）
-const WRITABLE_DIRS = new Set(['tasks', 'scripts', 'logs', 'examples']);
+// 可写面（§16：内核零业务）。内核根下冒出 tasks/ scripts/ 会被当成内核改动拦下
+const WRITABLE_DIRS = new Set(['logs', 'examples']);
 const SKIP_DIRS = new Set(['node_modules', '.git', ...WRITABLE_DIRS]);
-// core.lock.json 不能进内核（哈希会自指）；__test* 是 core.test.mjs 的临时 fixture
-const skipFile = (name) => name === 'core.lock.json' || name.startsWith('__test');
+// core.lock.json 不能进内核（哈希会自指）；.gitignore 从不被 npm pack 打包，
+// 算进内核的话，装进业务仓库 node_modules 的那份永远判脏、run.mjs 永远拒跑
+const skipFile = (name) => name === 'core.lock.json' || name === '.gitignore';
 
 // ── 内核清单 ───────────────────────────────────────────────────────────────
 

@@ -4,14 +4,24 @@ import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { inspect, describe } from './guard.mjs';
 
 const argv = process.argv.slice(2);
 const task = argv.find((a) => !a.startsWith('--'));
 const dryRun = argv.includes('--dry-run');
 
 if (!task) {
-  console.error('usage: node run.mjs <task> [--yes] [--dry-run]');
+  console.error('usage: miworkflow <task> [--yes] [--dry-run]');
+  process.exit(1);
+}
+
+// 进化闭环跑的是 HOME 的测试，碰不到内核测试，所以内核改动在起跑时拦（§14.1）
+const kernel = inspect();
+if (!kernel.ok) {
+  console.error(kernel.reason === 'no_lock'
+    ? '✖ 没有 core.lock.json：内核从未被审批过，拒跑（§14.1）。'
+    : `✖ 内核被改了但没有审批，拒跑（§14.1）：\n${describe(kernel.diff)}`);
+  console.error('  请在内核目录的终端跑：node guard.mjs approve --reason "为什么改内核"');
   process.exit(1);
 }
 
@@ -20,13 +30,11 @@ process.env.AGENTFLOW_TASK = task;
 process.env.AGENTFLOW_RUN_ID ??= randomUUID();
 if (dryRun) process.env.AGENTFLOW_DRY_RUN = '1';
 
-const { log } = await import('./core.mjs');
-
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const taskFile = path.join(ROOT, 'tasks', `${task}.mjs`);
+const { log, HOME } = await import('./core.mjs');
+const taskFile = path.join(HOME, 'tasks', `${task}.mjs`);
 
 if (!existsSync(taskFile)) {
-  console.error(`task not found: ${task}`);
+  console.error(`task not found: ${task}（在 ${path.join(HOME, 'tasks')} 下找；HOME 由 AGENTFLOW_HOME 指定，缺省为当前目录）`);
   process.exit(1);
 }
 

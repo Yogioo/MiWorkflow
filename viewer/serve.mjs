@@ -8,7 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const LOGS = path.resolve(HERE, '..', 'logs');
+// 与 core 同一个 HOME（§3）：看的是沉淀那边的日志，不是内核目录
+const LOGS = path.resolve(process.env.AGENTFLOW_HOME || process.cwd(), 'logs');
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? '0.0.0.0';
 const SAFE_ID = /^[A-Za-z0-9._-]+$/;

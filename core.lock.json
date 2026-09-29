@@ -1,21 +1,21 @@
 {
   "version": 1,
-  "approvedAt": "2026-09-29T09:34:39.611Z",
+  "approvedAt": "2026-09-29T09:49:29.994Z",
   "approvedBy": "human",
-  "reason": "规划 v1.7：沉淀离开内核仓库；Agent 适配器（复制 exec-review runner 层，按调用选 CLI/模型/思考等级）；C4 自组执行→审查；§6.2   补 agent_invalid_json",
+  "reason": "v1.7 B2：沉淀离开内核仓库（HOME、包名   import、bin、examples 即 HOME、起跑前查内核）；补 version、.gitignore   移出内核清单",
   "files": {
     ".gitattributes": "3a1c9bcc69f84707",
-    ".gitignore": "9225170f94d0afbc",
-    "Core.md": "d0671aa6b6c43b3e",
-    "README.md": "8fdc14ed4f7b61bd",
-    "TODO.md": "205e717f7dace87b",
-    "core.mjs": "965264b964f46618",
-    "guard.mjs": "4b07572c6f013e02",
-    "package.json": "bae3ba29fa5e8898",
-    "run.mjs": "ae4e9b92eb66cabe",
-    "tests/core.test.mjs": "752468eafb6fd5d6",
-    "tests/guard.test.mjs": "3666ba9913bfbc58",
+    "Core.md": "8f5e2f3d31a4aa0f",
+    "README.md": "88b115ef3bf4af45",
+    "TODO.md": "00c868ca61580ab5",
+    "core.mjs": "fa4393d9f1e124d2",
+    "guard.mjs": "592765850c2e9040",
+    "package.json": "8b1ab24bdbac55d5",
+    "run.mjs": "8ad741ee90c4dfa0",
+    "tests/core.test.mjs": "1ae1a14d1f184168",
+    "tests/guard.test.mjs": "a496345992220a62",
+    "tests/run.test.mjs": "02c7e87e77992c36",
     "viewer/index.html": "9b7e094c18b7f6c3",
-    "viewer/serve.mjs": "4b9e693fa3747581"
+    "viewer/serve.mjs": "66ea3fb404171ada"
   }
 }

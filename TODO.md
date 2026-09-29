@@ -17,7 +17,7 @@
 
 ## 推进顺序
 
-1. **B2 沉淀离开内核仓库**（已定 ①，设计见 `Core.md` §19.1）
+1. ✅ **B2 沉淀离开内核仓库**（已实现，见 `Core.md` §3、§14.1、§15）
 2. **C2 运行期 Agent 适配器**（已定放 `agents/`、choice 不由 core 校验，设计见 `Core.md` §19.2）
 3. **C4 首个真实工作流：Unity 跑测试 → 修 → 确认 → 提交**
 4. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
@@ -60,7 +60,14 @@ B1 随 B2 消解，C3 降为参考示例。
 
 ## B. 摩擦点（需人拍板，可能要改内核）
 
-- [ ] **B2. 沉淀放哪 —— 空目录护栏与进化闭环互相矛盾（最高优先）** —— **2026-09-29 定：①**，设计见 `Core.md` §19.1
+- [x] **B2. 沉淀放哪 —— 空目录护栏与进化闭环互相矛盾（最高优先）** —— **2026-09-29 定：①，已实现**
+      已验证：`examples/` 当 HOME 跑通；临时业务目录 `npm install file:` 后 `'miworkflow'` 解析到内核真实路径、
+      `npx miworkflow` 可用、内核未审批时拒跑。
+      「经 npm 装进 `node_modules` 后 guard 是否仍判干净」：用 `npm pack` → 装 tarball 模拟 git 依赖（npm 装
+      `github:` 也是先 pack 再解包），查出两个坑并已修：`package.json` 缺 `version` 导致根本装不上；
+      npm 从不打包 `.gitignore`，装进去的那份永远判脏 → 已移出内核清单。修后装进去的与源码 13 个文件哈希一致；
+      `tests/guard.test.mjs` 加了「内核清单里的文件都会被 npm pack 带上」防回归。
+      剩下没实测的只有真从 GitHub 拉（要先推送），机制与上面相同。
       实现清单：
       - `run.mjs` / `core.mjs` / `viewer/serve.mjs` 按 `AGENTFLOW_HOME`（缺省 cwd）找 `tasks/ scripts/ logs/`；
         脚本子进程 cwd = HOME；`gitSha` 取 HOME 的仓库
@@ -193,7 +200,7 @@ B1 随 B2 消解，C3 降为参考示例。
 
 - [ ] **C3. 参考示例：GitHub Issues 摘要**（降级为 `examples/` 里的参考）
       拉 Issues → 按优先级排序 → 生成 md。分工：
-      `fetch_issues.script.mjs` + `render_md.script.mjs` + 运行期 `agent()` 排序 + `issues_digest.task.mjs` 编排。
+      `examples/scripts/{fetch_issues,render_md}.mjs` + 运行期 `agent()` 排序 + `examples/tasks/issues_digest.mjs` 编排。
 
 ## E. 来自 MiCan 的经验（先不做，写明什么时候做）
 

@@ -1,4 +1,4 @@
-# Agent 工作流极简方案 v1.6
+# Agent 工作流极简方案 v1.7
 
 > 定位：最小可运行内核规范  
 > 核心思想：确定性外壳 + 智能内核 + 受控进化 + 人类可见  
@@ -31,28 +31,43 @@
 
 ## 3. 目录
 
+**内核装一份，沉淀跟着业务项目走。** 两边是两个仓库。
+
+内核仓库：
+
 ```text
 MiWorkflow/
-  run.mjs         # 唯一入口
-  core.mjs        # 三个原语
+  run.mjs         # 唯一入口（bin: miworkflow）
+  core.mjs        # 三个原语（包入口：import ... from 'miworkflow'）
   guard.mjs       # 内核护栏：改内核要人审批（§14.1）
   core.lock.json  # 内核指纹 + 最后一次审批的理由（§14.1）
-  tasks/          # 任务，mjs，空
-  scripts/        # 原子能力，mjs，空
-  logs/           # 运行记录 JSONL（首跑时自动建，gitignore）
-  viewer/         # 实时视图 + 人工审批页，外部工具，不默认加载
-  examples/       # 示例，仅参考，不默认加载
-  tests/          # 测试
-  package.json    # type: module + npm test / npm run view
+  viewer/         # 实时视图 + 人工审批页，外部工具，不默认加载（bin: miworkflow-view）
+  examples/       # 示例，本身就是一个 HOME，仅参考（§15）
+  tests/          # 内核测试
+  package.json    # type: module + exports + bin + npm test / npm run view
   README.md       # 怎么跑；规范以本文档为准
   .gitignore      # node_modules/、logs/
   .gitattributes  # 统一 LF（§11）
-  .git/
 ```
 
-`tasks/` 和 `scripts/` **初始为空，且不该被预置任何内容**（§16）。
-两个目录里各放一个 `.gitkeep`，只是为了让空目录能进 Git。
-内核只保证机制可用，不预置任何具体实现；示例一律放 `examples/`（§15）。
+沉淀所在叫 **HOME**：`AGENTFLOW_HOME`，缺省为当前目录。以 Unity 项目为例：
+
+```text
+<Unity 项目>/.workflow/
+  package.json    # { "type": "module", "private": true,
+                  #   "devDependencies": { "miworkflow": "github:Yogioo/MiWorkflow" } }
+                  # 改内核时换成 "file:<本机内核路径>"
+  tasks/          # 任务，mjs
+  scripts/        # 原子能力，mjs
+  tests/          # 沉淀自己的测试
+  logs/           # 运行记录 JSONL（首跑时自动建，gitignore）
+```
+
+- `tasks/`、`scripts/`、`logs/` 都在 HOME 下找；脚本与 Agent 子进程的 cwd 是 HOME；viewer 读 HOME 的 `logs/`。
+- 跑：`cd .workflow && npx miworkflow <task>`。进化的 commit 落在业务仓库，跟业务代码一起回滚（§14）。
+- **内核仓库里没有 `tasks/`、`scripts/`**，测试断言它（§16）；冒出来会被 guard 当成内核改动拦下（§14.1）。
+- 同一次运行里 `run.mjs` 与任务必须加载**同一份** `core.mjs`（`seq` 在模块里）：用 `npx miworkflow` 跑，
+  不要拿另一份内核的 `run.mjs` 去跑装了别的内核的 HOME。
 
 ---
 
@@ -60,8 +75,8 @@ MiWorkflow/
 
 | 概念 | 是什么 | 放哪 |
 |---|---|---|
-| 任务 | 一个 mjs 文件，编排步骤，导出人类可读 `title` | `tasks/<name>.mjs` |
-| 脚本 | 一个 mjs 文件，做原子动作 | `scripts/<action>.mjs` |
+| 任务 | 一个 mjs 文件，编排步骤，导出人类可读 `title` | `<HOME>/tasks/<name>.mjs` |
+| 脚本 | 一个 mjs 文件，做原子动作 | `<HOME>/scripts/<action>.mjs` |
 | Agent | 外部命令，处理开放推理，可整段独立完成（含落地），输出结构化选择 | 由 `core.mjs` 调用 |
 
 没有 md，没有 YAML，没有 DSL，没有 schema 文件。  
@@ -80,9 +95,9 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 ```
 
 对任务而言只有这三个。另有 `log()` 供 `run.mjs` 写 run 级记录（run 开始 / 结束）。
-另导出常量 `LOGS_DIR`（`logs/` 的绝对路径），只给需要定位日志目录的调用方用，不属于任务接口。
+另导出常量 `HOME`、`LOGS_DIR`（HOME 与它的 `logs/` 的绝对路径），只给需要定位目录的调用方用，不属于任务接口。
 
-任务文件 import 它们，然后用 JS 自由组合：
+任务文件用包名 import 它们（`import { script, agent, human } from 'miworkflow'`），然后用 JS 自由组合：
 
 - 顺序：`await`
 - 分支：`if / else / switch`
@@ -137,7 +152,7 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 `tasks/fix_bug.mjs`
 
 ```js
-import { script, agent, human } from '../core.mjs';
+import { script, agent, human } from 'miworkflow';
 
 export const title = '修复 bug';
 
@@ -233,22 +248,26 @@ try {
 import { spawn, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
+// HOME：沉淀所在（§3）；子进程 cwd、gitSha 都取它
+export const HOME = path.resolve(process.env.AGENTFLOW_HOME || process.cwd());
+export const LOGS_DIR = path.join(HOME, 'logs');
+
 // 一次运行一个 runId，三个原语共用（§12）
 // 延迟解析：run.mjs 先写 env，再加载本模块
-const rid = () => process.env.AGENTFLOW_RUN_ID || (cache ??= randomUUID());
+const rid = () => process.env.AGENTFLOW_RUN_ID || (runIdCache ??= randomUUID());
 let seq = 0;
 
 // run.mjs 也用它写 run 级记录
 export function log(record) {
   const row = { runId: rid(), task: process.env.AGENTFLOW_TASK,
                 seq: ++seq, at: new Date().toISOString(), gitSha: gitSha(), ...record };
-  appendFileSync(`logs/${row.runId}.jsonl`, JSON.stringify(row) + '\n');
+  appendFileSync(path.join(LOGS_DIR, `${row.runId}.jsonl`), JSON.stringify(row) + '\n');
   return row.seq;
 }
 
 export async function script(name, args = {}, opts = {}) {
   // dryRun 注入 args；parseOrFail 顺带把非 0 退出码判成 failed（§6.1）
-  const out = await run(process.execPath, [`scripts/${name}.mjs`], JSON.stringify(args));
+  const out = await run(process.execPath, [path.join(HOME, 'scripts', `${name}.mjs`)], JSON.stringify(args));
   const result = parseOrFail(out);
   // say 缺省由 core 回落，脚本可自行返回（§13.1）
   log({ primitive: 'script', name, ...result, say: result.say ?? `${name}: ${result.status}` });
@@ -266,7 +285,7 @@ export async function human(prompt, opts = {}) {
   const seq = log({ primitive: 'human', status: 'pending', prompt, say: `⏸ ${prompt}` });
   const status = humanMode() === 'stdin'
     ? await askStdin(prompt)                                    // §13.4
-    : await waitFile(`logs/${rid()}.decide.${seq}.json`);        // §13.5
+    : await waitFile(path.join(LOGS_DIR, `${rid()}.decide.${seq}.json`)); // §13.5
   log({ primitive: 'human', ref: seq, status, prompt, say: `${prompt} → ${status}` });
   return { status };
 }
@@ -277,15 +296,21 @@ export async function human(prompt, opts = {}) {
 ```js
 #!/usr/bin/env node
 import { existsSync } from 'node:fs';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { inspect } from './guard.mjs';
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const task = process.argv[2];
 
 if (!task) {
-  console.error('usage: node run.mjs <task> [--yes]');
+  console.error('usage: miworkflow <task> [--yes] [--dry-run]');
+  process.exit(1);
+}
+
+// 内核被改而没审批就拒跑（§14.1）
+if (!inspect().ok) {
+  console.error('✖ 内核被改了但没有审批，拒跑：node guard.mjs approve --reason "..."');
   process.exit(1);
 }
 
@@ -293,11 +318,11 @@ if (!task) {
 process.env.AGENTFLOW_TASK = task;
 process.env.AGENTFLOW_RUN_ID ??= randomUUID();
 
-const { log } = await import('./core.mjs');
-const taskFile = path.join(ROOT, 'tasks', `${task}.mjs`);
+const { log, HOME } = await import('./core.mjs');
+const taskFile = path.join(HOME, 'tasks', `${task}.mjs`);
 
 if (!existsSync(taskFile)) {
-  console.error(`task not found: ${task}`);
+  console.error(`task not found: ${task}（在 ${path.join(HOME, 'tasks')} 下找）`);
   process.exit(1);
 }
 
@@ -542,10 +567,10 @@ v1.6 只保留原则：
 v1.6 只要求：
 
 1. 任务失败 → 记录日志。
-2. 人工或 Agent 修改任务 / 脚本。
-3. 测试通过。
+2. 人工或 Agent 修改任务 / 脚本（HOME 里，§3）。
+3. 测试通过（HOME 自己的测试）。
 4. `human()` 确认。
-5. Git 提交，可回滚。
+5. 在 HOME 所在的业务仓库 Git 提交，可回滚。
 
 暂不实现（机制层面；日志与草案类禁令见 §12、§16）：
 
@@ -555,16 +580,20 @@ v1.6 只要求：
 
 这些放到 v2，等最小闭环跑稳后再加。
 
-### 14.1 内核护栏（v1.6 已实现）
+### 14.1 内核护栏
 
-「只往 `tasks/` 和 `scripts/` 沉淀，不改内核」不靠自觉，靠 `core.lock.json` 加 `node --test`。
+「只往 HOME 沉淀，不改内核」不靠自觉，靠 `core.lock.json` 加两道闸。
 
-- **可写面**：`tasks/`、`scripts/`、`logs/`、`examples/` —— 沉淀的地方，随便改，不算数。
+- **可写面**：内核仓库里只有 `logs/`、`examples/` —— 随便改，不算数。沉淀本来就不在内核仓库（§3）。
 - **内核**：其余全部（`run.mjs`、`core.mjs`、`guard.mjs`、`viewer/`、`tests/`、`Core.md`、`package.json` …）。
+  内核根下冒出 `tasks/`、`scripts/` 同样算内核改动。
 - `core.lock.json` 记下内核每个文件的哈希，以及最后一次审批的时间、署名、理由。
 
-改了内核而没重新固化，`node --test` 直接红；而「测试通过」是进化闭环的第 3 步（§14），
-于是未审批的内核改动卡在门口。
+改了内核而没重新固化：
+
+1. **内核仓库的 `node --test` 直接红**（改内核的人会跑它）。
+2. **`run.mjs` 起跑前拒跑**。进化闭环第 3 步跑的是 HOME 的测试（§14），碰不到内核测试，
+   所以必须在运行时拦，否则装在 `node_modules` 里的内核被静默改掉也没人知道。
 
 重新固化必须有人在终端：
 
@@ -589,28 +618,22 @@ node guard.mjs install      # 装 .git/hooks/pre-commit
 ## 15. 示例位置
 
 示例只放 `examples/`，**不默认加载**（§16：不内置具体任务 / 不内置具体脚本）。
+`examples/` 本身就是一个 HOME（§3），不用复制，指过去直接跑：
 
 ```text
 examples/
-  demo.task.mjs      # 任务示例 → 复制到 tasks/demo.mjs
-  boom.task.mjs      # 任务示例 → 复制到 tasks/boom.mjs
-  hello.script.mjs   # 脚本示例 → 复制到 scripts/hello.mjs
+  tasks/demo.mjs      # 脚本 → 人工审批 → Agent → 脚本
+  tasks/boom.mjs      # 故意失败，看失败态
+  scripts/hello.mjs   # 最小脚本
   README.md
 ```
 
-文件名后缀就是目标位置：`*.task.mjs` → `tasks/`，`*.script.mjs` → `scripts/`。
-
-**为什么平铺，而不按 `tasks/`、`scripts/` 分目录**：示例任务 import 的是 `'../core.mjs'`。
-`examples/` 与 `tasks/` 同在根目录下一层，所以复制过去**一个字都不用改**；
-若放进 `examples/tasks/`，就得写 `'../../core.mjs'`，复制时必须回来改路径。
-
-`tasks/` 与 `scripts/` 保持为空，正式内容由使用中沉淀：
-
 ```bash
-cp examples/demo.task.mjs    tasks/demo.mjs
-cp examples/hello.script.mjs scripts/hello.mjs
-node run.mjs demo
+AGENTFLOW_HOME=examples node run.mjs demo
 ```
+
+示例任务写 `import ... from 'miworkflow'`：在内核仓库里靠包的自引用解析，
+拷进业务仓库的 `<HOME>/tasks/` 也**一个字不用改**。正式内容在业务仓库的 HOME 里由使用中沉淀。
 
 ---
 
@@ -646,7 +669,7 @@ node run.mjs demo
 
 1. ✅ `core.mjs`：三原语、stdin/stdout 协议、最小日志（含 `say`、决定通道，§13）。
 2. ✅ `run.mjs`：发现任务、执行任务、run 级记录，任务不存在直接报错。
-3. ✅ 目录：`tasks/`、`scripts/`（保持为空）、`logs/`、`tests/`、`examples/`、`viewer/`。
+3. ✅ 目录：`logs/`、`tests/`、`examples/`、`viewer/`（v1.7 起 `tasks/`、`scripts/` 移到 HOME，§3）。
 4. ✅ `viewer/`：实时视图 + Web 审批（外部工具，§13.6）。
 5. ✅ 跑通「任务不存在 → 明确报错；把 `examples/*.task.mjs` 复制进 `tasks/` → 执行 → 记录 → 网页可见可审批」。
 6. ✅ 把原则变成护栏：`node --test` 里断言 `tasks/`、`scripts/` 不预置任何实现（§3、§16）。
@@ -654,9 +677,10 @@ node run.mjs demo
 8. ✅ v1.6 收口：`--dry-run` 注入 `args.dryRun`、脚本非 0 退出码即 failed、Agent 输出不合契约即 failed；
    文档同步实现（§6.1、§6.2、§13.6）。
 9. ✅ 内核护栏：`core.lock.json` + `guard.mjs`，改内核要在终端显式 `approve`，否则 `node --test` 变红（§14.1）。
-10. 后续只往 `tasks/` 和 `scripts/` 沉淀（从复制 `examples/` 起步），不改内核。
+10. 后续只往 HOME 的 `tasks/` 和 `scripts/` 沉淀（可从拷 `examples/` 起步），不改内核。
 11. 自动进化 v2 再议。
-12. v1.7：沉淀离开内核仓库 + 运行期 Agent 适配器（§19，已定，未实现）。
+12. ✅ v1.7 沉淀离开内核仓库：HOME、包名 import、`bin`、`examples/` 即 HOME、`run.mjs` 起跑前查内核（§3、§14.1、§15）。
+13. v1.7 运行期 Agent 适配器（§19.2，已定，未实现）。
 
 ---
 
@@ -664,8 +688,8 @@ node run.mjs demo
 
 > **内核零业务，内容可沉淀，示例仅参考。**
 
-- 任务 → `tasks/<name>.mjs`
-- 能力 → `scripts/<action>.mjs`
+- 任务 → `<HOME>/tasks/<name>.mjs`
+- 能力 → `<HOME>/scripts/<action>.mjs`
 - 智能 → Agent + 三个原语
 - 编排 → 普通 JS
 - 写操作 → Agent 直接写，默认全权限
@@ -681,45 +705,16 @@ node run.mjs demo
 
 ---
 
-## 19. v1.7 变更（已定，未实现）
+## 19. v1.7 剩余变更（已定，未实现）
 
-> 本节是 2026-09-29 拍板的设计。§1–§18 仍描述已实现的 v1.6；实现 v1.7 时把本节折进正文、删掉本节。
-> 落地清单见 `TODO.md` 的 B2、C2。
+> 2026-09-29 拍板的设计。§1–§18 描述已实现的部分；本节实现后折进正文、删掉。
+> 落地清单见 `TODO.md` 的 C2。
 
-### 19.1 沉淀离开内核仓库
+### 19.1 沉淀离开内核仓库（已实现）
 
-**问题**：§3 要求 `tasks/`、`scripts/` 为空，测试查的是文件系统；§14 又要求沉淀后测试通过、
-把沉淀提交进 Git。两条同时成立，沉淀一开始测试就永远红，提交也进了内核仓库。
-根子是**内核仓库与沉淀仓库是同一个**。
-
-**决定**：内核装一份，沉淀跟着业务项目走。
-
-- **HOME**：`AGENTFLOW_HOME`，缺省为当前目录。`tasks/`、`scripts/`、`logs/` 都在 HOME 下找；
-  脚本子进程的 cwd 也是 HOME；viewer 读 HOME 的 `logs/`；`gitSha` 取 HOME 所在仓库的 HEAD
-  （记的是沉淀的版本，进化回滚看的就是它）。
-- **任务 import 包名**：`import { script, agent, human } from 'miworkflow'`，不再是 `'../core.mjs'`。
-  内核 `package.json` 加 `"exports": { ".": "./core.mjs" }` 与 `"bin": { "miworkflow": "./run.mjs" }`。
-- **业务仓库的样子**（以 Unity 项目为例）：
-
-  ```text
-  <Unity 项目>/.workflow/
-    package.json   # { "type": "module", "private": true,
-                   #   "devDependencies": { "miworkflow": "github:Yogioo/MiWorkflow" } }
-                   # 改内核时换成 "file:<本机内核路径>"
-    tasks/  scripts/  tests/
-    logs/          # gitignore
-  ```
-
-  跑：`cd .workflow && npx miworkflow unity_fix_tests`。沉淀的测试放它自己的 `tests/`（B1 随之消解），
-  进化的 commit 落在业务仓库，跟游戏代码一起回滚。
-- **内核仓库**：不再有 `tasks/`、`scripts/`。`examples/` 本身就是一个 HOME
-  （`examples/tasks/demo.mjs`、`examples/scripts/hello.mjs`），`AGENTFLOW_HOME=examples node run.mjs demo`
-  直接跑，不用复制；示例里的 `import 'miworkflow'` 靠包的自引用解析。§15「为什么平铺」的理由随之消失。
-- **护栏跟着挪**：
-  - 空目录测试改成「内核仓库根下没有 `tasks/`、`scripts/`」+「`examples/` 作为 HOME 能跑通」。
-  - 进化闭环跑的是**业务仓库**的测试，不再会顺带跑内核测试，所以内核被改只能在运行时拦：
-    `run.mjs` 起跑前调 `guard.inspect()`，内核与 `core.lock.json` 不一致就**拒跑**，提示去终端 `approve`。
-  - 内核仓库的可写面缩为 `logs/`、`examples/`。
+已折进 §3（HOME、业务仓库布局）、§5 / §7（包名 import）、§9、§14、§14.1（起跑前查内核）、§15（`examples/` 即 HOME）。
+起因：旧版要求 `tasks/`、`scripts/` 为空、测试查文件系统，而进化闭环又要沉淀后测试通过、提交进 Git ——
+内核仓库与沉淀仓库是同一个，两条不可能同时成立。
 
 ### 19.2 运行期 Agent 适配器
 

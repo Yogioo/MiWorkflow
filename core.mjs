@@ -4,11 +4,11 @@ import { spawn, execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
-export const LOGS_DIR = path.join(ROOT, 'logs');
-const SCRIPTS_DIR = path.join(ROOT, 'scripts');
+// HOME：沉淀所在（§3）。tasks/ scripts/ logs/ 都在这里，缺省为当前目录
+export const HOME = path.resolve(process.env.AGENTFLOW_HOME || process.cwd());
+export const LOGS_DIR = path.join(HOME, 'logs');
+const SCRIPTS_DIR = path.join(HOME, 'scripts');
 
 // 一次运行一个 runId（§12）。延迟解析：run.mjs 先写好 env，再加载本模块。
 let runIdCache = null;
@@ -18,12 +18,14 @@ function rid() {
 
 let seq = 0;
 
-// gitSha 只取一次（§12），非 git 仓库则为 null
+// gitSha 只取一次（§12），取的是 HOME 所在仓库（沉淀的版本）；非 git 仓库则为 null
 let gitShaCache;
 function gitSha() {
   if (gitShaCache !== undefined) return gitShaCache;
   try {
-    gitShaCache = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    gitShaCache = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: HOME, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']
+    }).trim();
   } catch {
     gitShaCache = null;
   }
@@ -49,7 +51,7 @@ export function log(record) {
 // 无 shell 依赖（§11）；stderr 原样透传，方便人当场看（§6.1）
 function run(cmd, argv, input, timeoutMs) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, argv, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(cmd, argv, { cwd: HOME, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '';
     let stderr = '';
     let done = false;

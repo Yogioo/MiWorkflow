@@ -1,5 +1,5 @@
-// 任务示例 → 复制到 tasks/demo.mjs 即可运行（import 路径不用改，见 examples/README.md）
-import { script, agent, human } from '../core.mjs';
+// 任务示例：AGENTFLOW_HOME=examples node run.mjs demo（见 examples/README.md）
+import { script, agent, human } from 'miworkflow';
 
 export const title = '演示：脚本 → 人工审批 → Agent → 脚本';
 

@@ -1,14 +1,18 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const LOGS = path.join(ROOT, 'logs');
-const TASKS = path.join(ROOT, 'tasks');
-const SCRIPTS = path.join(ROOT, 'scripts');
-const TESTS = path.join(ROOT, 'tests');
+// 测试用一次性 HOME（§3）：fixture 不落进内核目录。必须在首次 import core 之前定好
+const HOME = mkdtempSync(path.join(os.tmpdir(), 'miworkflow-test-'));
+process.env.AGENTFLOW_HOME = HOME;
+after(() => rmSync(HOME, { recursive: true, force: true }));
+
+const LOGS = path.join(HOME, 'logs');
+const SCRIPTS = path.join(HOME, 'scripts');
 const FIXTURE = '__test_fixture';
 const EXIT1 = '__test_exit1';
 const FIXTURE_NAMES = [FIXTURE, EXIT1];
@@ -26,7 +30,7 @@ const FIXTURE_SRC = [
   'process.stdout.write(JSON.stringify({',
   "  status: 'ok',",
   '  say: `fixture 收到：${args.who ?? \'nobody\'}`,',
-  '  data: args',
+  '  data: { ...args, cwd: process.cwd() }',
   '}));',
   ''
 ].join('\n');
@@ -47,40 +51,34 @@ function teardownFixture() {
   for (const n of FIXTURE_NAMES) rmSync(path.join(SCRIPTS, `${n}.mjs`), { force: true });
 }
 
-// 假 Agent：先把 stdin 收完再吐指定输出，模拟一个不守契约的外部命令（§6.2）
+// 假 Agent：先把 stdin 收完再吐指定输出，模拟一个不守契约的外部命令（§6.2）。
+// 子进程 cwd 是 HOME，所以命令里写相对路径，免得临时目录带空格被 split 拆开
 function writeFakeAgent(name, body) {
-  const file = path.join(TESTS, `${name}.mjs`);
+  const file = path.join(HOME, `${name}.mjs`);
   writeFileSync(file, [
     "let raw = '';",
     'for await (const chunk of process.stdin) raw += chunk;',
     body,
     ''
   ].join('\n'));
-  return { file, cmd: `node ${file}` };
+  return { file, cmd: `node ${name}.mjs` };
 }
 
 // ── 把原则变成护栏（§2.5、§3、§16）──────────────────────────────────────
 
-test('tasks/：仓库不预置任何具体任务', () => {
-  const strays = existsSync(TASKS) ? readdirSync(TASKS).filter((f) => f.endsWith('.mjs')) : [];
-  assert.deepEqual(strays, [], 'tasks/ 应初始为空，示例只在 examples/（§3、§15）');
+test('内核仓库不放沉淀：根下没有 tasks/、scripts/（§3）', () => {
+  for (const dir of ['tasks', 'scripts']) {
+    assert.equal(existsSync(path.join(ROOT, dir)), false, `${dir}/ 不该出现在内核仓库：沉淀放 HOME（AGENTFLOW_HOME）`);
+  }
 });
 
-test('scripts/：仓库不预置任何具体脚本', () => {
-  const strays = existsSync(SCRIPTS)
-    ? readdirSync(SCRIPTS).filter((f) => f.endsWith('.mjs') && !FIXTURE_NAMES.includes(f.slice(0, -'.mjs'.length)))
-    : [];
-  assert.deepEqual(strays, [], 'scripts/ 应初始为空，示例只在 examples/（§3、§15）');
-});
-
-test('tasks/ 与 examples/ 的示例不重名，且示例任务能直接复制过去用', () => {
-  const examples = readdirSync(path.join(ROOT, 'examples'));
-  const taskExamples = examples.filter((f) => f.endsWith('.task.mjs'));
-  assert.ok(taskExamples.length > 0, 'examples/ 里应至少有一个任务示例');
-  for (const f of taskExamples) {
-    const src = readFileSync(path.join(ROOT, 'examples', f), 'utf8');
-    // examples/ 与 tasks/ 同在根目录下一层，所以 import 路径复制后不用改（§15）
-    assert.match(src, /from '\.\.\/core\.mjs'/, `${f} 必须用 '../core.mjs'，否则复制到 tasks/ 会断`);
+test('examples/ 是一个 HOME，示例任务 import 包名（§15）', () => {
+  const dir = path.join(ROOT, 'examples', 'tasks');
+  const tasks = readdirSync(dir).filter((f) => f.endsWith('.mjs'));
+  assert.ok(tasks.length > 0, 'examples/tasks/ 里应至少有一个任务示例');
+  for (const f of tasks) {
+    const src = readFileSync(path.join(dir, f), 'utf8');
+    assert.match(src, /from 'miworkflow'/, `${f} 必须 import 'miworkflow'，拷进业务仓库才不用改`);
   }
 });
 
@@ -98,6 +96,7 @@ test('script：返回结构里带人话 say', async () => {
 
     assert.equal(r.status, 'ok');
     assert.match(r.say, /fixture 收到：测试/);
+    assert.equal(path.resolve(r.data.cwd).toLowerCase(), HOME.toLowerCase(), '脚本子进程在 HOME 里跑（§3）');
 
     const [first] = rows(runId);
     assert.equal(first.primitive, 'script');

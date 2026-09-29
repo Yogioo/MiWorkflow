@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeCore, inspect, loadLock } from '../guard.mjs';
+import { spawnSync } from 'node:child_process';
+import { computeCore, inspect, loadLock, ROOT } from '../guard.mjs';
 
 // ── 把「不改内核」从约定变成机制（§14.1、§17 路线 9）────────────────────
 //
@@ -35,14 +36,21 @@ test('内核护栏：内核与固化记录一致', () => {
   );
 });
 
-test('内核护栏：可写面不算内核，Agent 沉淀不必审批', () => {
+test('内核护栏：可写面不算内核', () => {
   const files = Object.keys(computeCore());
   for (const f of files) {
-    assert.ok(
-      !/^(tasks|scripts|logs|examples)\//.test(f),
-      `${f} 在可写面里，不该被当成内核（§16：内容可沉淀）`
-    );
+    assert.ok(!/^(logs|examples)\//.test(f), `${f} 在可写面里，不该被当成内核（§14.1）`);
   }
+});
+
+// 业务仓库经 npm 装内核（git 依赖也是先 pack 再解包，§3），装进去的那份必须一个内核文件都不少，
+// 否则 guard 在那边判脏、run.mjs 拒跑
+test('内核护栏：内核清单里的文件都会被 npm pack 带上', (t) => {
+  const r = spawnSync('npm pack --dry-run --json', { cwd: ROOT, encoding: 'utf8', shell: true });
+  if (r.status !== 0) return t.skip(`npm pack 跑不起来：${(r.stderr || r.error?.message || '').trim().split('\n').pop()}`);
+  const packed = new Set(JSON.parse(r.stdout)[0].files.map((f) => f.path));
+  const missing = Object.keys(computeCore()).filter((f) => !packed.has(f));
+  assert.deepEqual(missing, [], `这些内核文件不会进 npm 包：${missing.join('、')}`);
 });
 
 test('内核护栏：日志不进内核清单（logs/ 是本地运行产物）', () => {

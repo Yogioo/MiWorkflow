@@ -1,5 +1,5 @@
-// 任务示例 → 复制到 tasks/boom.mjs，用来看失败态在网页上长什么样
-import { script } from '../core.mjs';
+// 任务示例：看失败态在网页上长什么样，AGENTFLOW_HOME=examples node run.mjs boom
+import { script } from 'miworkflow';
 
 export const title = '演示：失败的任务';
 

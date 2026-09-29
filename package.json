@@ -1,8 +1,14 @@
 {
   "name": "miworkflow",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=18" },
+  "exports": { ".": "./core.mjs" },
+  "bin": {
+    "miworkflow": "./run.mjs",
+    "miworkflow-view": "./viewer/serve.mjs"
+  },
   "scripts": {
     "view": "node viewer/serve.mjs",
     "test": "node --test",

@@ -1,5 +1,4 @@
-// 脚本示例 → 复制到 scripts/hello.mjs
-// 契约（§6.1）：stdin JSON 进，stdout 纯 JSON 出，日志走 stderr
+// 脚本示例。契约（§6.1）：stdin JSON 进，stdout 纯 JSON 出，日志走 stderr
 async function readStdin() {
   let data = '';
   for await (const chunk of process.stdin) data += chunk;
