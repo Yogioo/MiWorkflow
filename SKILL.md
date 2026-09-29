@@ -13,6 +13,7 @@ description: 在业务项目里用 MiWorkflow 写、改、跑工作流（.workfl
 
 ```text
 .workflow/
+  AGENTS.md             # 给 AI 的入口（init 放的），可以按项目补充约定
   tasks/<name>.mjs      # 任务：编排步骤
   scripts/<action>.mjs  # 脚本：一个原子动作
   tests/                # 脚本和任务的测试（node:test）

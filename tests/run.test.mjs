@@ -132,7 +132,7 @@ test('HOME：AGENTFLOW_HOME 优先于往上找', () => {
 
 // ── init ──────────────────────────────────────────────────────────────────
 
-test('init：空白模板建在 git 仓库根，.gitignore 只含 logs/', () => {
+test('init：空白模板建在 git 仓库根，.gitignore 只含 logs/，AGENTS.md 指向 miworkflow skill', () => {
   const repo = tmpDir();
   spawnSync('git', ['init', '-q'], { cwd: repo });
   const sub = path.join(repo, 'a', 'b');
@@ -144,7 +144,16 @@ test('init：空白模板建在 git 仓库根，.gitignore 只含 logs/', () => 
   assert.ok(existsSync(path.join(home, 'scripts')));
   assert.equal(readFileSync(path.join(home, '.gitignore'), 'utf8'), 'logs/\n');
   assert.equal(existsSync(path.join(sub, '.workflow')), false);
-  assert.match(r.stdout, /SKILL\.md/, '打印 SKILL.md 路径，方便喂给 AI');
+  const agents = readFileSync(path.join(home, 'AGENTS.md'), 'utf8');
+  assert.match(agents, /miworkflow skill/, 'AI 入口要指向完整写法');
+  assert.doesNotMatch(agents, /[A-Za-z]:[\\/]|\/Users\/|\/home\//, '不写本机绝对路径：会进 Git、换机器就失效');
+  assert.match(r.stdout, /miworkflow skill/);
+});
+
+test('skill：打印内核的 SKILL.md，不需要 .workflow/', () => {
+  const r = cli(['skill'], { cwd: tmpDir() });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, readFileSync(path.join(ROOT, 'SKILL.md'), 'utf8'));
 });
 
 test('init：不在 git 仓库里就建在当前目录', () => {
@@ -210,5 +219,6 @@ test('new：没有 .workflow/ → 报错提示 init；保留字不能当任务�
 
   makeHome(dir, {});
   assert.equal(cli(['new', 'view'], { cwd: dir }).code, 1);
+  assert.equal(cli(['new', 'skill'], { cwd: dir }).code, 1);
   assert.equal(cli(['new', '../evil'], { cwd: dir }).code, 1);
 });

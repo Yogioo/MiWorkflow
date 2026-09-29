@@ -42,11 +42,13 @@ miworkflow init                  # 在 git 仓库根建 .workflow/（终端里�
 miworkflow new fix_tests         # 建任务骨架 .workflow/tasks/fix_tests.mjs
 miworkflow fix_tests --filter login   # 跑；项目里任意子目录都行，往上找 .workflow/
 miworkflow view                  # 网页：点「运行」、看每一步、点「通过 / 拒绝」
+miworkflow skill                 # 打印写任务的完整说明（给 AI 看）
 ```
 
 ```text
 <项目>/.workflow/
   .gitignore     # 只有 logs/
+  AGENTS.md      # 给 AI 的入口：硬规则 + 「先跑 miworkflow skill」
   tasks/         # 任务
   scripts/       # 原子能力
   tests/         # 沉淀自己的测试
@@ -64,13 +66,14 @@ export default async function ({ script, agent, human, args }) {
 }
 ```
 
-让 AI 写任务：把内核根的 [SKILL.md](SKILL.md) 交给它（`init` / `new` 会打印路径），或把内核目录链成技能。
+让 AI 写任务：`init` 放的 `.workflow/AGENTS.md` 会被 Cursor / Codex / Claude Code 自动读到，
+它让 AI 先跑 `miworkflow skill` 读完整写法（即内核的 [SKILL.md](SKILL.md)）；也可以把内核目录链成技能。
 进化的 commit 落在业务仓库，跟业务代码一起回滚（[Core.md](Core.md) §3、§14）。
 
 ## 内核仓库
 
 ```
-run.mjs     唯一入口（bin: miworkflow）：init / new / view / 跑任务
+run.mjs     唯一入口（bin: miworkflow）：init / new / view / skill / 跑任务
 core.mjs    三个原语：script / agent / human
 viewer/     实时视图 + 人工审批 + 运行按钮（外部工具）
 templates/  init 可选的模板，只在 init 时复制

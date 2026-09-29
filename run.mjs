@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// run.mjs — 唯一入口（§9）：miworkflow init | new <name> | view | <task> [--key value]
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+// run.mjs — 唯一入口（§9）：miworkflow init | new <name> | view | skill | <task> [--key value]
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -10,14 +10,32 @@ import path from 'node:path';
 const KERNEL = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATES = path.join(KERNEL, 'templates');
 const SKILL = path.join(KERNEL, 'SKILL.md');
-const RESERVED = new Set(['init', 'new', 'view']);
+const RESERVED = new Set(['init', 'new', 'view', 'skill']);
 const NAME = /^[A-Za-z0-9_-]+$/;
 const USAGE = [
   'usage:',
   '  miworkflow init [--template <名字>]   在项目里建 .workflow/',
   '  miworkflow new <name>                 建任务骨架 .workflow/tasks/<name>.mjs',
   '  miworkflow view                       起网页：看运行、审批、点运行',
+  '  miworkflow skill                      打印写任务的完整说明（给 AI 看）',
   '  miworkflow <task> [--key value]... [--yes] [--dry-run]'
+].join('\n');
+
+// init 放进 .workflow/ 的 AI 入口：只写硬规则，完整写法指向 miworkflow skill，换机器、升内核都不过时
+const AGENTS_MD = [
+  '# .workflow/',
+  '',
+  '这是 MiWorkflow 的工作流目录：`tasks/` 放任务，`scripts/` 放脚本，`tests/` 放测试，`logs/` 是运行记录（不进 Git）。',
+  '',
+  '**动手写或改任务 / 脚本之前，先运行 `miworkflow skill` 读完整写法。**',
+  '',
+  '硬规则：',
+  '',
+  '- 只改 `.workflow/` 里的文件，不改内核（全局装的 `miworkflow`）',
+  '- 任务不 import 内核，原语和参数是传进来的：`export default async function ({ script, agent, human, args })`',
+  '- 确定的步骤写成 `scripts/<动作>.mjs`（stdin 读 JSON，stdout 只写一段 JSON）；模糊的整段交给 `agent()`；高风险步骤前 `human()`',
+  '- 跑：`miworkflow <task> [--key value]`；看运行、审批、点运行：`miworkflow view`',
+  ''
 ].join('\n');
 
 const { positional, args, dryRun } = parseArgv(process.argv.slice(2));
@@ -29,7 +47,8 @@ else if (cmd === 'new') newTask(name);
 else if (cmd === 'view') {
   useHome();
   await import('./viewer/serve.mjs');
-} else await runTask(cmd);
+} else if (cmd === 'skill') process.stdout.write(readFileSync(SKILL, 'utf8'));
+else await runTask(cmd);
 
 // ── 参数 ──────────────────────────────────────────────────────────────────
 // --key value / --key=value / --flag(=true)；值一律是字符串。--yes、--dry-run 归内核，不进 args
@@ -100,12 +119,13 @@ async function init(template) {
   const skipped = [];
   for (const dir of ['tasks', 'scripts']) mkdirSync(path.join(home, dir), { recursive: true });
   place(path.join(home, '.gitignore'), home, created, skipped, (f) => writeFileSync(f, 'logs/\n'));
+  place(path.join(home, 'AGENTS.md'), home, created, skipped, (f) => writeFileSync(f, AGENTS_MD));
   if (template !== 'blank') copyTree(path.join(TEMPLATES, template), home, home, created, skipped);
 
   console.log(`HOME  ${home}（模板：${template}）`);
   for (const f of created) console.log(`  + ${f}`);
   for (const f of skipped) console.log(`  = ${f}（已存在，没动）`);
-  console.log(`写任务：miworkflow new <name>，或把 ${SKILL} 交给 AI`);
+  console.log('写任务：miworkflow new <name>，或让 AI 读 .workflow/AGENTS.md（完整写法：miworkflow skill）');
 }
 
 function listTemplates() {
@@ -156,7 +176,7 @@ function copyTree(src, dst, home, created, skipped) {
 // ── new ───────────────────────────────────────────────────────────────────
 function newTask(task) {
   if (!task || !NAME.test(task) || RESERVED.has(task)) {
-    fail('usage: miworkflow new <name>（字母、数字、_、-；不能叫 init / new / view）');
+    fail('usage: miworkflow new <name>（字母、数字、_、-；不能叫 init / new / view / skill）');
   }
   const home = findHome();
   if (!home || !isDir(home)) fail('找不到 .workflow/。先在项目里跑 miworkflow init');
@@ -175,7 +195,7 @@ function newTask(task) {
     ''
   ].join('\n'));
   console.log(`+ ${file}`);
-  console.log(`跑：miworkflow ${task}；写法见 ${SKILL}`);
+  console.log(`跑：miworkflow ${task}；写法：miworkflow skill`);
 }
 
 // ── 跑任务 ────────────────────────────────────────────────────────────────
