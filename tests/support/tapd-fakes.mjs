@@ -14,8 +14,9 @@ export const story = (id, { name = `story ${id}`, label = '', priority = '', des
   id: String(id), name, label, priority, description, status, owner, workspace_id
 });
 
-export function writeTapdState(file, { stories = [], comments = [], fail } = {}) {
-  writeFileSync(file, JSON.stringify({ stories, comments, ...(fail ? { fail } : {}), calls: [] }, null, 2));
+// files：{ '/tfl/…': base64 }，假 OpenAPI 在 /files/tfl/… 上给出这些字节（get-image 换出来的下载地址）
+export function writeTapdState(file, { stories = [], comments = [], files, fail } = {}) {
+  writeFileSync(file, JSON.stringify({ stories, comments, ...(files ? { files } : {}), ...(fail ? { fail } : {}), calls: [] }, null, 2));
 }
 
 export const readTapdState = (file) => JSON.parse(readFileSync(file, 'utf8'));

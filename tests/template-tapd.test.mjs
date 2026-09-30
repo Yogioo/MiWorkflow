@@ -2,7 +2,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -10,7 +10,7 @@ import { FAKE_TOKEN, openApiLog, readTapdState, startFakeOpenApi, story, tapdEnv
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TPL = path.join(ROOT, 'templates', 'tapd');
-const { runTapd, tapdJson, firstJson, mask, openApi } = await import(pathToFileURL(path.join(TPL, 'scripts', '_tapd.mjs')).href);
+const { runTapd, tapdJson, firstJson, mask, openApi, htmlToMarkdown } = await import(pathToFileURL(path.join(TPL, 'scripts', '_tapd.mjs')).href);
 
 const TMP = mkdtempSync(path.join(os.tmpdir(), 'miworkflow-tapd-'));
 after(() => rmSync(TMP, { recursive: true, force: true }));
@@ -220,8 +220,107 @@ test('ticket_ready：空壳需求进 blocked，贴 afk-failed + 评论；干跑�
   }
 });
 
+test('htmlToMarkdown：标题 / 表格 / 列表 / 加粗 / 行内代码 / 链接 / 实体', () => {
+  const md = htmlToMarkdown([
+    '<h2>验收</h2><p>要 <strong>加粗</strong>、<code>npm&nbsp;test</code> 和 <a href="https://x.cn/a">链接</a> &amp; 实体</p>',
+    '<ul><li>一</li><li>二<ol><li>二.1</li></ol></li></ul>',
+    '<table><tbody><tr><th>列A</th><th>列B</th></tr><tr><td>1|2</td><td><b>是</b><br>换行</td></tr></tbody></table>',
+    '<img alt="图" src=\'/tfl/x.png\'>'
+  ].join(''), { img: (src, alt) => `IMG(${src},${alt})` });
+  assert.match(md, /^## 验收$/m);
+  assert.match(md, /要 \*\*加粗\*\*、`npm test` 和 \[链接\]\(https:\/\/x\.cn\/a\) & 实体/);
+  assert.match(md, /^- 一\n- 二\n {3}1\. 二\.1$/m);
+  assert.match(md, /^\| 列A \| 列B \|\n\| --- \| --- \|\n\| 1\\\|2 \| \*\*是\*\*<br>换行 \|$/m);
+  assert.match(md, /IMG\(\/tfl\/x\.png,图\)/);
+});
+
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 4, 5, 6]);
+
+test('ticket_view：快照含描述 + 全部评论（走 OpenAPI），HTML 转 Markdown，图片按魔数落到 images/', async () => {
+  const id = '1152360842001004201';
+  const f = stateFile({
+    stories: [story(id, {
+      name: '做个按钮',
+      description: '<h3>背景</h3><table><tr><th>项</th><th>值</th></tr><tr><td>颜色</td><td>红</td></tr></table>' +
+        '<ul><li><strong>必须</strong>能点</li></ul><p><img width=10 src=/tfl/a.png></p><p><img src="/tfl/missing.png" alt="坏"></p>'
+    })],
+    comments: [
+      { id: '2', entry_type: 'stories', entry_id: id, description: '<p>第二条<img src=\'/tfl/b.jpg\'/></p>', author: 'bob', created: '2026-01-02 00:00:00' },
+      { id: '1', entry_type: 'stories', entry_id: id, description: '<p>第一条 <b>要点</b></p>', author: 'amy', created: '2026-01-01 00:00:00' },
+      { id: '3', entry_type: 'stories', entry_id: 'other', description: '别家的', author: 'x', created: '1' }
+    ],
+    files: { '/tfl/a.png': PNG.toString('base64'), '/tfl/b.jpg': JPG.toString('base64') }
+  });
+  const api = await startFakeOpenApi(f);
+  try {
+    const home = path.join(TMP, 'view-home');
+    const { out, stderr } = runScript('ticket_view', { id }, { ...tapdEnv(f, api.endpoint), AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'run1' });
+    assert.equal(out.status, 'ok');
+    const file = path.join(home, 'logs', 'run1', 'tickets', id, 'ticket.md');
+    assert.deepEqual(out.data, { id, ref: `story ${id}`, title: '做个按钮', file });
+    assert.deepEqual(Object.keys(out.data), ['id', 'ref', 'title', 'file'], '出参形状与 GitHub 相同');
+
+    const md = readFileSync(file, 'utf8');
+    assert.match(md, /^# story 1152360842001004201 做个按钮/);
+    assert.match(md, /^### 背景$/m);
+    assert.match(md, /^\| 项 \| 值 \|\n\| --- \| --- \|\n\| 颜色 \| 红 \|$/m);
+    assert.match(md, /^- \*\*必须\*\*能点$/m);
+    assert.match(md, /!\[\]\(images\/1\.png\)/);
+    assert.match(md, /（图片未能下载：\/tfl\/missing\.png）/, '失败留占位');
+    assert.match(stderr, /图片下载失败 \/tfl\/missing\.png/);
+    assert.ok(md.indexOf('amy 评论') < md.indexOf('bob 评论'), '评论按时间排');
+    assert.match(md, /第一条 \*\*要点\*\*/);
+    assert.match(md, /第二条!\[\]\(images\/2\.jpg\)/);
+    assert.doesNotMatch(md, /别家的/);
+    assert.deepEqual(readFileSync(path.join(path.dirname(file), 'images', '1.png')), PNG);
+    assert.deepEqual(readFileSync(path.join(path.dirname(file), 'images', '2.jpg')), JPG);
+
+    const calls = readTapdState(f).calls;
+    assert.ok(!calls.some((c) => c[0] === 'comment'), '评论不走 tapd-cli comment list');
+    assert.deepEqual(calls[0].slice(0, 4), ['story', 'list', `id=${id}`, 'with_v_status=1']);
+    assert.deepEqual(calls.filter((c) => c[0] === 'attachment').map((c) => c.find((a) => a.startsWith('image_path='))),
+      ['image_path=/tfl/a.png', 'image_path=/tfl/missing.png', 'image_path=/tfl/b.jpg']);
+    const comment = openApiLog(f).filter((l) => l.url.startsWith('/comments'));
+    assert.equal(comment.length, 1);
+    assert.match(comment[0].url, /entry_type=stories/);
+    assert.match(comment[0].url, new RegExp(`entry_id=${id}`));
+  } finally {
+    await api.close();
+  }
+});
+
+test('ticket_view：每单最多 30 张图，超出的写明还有 N 张未下载；找不到需求报 failed', async () => {
+  const id = '1152360842001004202';
+  const imgs = Array.from({ length: 32 }, (_, k) => `<img src="/tfl/p${k}.png">`);
+  const files = Object.fromEntries(Array.from({ length: 32 }, (_, k) => [`/tfl/p${k}.png`, PNG.toString('base64')]));
+  const f = stateFile({
+    stories: [story(id, { description: `<p>${imgs.slice(0, 20).join('')}</p>` })],
+    comments: [{ id: '1', entry_type: 'stories', entry_id: id, description: `<p>${imgs.slice(20).join('')}</p>`, author: 'a', created: '1' }],
+    files
+  });
+  const api = await startFakeOpenApi(f);
+  try {
+    const home = path.join(TMP, 'view-cap');
+    const env = { ...tapdEnv(f, api.endpoint), AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'run2' };
+    const { out } = runScript('ticket_view', { id }, env);
+    assert.equal(out.status, 'ok');
+    const md = readFileSync(out.data.file, 'utf8');
+    assert.match(md, /还有 2 张图片未下载/);
+    assert.match(md, /images\/30\.png/);
+    assert.doesNotMatch(md, /images\/31\.png/);
+    assert.equal(readTapdState(f).calls.filter((c) => c[0] === 'attachment').length, 30);
+
+    const missing = runScript('ticket_view', { id: '404' }, env).out;
+    assert.equal(missing.status, 'failed');
+    assert.match(missing.say, /找不到 story 404/);
+  } finally {
+    await api.close();
+  }
+});
+
 test('占位的 ticket_* 脚本报 failed', () => {
-  for (const name of ['ticket_view', 'ticket_mark']) {
+  for (const name of ['ticket_mark']) {
     const r = spawnSync(process.execPath, [path.join(HOME, 'scripts', `${name}.mjs`)], { input: '{}', encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
     const out = JSON.parse(r.stdout);

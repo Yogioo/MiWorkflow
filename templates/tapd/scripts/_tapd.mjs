@@ -130,3 +130,152 @@ export async function openApi(pathname, { query = {}, method = 'GET', body, time
   if (!res.ok) throw new Error(mask(`${what} 失败：HTTP ${res.status} ${text.slice(0, 200)}`));
   return checkPayload(firstJson(text, what), what);
 }
+
+// ── HTML → Markdown ───────────────────────────────────────────────────────
+// TAPD 的描述、评论都是富文本 HTML。转成完整 Markdown：标题、表格、列表、加粗、斜体、行内代码、代码块、链接、引用。
+// <img> 交给 opts.img(src, alt) 决定写成什么；src 用宽松正则认（属性顺序不定，单 / 双引号、不带引号都认）。
+export const IMG_SRC = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))[^>]*>/gi;
+export const imgSrcOf = (m) => String(m[1] ?? m[2] ?? m[3] ?? '').trim();
+
+const VOID = new Set(['br', 'img', 'hr', 'input', 'meta', 'link', 'col', 'area', 'base', 'wbr', 'source']);
+const DROP = new Set(['script', 'style', 'head', 'title']);
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ensp: ' ', emsp: ' ', middot: '·', hellip: '…', mdash: '—', ndash: '–', ldquo: '“', rdquo: '”', lsquo: '‘', rsquo: '’', times: '×', copy: '©' };
+
+const decode = (s) => String(s).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, e) => {
+  if (e[0] === '#') {
+    const code = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : Number(e.slice(1));
+    try { return String.fromCodePoint(code === 160 ? 32 : code); } catch { return whole; }
+  }
+  return ENTITIES[e.toLowerCase()] ?? whole;
+});
+
+const attrOf = (raw, name) => {
+  const m = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, 'i').exec(raw);
+  return m ? decode(m[1] ?? m[2] ?? m[3] ?? '') : '';
+};
+
+function parseHtml(html) {
+  const root = { tag: '#root', children: [] };
+  const stack = [root];
+  const re = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<![^>]*>|<\/\s*([a-zA-Z][\w:-]*)\s*>|<([a-zA-Z][\w:-]*)((?:"[^"]*"|'[^']*'|[^'">])*)>|([^<]+|<)/g;
+  for (const m of String(html ?? '').matchAll(re)) {
+    const top = stack.at(-1);
+    if (m[4] !== undefined) top.children.push({ text: m[4] });
+    else if (m[1]) {
+      const tag = m[1].toLowerCase();
+      const at = stack.findLastIndex((n) => n.tag === tag);
+      if (at > 0) stack.length = at;
+    } else if (m[2]) {
+      const tag = m[2].toLowerCase();
+      const node = { tag, raw: m[0], children: [] };
+      top.children.push(node);
+      if (!VOID.has(tag) && !/\/\s*$/.test(m[3])) stack.push(node);
+    }
+  }
+  return root;
+}
+
+const BLOCK = new Set(['p', 'div', 'section', 'article', 'header', 'footer', 'main', 'aside', 'nav', 'figure', 'figcaption', 'center', 'address', 'dl', 'dt', 'dd']);
+const wrap = (mark, s) => {
+  const t = s.trim();
+  if (!t) return '';
+  const lead = /^\s/.test(s) ? ' ' : '';
+  const tail = /\s$/.test(s) ? ' ' : '';
+  return `${lead}${mark}${t}${mark}${tail}`;
+};
+
+export function htmlToMarkdown(html, { img = (src, alt) => `![${alt}](${src})` } = {}) {
+  const inline = (nodes, ctx) => nodes.map((n) => render(n, ctx)).join('');
+  const block = (s) => `\n\n${s.trim()}\n\n`;
+  const plainText = (n) => (n.text !== undefined ? decode(n.text) : n.tag === 'br' ? '\n' : n.children.map(plainText).join(''));
+
+  function list(node, ctx) {
+    const depth = ctx.depth ?? 0;
+    const pad = '   '.repeat(depth);
+    let i = Number(attrOf(node.raw, 'start')) || 1;
+    const items = node.children.filter((c) => c.tag === 'li' || (c.tag && c.tag !== 'li' && /^(ul|ol)$/.test(c.tag)));
+    const lines = items.map((li) => {
+      if (li.tag !== 'li') return list(li, { ...ctx, depth: depth + 1 }).replace(/^\n+|\n+$/g, '');
+      const marker = node.tag === 'ol' ? `${i++}.` : '-';
+      const body = inline(li.children, { ...ctx, depth: depth + 1 })
+        .replace(/\n{3,}/g, '\n\n').trim()
+        .split('\n').map((l, k) => (k === 0 || /^\s*$/.test(l) || l.startsWith(`${pad}   `) ? l : `${pad}   ${l.trimStart()}`)).join('\n');
+      return `${pad}${marker} ${body}`;
+    });
+    return depth ? `\n${lines.join('\n')}\n` : block(lines.join('\n'));
+  }
+
+  function table(node, ctx) {
+    const rows = [];
+    const walk = (n) => {
+      for (const c of n.children ?? []) {
+        if (c.tag === 'tr') rows.push(c.children.filter((d) => d.tag === 'td' || d.tag === 'th'));
+        else if (c.tag && c.tag !== 'table') walk(c);
+      }
+    };
+    walk(node);
+    if (!rows.length) return '';
+    const cell = (d) => inline(d.children, { ...ctx, cell: true }).replace(/\s*\n\s*/g, '<br>').replace(/\|/g, '\\|').replace(/^(<br>)+|(<br>)+$/g, '').trim();
+    const grid = rows.map((r) => r.map(cell));
+    const width = Math.max(...grid.map((r) => r.length));
+    const line = (r) => `| ${Array.from({ length: width }, (_, k) => r[k] ?? '').join(' | ')} |`;
+    return block([line(grid[0]), line(Array(width).fill('---')), ...grid.slice(1).map(line)].join('\n'));
+  }
+
+  function render(n, ctx) {
+    if (n.text !== undefined) return ctx.pre ? decode(n.text) : decode(n.text).replace(/\s+/g, ' ');
+    const kids = () => inline(n.children, ctx);
+    switch (n.tag) {
+      case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6': {
+        const t = kids().replace(/\s+/g, ' ').trim();
+        return t ? (ctx.cell ? `**${t}**` : block(`${'#'.repeat(Number(n.tag[1]))} ${t}`)) : '';
+      }
+      case 'br': return ctx.pre ? '\n' : ctx.cell ? '<br>' : '  \n';
+      case 'hr': return ctx.cell ? '' : block('---');
+      case 'strong': case 'b': return wrap('**', kids());
+      case 'em': case 'i': return wrap('*', kids());
+      case 's': case 'del': case 'strike': return wrap('~~', kids());
+      case 'code': {
+        if (ctx.pre) return plainText(n);
+        const t = plainText(n).replace(/\s+/g, ' ');
+        if (!t.trim()) return '';
+        const fence = t.includes('`') ? '``' : '`';
+        return `${fence}${fence.length > 1 ? ' ' : ''}${t}${fence.length > 1 ? ' ' : ''}${fence}`;
+      }
+      case 'pre': {
+        const t = plainText(n).replace(/^\n|\n$/g, '');
+        return ctx.cell ? `\`${t.replace(/\s+/g, ' ')}\`` : block(`\`\`\`\n${t}\n\`\`\``);
+      }
+      case 'a': {
+        const text = kids().trim();
+        const href = attrOf(n.raw, 'href');
+        if (!href || /^javascript:/i.test(href) || href.startsWith('#')) return text;
+        return text ? (text === href ? `<${href}>` : `[${text}](${href})`) : '';
+      }
+      case 'img': {
+        const m = [...n.raw.matchAll(IMG_SRC)][0];
+        const src = m ? imgSrcOf(m) : '';
+        return src ? img(decode(src), attrOf(n.raw, 'alt').replace(/[[\]]/g, '')) : '';
+      }
+      case 'ul': case 'ol': return ctx.cell ? n.children.map((c) => inline(c.children ?? [], ctx).trim()).filter(Boolean).join('<br>') : list(n, ctx);
+      case 'table': return ctx.cell ? kids() : table(n, ctx);
+      case 'blockquote': {
+        const t = kids().replace(/\n{3,}/g, '\n\n').trim();
+        return t ? block(t.split('\n').map((l) => (l ? `> ${l}` : '>')).join('\n')) : '';
+      }
+      case 'li': return block(kids());
+      default:
+        if (DROP.has(n.tag)) return '';
+        if (BLOCK.has(n.tag) && !ctx.cell) {
+          const t = kids();
+          return t.trim() ? block(t) : '';
+        }
+        return kids();
+    }
+  }
+
+  return render(parseHtml(html), {})
+    .split('\n').map((l) => (/\S {2}$/.test(l) ? l : l.replace(/[ \t]+$/, ''))).join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}

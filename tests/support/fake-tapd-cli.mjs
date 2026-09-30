@@ -61,6 +61,11 @@ if (entity === 'story' && action === 'list') {
     .filter((c) => (!params.entry_type || c.entry_type === params.entry_type) && (!params.entry_id || c.entry_id === params.entry_id))
     .map((c) => ({ Comment: { ...c, description: stripHtml(c.description) } }));
   save(); out({ status: 1, data: page(rows), info: 'success' });
+} else if (entity === 'attachment' && action === 'get-image') {
+  // 站内路径换假 OpenAPI 上的 /files/<路径>；state.files 里没有的也照给地址，下载时 404
+  if (!params.image_path) die('缺 image_path');
+  const base = String(process.env.TAPD_API_ENDPOINT ?? '').replace(/\/+$/, '');
+  save(); out({ status: 1, data: { Attachment: { download_url: `${base}/files${params.image_path}` } }, info: 'success' });
 } else {
   die(`fake tapd-cli 不认：${argv.join(' ')}`);
 }

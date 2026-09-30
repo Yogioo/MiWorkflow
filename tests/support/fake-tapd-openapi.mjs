@@ -14,6 +14,13 @@ const send = (res, code, v) => {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   appendFileSync(`${stateFile}.openapi.jsonl`, JSON.stringify({ method: req.method, url: req.url, auth: req.headers.authorization ?? null }) + '\n');
+  // 图片下载地址（get-image 换出来的，自带签名、不要令牌）：state.files[路径] 为 base64
+  if (req.method === 'GET' && url.pathname.startsWith('/files/')) {
+    const b64 = JSON.parse(readFileSync(stateFile, 'utf8')).files?.[url.pathname.slice('/files'.length)];
+    if (b64 === undefined) return send(res, 404, { status: 0, info: 'no such file' });
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+    return res.end(Buffer.from(b64, 'base64'));
+  }
   if (req.headers.authorization !== `Bearer ${token}`) return send(res, 401, { status: 0, info: 'unauthorized' });
 
   const state = JSON.parse(readFileSync(stateFile, 'utf8'));
