@@ -15,6 +15,6 @@ export const VERIFY = '';
 export const ROUNDS = 2;
 
 // 提交后推送到当前分支的上游；false = 只本地提交。
-// false 与「推送失败」同款语义：没发布就不算做完——不关单、保留 in-progress、整轮停下，
+// false 与「推送失败」同款语义：没发布就不算做完——不关单、保留 afk-claimed、整轮停下，
 // 本地提交保留，评论注明「本地提交（未推送）」，留给人处理。
 export const PUSH = true;

@@ -11,9 +11,12 @@ test('ticket_ready：入 {}，出 ready / blocked；工单号是字符串，引�
       issue(1, { title: '前置' }),
       issue(3, { title: '低优先', labels: ['ready-for-agent', 'P3'] }),
       issue(5, { title: '被挡', body: '- [ ] #1\n- [x] #2', labels: ['ready-for-agent'] }),
-      issue(8, { title: '在跑', labels: ['ready-for-agent', 'in-progress'] }),
+      issue(8, { title: '在跑', labels: ['ready-for-agent', 'afk-claimed'] }),
       issue(9, { title: '高优先', labels: ['ready-for-agent', 'P0'] }),
-      issue(10, { title: '依赖已关', body: '- [ ] #4', labels: ['ready-for-agent'] })
+      issue(10, { title: '依赖已关', body: '- [ ] #4', labels: ['ready-for-agent'] }),
+      issue(11, { title: '已交付未关', labels: ['ready-for-agent', 'afk-delivered'] }),
+      issue(12, { title: '依赖已交付', body: '- [ ] #11', labels: ['ready-for-agent'] }),
+      issue(13, { title: '失败', labels: ['ready-for-agent', 'afk-failed'] })
     ]
   });
 
@@ -23,8 +26,9 @@ test('ticket_ready：入 {}，出 ready / blocked；工单号是字符串，引�
   assert.deepEqual(r.data.ready, [
     { id: '9', ref: '#9', title: '高优先', priority: 0 },
     { id: '10', ref: '#10', title: '依赖已关', priority: 2 },
+    { id: '12', ref: '#12', title: '依赖已交付', priority: 2 },
     { id: '3', ref: '#3', title: '低优先', priority: 3 }
-  ]);
+  ], '前置关单或贴 afk-delivered 都算满足；带任一机器标签的不入队');
   assert.equal(r.data.blocked.length, 1);
   const [b] = r.data.blocked;
   assert.deepEqual(keys(b), ['id', 'reason', 'ref']);
@@ -52,23 +56,23 @@ test('ticket_view：入 { id }，出 { id, ref, title, text }；text 带正文�
 });
 
 test('ticket_mark：入 { id, action, comment?, sha? }；四种 action 按 GitHub 规则落标签 / 评论 / 关单', () => {
-  const s = setup({ issues: [1, 2, 3].map((n) => issue(n, { labels: ['ready-for-agent'] })) });
+  const s = setup({ issues: [1, 2, 3].map((n) => issue(n, { labels: ['ready-for-agent'] })), repoLabels: ['ready-for-agent'] });
 
   const claimed = runScript(s, 'ticket_mark', { id: '1', action: 'claimed' });
   assert.equal(claimed.status, 'ok', claimed.error);
   assert.equal(claimed.data.id, '1');
   assert.equal(claimed.data.ref, '#1');
-  assert.deepEqual(labelsOf(s, 1), ['ready-for-agent', 'in-progress']);
+  assert.deepEqual(labelsOf(s, 1), ['ready-for-agent', 'afk-claimed'], '仓库里没有的标签先建再贴');
 
   assert.equal(runScript(s, 'ticket_mark', { id: '1', action: 'done', sha: 'abc123' }).status, 'ok');
   assert.equal(issueState(s, 1).state, 'CLOSED');
-  assert.deepEqual(labelsOf(s, 1), []);
+  assert.deepEqual(labelsOf(s, 1), ['afk-delivered']);
   assert.match(comments(issueState(s, 1)), /提交：abc123/);
 
   runScript(s, 'ticket_mark', { id: '2', action: 'claimed' });
   assert.equal(runScript(s, 'ticket_mark', { id: '2', action: 'unpushed', sha: 'def456' }).status, 'ok');
   assert.equal(issueState(s, 2).state, 'OPEN');
-  assert.deepEqual(labelsOf(s, 2), ['ready-for-agent', 'in-progress'], '未推送不动标签');
+  assert.deepEqual(labelsOf(s, 2), ['ready-for-agent', 'afk-claimed'], '未推送不动标签');
   assert.match(comments(issueState(s, 2)), /未推送.*def456/);
 
   runScript(s, 'ticket_mark', { id: '3', action: 'claimed' });

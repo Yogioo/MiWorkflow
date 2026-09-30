@@ -48,7 +48,7 @@ test('成功：认领 → 开发 → 审查 → 提交 → 关单（且推送）
   const r = cli(s, ['dev']);
   assert.equal(r.code, 0, r.stderr);
   assert.equal(issueState(s, 1).state, 'CLOSED');
-  assert.deepEqual(labelsOf(s, 1), [], 'ready 与 in-progress 都要摘掉');
+  assert.deepEqual(labelsOf(s, 1), ['afk-delivered'], '贴 afk-delivered，ready 与 afk-claimed 都要摘掉');
   assert.match(comments(issueState(s, 1)), /提交：/);
   assert.ok(existsSync(path.join(s.root, 'note.txt')));
   assert.match(gitOut(['log', '-1', '--pretty=%s'], s.root), /^#1 加个文件/);

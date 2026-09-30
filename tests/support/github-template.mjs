@@ -35,7 +35,11 @@ writeFileSync(FAKE_GH, [
   'const rest = [];',
   'for (let i = 2; i < argv.length; i++) { if (argv[i] === "--repo") { i++; continue; } rest.push(argv[i]); }',
   'const find = (x) => state.issues.find((i) => i.number === Number(x));',
-  'if (action === "list") {',
+  'if (argv[0] === "label" && action === "create") {',
+  '  if (!Array.isArray(state.repoLabels)) state.repoLabels = [];',
+  '  if (state.repoLabels.includes(rest[0])) die("label already exists");',
+  '  state.repoLabels.push(rest[0]); save(state); out({ ok: true });',
+  '} else if (action === "list") {',
   '  out(state.issues.filter((i) => i.state === "OPEN").map((i) => ({ number: i.number, title: i.title, body: i.body, labels: i.labels })));',
   '} else if (action === "view") {',
   '  const i = find(rest[0]); if (!i) die("no such issue");',
@@ -43,7 +47,7 @@ writeFileSync(FAKE_GH, [
   '} else if (action === "edit") {',
   '  const i = find(rest[0]); if (!i) die("no such issue");',
   '  for (let k = 0; k < rest.length; k++) {',
-  '    if (rest[k] === "--add-label") { const name = rest[++k]; if (!i.labels.some((l) => l.name === name)) i.labels.push({ name }); }',
+  '    if (rest[k] === "--add-label") { const name = rest[++k]; if (Array.isArray(state.repoLabels) && !state.repoLabels.includes(name)) die("label not found: " + name); if (!i.labels.some((l) => l.name === name)) i.labels.push({ name }); }',
   '    if (rest[k] === "--remove-label") { const name = rest[++k]; i.labels = i.labels.filter((l) => l.name !== name); }',
   '    if (rest[k] === "--body") i.body = rest[++k];',
   '  }',
@@ -112,7 +116,8 @@ export const CONFIG = (verify, rounds, push) => [
   ''
 ].join('\n');
 
-export function setup({ issues = [], verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false } = {}) {
+// repoLabels：给了就只认这些仓库标签（贴没有的会报错，要先 gh label create）；不给 = 什么标签都能贴
+export function setup({ issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false } = {}) {
   const base = tmpDir();
   const root = path.join(base, 'repo');
   mkdirSync(root, { recursive: true });
@@ -150,7 +155,7 @@ export function setup({ issues = [], verify = '', rounds = 2, push = false, dirt
   // 状态与计划文件放 root 外：git clean -fd 回滚时不会把它们删掉
   const stateFile = path.join(base, 'gh-state.json');
   const planFile = path.join(base, 'agent-plan.json');
-  writeFileSync(stateFile, JSON.stringify({ issues }, null, 2));
+  writeFileSync(stateFile, JSON.stringify({ issues, ...(repoLabels ? { repoLabels } : {}) }, null, 2));
   writeFileSync(planFile, JSON.stringify([]));
 
   const env = {

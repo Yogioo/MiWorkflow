@@ -170,7 +170,7 @@ async function runTicket(t, ctx) {
     cwd: root
   });
   if (c.status !== 'ok') {
-    // 推送失败：本地提交保留，不关单、保留 in-progress、整轮停下
+    // 推送失败：本地提交保留，不关单、保留 afk-claimed、整轮停下
     if (c.data?.committed) return notPublished('push_failed', t, c.data.sha, ctx);
     return fail(t, `提交失败：${c.error}`, base, ctx);
   }
@@ -190,7 +190,7 @@ async function runTicket(t, ctx) {
   return 'done';
 }
 
-// 提交成功但没发布（PUSH=false 或推送失败）：评论注明未推送、保留 in-progress、不关单，整轮停下留给人处理
+// 提交成功但没发布（PUSH=false 或推送失败）：评论注明未推送、保留 afk-claimed、不关单，整轮停下留给人处理
 async function notPublished(outcome, t, sha, ctx) {
   await ctx.script('ticket_mark', { id: t.id, action: 'unpushed', sha });
   console.error(`✖ ${t.ref} 本地提交（未推送）：${String(sha ?? '').slice(0, 7)}，工单保持打开`);

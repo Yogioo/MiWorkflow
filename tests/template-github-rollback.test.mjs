@@ -17,7 +17,7 @@ test('审查拒绝 → 回滚改动 + afk-failed + 评论', () => {
   assert.equal(issueState(s, 1).state, 'OPEN', '失败不关单');
   assert.ok(!existsSync(path.join(s.root, 'bad.txt')), '回滚应删掉 Agent 写的文件');
   assert.ok(labelsOf(s, 1).includes('afk-failed'));
-  assert.ok(!labelsOf(s, 1).includes('in-progress'), '失败要摘掉 in-progress');
+  assert.ok(!labelsOf(s, 1).includes('afk-claimed'), '失败要摘掉 afk-claimed');
   assert.ok(labelsOf(s, 1).includes('ready-for-agent'), '保留 ready，摘掉 afk-failed 后能重新入队');
   assert.match(comments(issueState(s, 1)), /方向根本错了/);
   assert.equal(gitOut(['log', '-1', '--pretty=%s'], s.root), 'init', '不该有提交');

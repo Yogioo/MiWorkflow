@@ -97,17 +97,17 @@ miworkflow dev --max 3                 # 最多 3 个；--max-failures 1 连续�
 miworkflow dev --confirm               # 每次发布（推送 + 关单）前 human 确认；--dry-run 只报会做什么
 ```
 
-issue 约定与 afk-run 一致，同一个仓库两边可以换着跑：
+issue 约定（机器标签名在 `source.mjs` 的 `LABELS` 里可改；仓库里没有时脚本第一次贴会先建）：
 
-- 入队：issue 贴 `ready-for-agent`；排除 `in-progress`（在跑）和 `afk-failed`（失败待人看）
+- 入队：issue 贴 `ready-for-agent`；带任一机器标签的排除：`afk-claimed`（认领中）、`afk-delivered`（已交付）、`afk-failed`（失败待人看）
 - 优先级：标签 `P0`~`P4`，没有就当 `P2`；同级按 issue 号升序
-- 依赖：正文里 `- [ ] #123` 表示被 #123 挡着，勾上或 #123 关掉就算满足
+- 依赖：正文里 `- [ ] #123` 表示被 #123 挡着，勾上、#123 关掉或贴了 `afk-delivered` 就算满足
 
-每个 issue 走：认领（贴 `in-progress`）→ Agent 开发 → Agent 审查（有问题直接改）→ 验证（`VERIFY` 配了才跑）→
-提交（默认推送，正文带 `Closes #N`）→ 关单。失败就 `git reset --hard` + `clean -fd` 回滚，
-摘 `in-progress`、贴 `afk-failed` + 评论原因，保留 `ready-for-agent`（人摘掉 `afk-failed` 就重新入队）。
+每个 issue 走：认领（贴 `afk-claimed`）→ Agent 开发 → Agent 审查（有问题直接改）→ 验证（`VERIFY` 配了才跑）→
+提交（默认推送，正文带 `Closes #N`）→ 关单 + 贴 `afk-delivered`、摘 `ready-for-agent` / `afk-claimed`。失败就 `git reset --hard` + `clean -fd` 回滚，
+摘 `afk-claimed`、贴 `afk-failed` + 评论原因，保留 `ready-for-agent`（人摘掉 `afk-failed` 就重新入队）。
 推送失败不关单、整轮停下，本地提交保留，留给人处理。`PUSH = false`（只本地提交）同款语义：
-没发布就不算做完——评论注明「本地提交（未推送）：<sha>」、不关单、保留 `in-progress`、整轮停下。
+没发布就不算做完——评论注明「本地提交（未推送）：<sha>」、不关单、保留 `afk-claimed`、整轮停下。
 
 ### 讨论单：先把需求问清楚
 

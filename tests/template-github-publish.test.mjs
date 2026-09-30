@@ -16,7 +16,7 @@ test('推送失败 → 不关单、整轮停下、本地提交保留', () => {
   assert.equal(r.code, 1, '推送失败应让整轮失败');
   assert.equal(issueState(s, 1).state, 'OPEN', '不关单');
   assert.ok(!labelsOf(s, 1).includes('afk-failed'), '推送失败不是 issue 失败，不贴 afk-failed');
-  assert.ok(labelsOf(s, 1).includes('in-progress'), '留着 in-progress 提醒人处理');
+  assert.ok(labelsOf(s, 1).includes('afk-claimed'), '留着 afk-claimed 提醒人处理');
   assert.match(gitOut(['log', '-1', '--pretty=%s'], s.root), /^#1 /, '本地提交要保留');
   assert.match(r.stdout, /推送失败/);
 });
@@ -38,7 +38,7 @@ test('PUSH=false → 本地提交保留、不关单、整轮停、退出码 1', 
   assert.equal(r.code, 1, '没发布就不算做完，整轮失败');
   assert.equal(issueState(s, 1).state, 'OPEN', '不关单');
   assert.ok(!labelsOf(s, 1).includes('afk-failed'), '故意不推不是 issue 失败，不贴 afk-failed');
-  assert.ok(labelsOf(s, 1).includes('in-progress'), '留着 in-progress 提醒人处理');
+  assert.ok(labelsOf(s, 1).includes('afk-claimed'), '留着 afk-claimed 提醒人处理');
   assert.match(gitOut(['log', '-1', '--pretty=%s'], s.root), /^#1 /, '本地提交要保留');
   assert.match(comments(issueState(s, 1)), /本地提交（未推送）：/);
   assert.match(r.stdout, /未推送/);

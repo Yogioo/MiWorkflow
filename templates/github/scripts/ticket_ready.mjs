@@ -1,4 +1,4 @@
-// 工单源接口：列就绪工单。GitHub 实现：贴 ready 标签、没在跑、没失败；依赖（正文 `- [ ] #N`）都满足才算就绪，
+// 工单源接口：列就绪工单。GitHub 实现：贴 ready 标签、没贴任何机器标签；依赖（正文 `- [ ] #N`）都满足（关单或贴 delivered）才算就绪，
 // 否则进 blocked 并写明被哪张单挡住。就绪的按 P 优先级 → 工单号排序。标签取自 source.mjs 的 LABELS。
 // 入：{ repo? }
 // 出：{ status, say, data: { ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] } }，id 为字符串
@@ -26,11 +26,12 @@ await main(async () => {
     labels: Array.isArray(i.labels) ? i.labels : []
   })).filter((i) => Number.isSafeInteger(i.number) && i.number > 0);
 
-  // 依赖满足 = 勾上了，或那张单已经不在打开列表里（关了）
-  const openSet = new Set(issues.map((i) => i.number));
+  // 依赖满足 = 勾上了，或那张单已经不在打开列表里（关了），或贴了 delivered
+  const pending = new Set(issues.filter((i) => !hasLabel(i, LABELS.delivered)).map((i) => i.number));
+  const machine = [LABELS.claimed, LABELS.delivered, LABELS.failed];
   const queued = issues
-    .filter((i) => hasLabel(i, LABELS.ready) && !hasLabel(i, LABELS.failed) && !hasLabel(i, LABELS.inProgress))
-    .map((i) => ({ ...i, waiting: parseTaskList(i.body).filter((r) => !r.checked && openSet.has(r.number)) }));
+    .filter((i) => hasLabel(i, LABELS.ready) && !machine.some((l) => hasLabel(i, l)))
+    .map((i) => ({ ...i, waiting: parseTaskList(i.body).filter((r) => !r.checked && pending.has(r.number)) }));
 
   const ready = queued
     .filter((i) => !i.waiting.length)
