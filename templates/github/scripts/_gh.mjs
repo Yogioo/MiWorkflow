@@ -44,9 +44,9 @@ export function runGh(argv, opts = {}) {
 
 // ── 图片下载 ───────────────────────────────────────────────────────────────
 // 私有仓库的 github.com/user-attachments/… 不带鉴权是 404；带 gh auth token 会 302 到 S3 预签名地址。
-// 重定向手动跟：令牌只发给 github.com，跟到别的主机就不带。
+// 重定向手动跟：令牌只经 https 发给 github.com，跟到别的主机或降级到 http 就不带。
 // 测试 / 替换：设 MIWORKFLOW_FETCH 指向一个默认导出 fetch 的 JS 文件。
-const needsToken = (url) => new URL(url).hostname === 'github.com';
+const needsToken = (url) => { const u = new URL(url); return u.protocol === 'https:' && u.hostname === 'github.com'; };
 
 export function ghToken() {
   return runGh(['auth', 'token'], { retries: 0 }).trim();
