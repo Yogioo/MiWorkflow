@@ -15,8 +15,12 @@ export const story = (id, { name = `story ${id}`, label = '', priority = '', des
 });
 
 // files：{ '/tfl/…': base64 }，假 OpenAPI 在 /files/tfl/… 上给出这些字节（get-image 换出来的下载地址）
-export function writeTapdState(file, { stories = [], comments = [], files, fail } = {}) {
-  writeFileSync(file, JSON.stringify({ stories, comments, ...(files ? { files } : {}), ...(fail ? { fail } : {}), calls: [] }, null, 2));
+// relations / lastSteps / statusMap：前后置依赖与工作流状态，见假 OpenAPI
+export function writeTapdState(file, { stories = [], comments = [], files, fail, relations, lastSteps, statusMap } = {}) {
+  writeFileSync(file, JSON.stringify({
+    stories, comments, ...(files ? { files } : {}), ...(fail ? { fail } : {}),
+    ...(relations ? { relations } : {}), ...(lastSteps ? { lastSteps } : {}), ...(statusMap ? { statusMap } : {}), calls: []
+  }, null, 2));
 }
 
 export const readTapdState = (file) => JSON.parse(readFileSync(file, 'utf8'));

@@ -17,6 +17,12 @@ export const LABELS = {
   failed: 'afk-failed'          // 失败，等人看（摘掉它才重新入队）
 };
 
+// 前后置依赖的满足判据：前置需求贴了 LABELS.delivered，或已到结束类状态。
+// 结束类状态先按项目工作流取：ticket_ready 调 OpenAPI `workflows/last_steps`（system=story），用它给的状态键与中文名；
+// 取不到（接口报错、没权限、返回空）才退回下面这张表，按中文名比（经 `workflows/status_map` 把状态键翻成中文名，
+// 那个也取不到就直接拿需求的 status 字段比）。缺省参考 tapd-pending 的写死判定。
+export const END_STATUSES = ['已完成', '已拒绝', '取消', '已取消'];
+
 // TAPD 的 priority 是中文档位；空和不认识的都当 2（不认识的由 ticket_ready 提示）。数字越小越先做。
 export const PRIORITY = { 高: 1, 中: 2, 低: 3 };
 export const priorityOf = (raw) => PRIORITY[String(raw ?? '').trim()] ?? 2;

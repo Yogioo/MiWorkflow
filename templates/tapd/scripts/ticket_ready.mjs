@@ -2,12 +2,14 @@
 // 一次 `story list label=<ready>` 拿全部候选（个人令牌每天有配额，别逐个拉）；就绪的按优先级 → 工单号排序。
 // 空壳需求（描述与评论都为空）不进 ready：进 blocked，并贴 failed 标签 + 评论请人补充（干跑只进 blocked、不改 TAPD）。
 // 只对描述为空的候选走 OpenAPI 读评论（`tapd-cli comment list` 会剥 HTML，只有图片的评论会被当成空）。
-// 依赖判断留给后续单：blocked 目前只含空壳。
+// 前后置依赖：只对非空壳的候选调 OpenAPI `stories/get_time_relative_stories`；同一轮里同一个前置只查一次。
+// 前置贴了 delivered 或到了结束类状态（见 source.mjs 的 END_STATUSES）才算满足；未满足进 blocked，reason 指出前置。
+// 前置不认识（缺陷、别的项目、已删除、接口查不到）一律当挡住，reason 写明，由人解开。依赖挡住的不改 TAPD。
 // 入：{ dryRun? }；AGENTFLOW_DRY_RUN=1 也算干跑
 // 出：{ status, say, data: { ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] } }，id 为字符串
 import { main, readStdin, emit } from './_lib.mjs';
 import { tapdJson, openApi } from './_tapd.mjs';
-import { WORKSPACE_ID, COMMENTER, LABELS, priorityOf, knownPriority, refOf } from '../source.mjs';
+import { WORKSPACE_ID, COMMENTER, LABELS, END_STATUSES, priorityOf, knownPriority, refOf } from '../source.mjs';
 
 // TAPD 单页上限 200；满页说明可能还有，提示一句而不是逐页拉
 const LIST_LIMIT = 200;
@@ -19,6 +21,106 @@ const blank = (html) => !/<img\b/i.test(String(html ?? '')) &&
 const byId = (a, b) => a.id.length - b.id.length || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 const ws = (s) => String(s.workspace_id || WORKSPACE_ID || '');
 const wsArg = (s) => (ws(s) ? [`workspace_id=${ws(s)}`] : []);
+const errText = (err) => String(err?.message ?? err);
+
+// 结束类状态：每个项目一轮只取一次。出 Set（状态键与中文名都放进去）
+const endCache = new Map();
+const kvOf = (data) => {
+  const out = [];
+  const walk = (v) => {
+    if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) {
+        if (x && typeof x === 'object') walk(x);
+        else if (x != null && String(x).trim()) out.push([k, String(x).trim()]);
+      }
+    }
+  };
+  walk(data);
+  return out;
+};
+function endStatuses(w) {
+  if (!endCache.has(w)) {
+    endCache.set(w, (async () => {
+      try {
+        const r = await openApi('/workflows/last_steps', { query: { workspace_id: w || undefined, system: 'story' } });
+        const kv = kvOf(r.data);
+        if (kv.length) return new Set(kv.flat());
+      } catch { /* 取不到就退回 END_STATUSES */ }
+      const set = new Set(END_STATUSES);
+      try {
+        const r = await openApi('/workflows/status_map', { query: { workspace_id: w || undefined, system: 'story' } });
+        for (const [k, name] of kvOf(r.data)) if (END_STATUSES.includes(name)) set.add(k);
+      } catch { /* 翻不成中文名就直接拿 status 比 */ }
+      return set;
+    })());
+  }
+  return endCache.get(w);
+}
+
+// get_time_relative_stories 的返回按接口文档推：关系行 { workitem_id, dst_workitem_id, src_field, dst_field }，
+// 可能包一层（{ TimeRelation: … }）；本单是 dst 的那些行，workitem_id 就是前置。
+const unwrap = (row) => {
+  const vals = row && typeof row === 'object' ? Object.values(row) : [];
+  return vals.length === 1 && vals[0] && typeof vals[0] === 'object' && !Array.isArray(vals[0]) ? vals[0] : row;
+};
+function predecessorsOf(data, id) {
+  const rows = Array.isArray(data) ? data : data && typeof data === 'object' ? Object.values(data).flat() : [];
+  const out = [];
+  for (const r of rows.map(unwrap)) {
+    if (!r || typeof r !== 'object' || String(r.dst_workitem_id ?? '').trim() !== id) continue;
+    const pred = String(r.workitem_id ?? '').trim();
+    if (!pred) continue;
+    const type = String(r.workitem_type ?? r.src_workitem_type ?? r.entity_type ?? '').trim();
+    const w = String(r.src_workspace_id ?? '').trim();
+    out.push({ id: pred, type, workspace: w });
+  }
+  return out;
+}
+
+// 前置满不满足：同一轮里同一个前置只查一次。出 null（满足）或未满足的原因
+const predCache = new Map();
+function checkPredecessor(p, w) {
+  const key = `${w}:${p.id}`;
+  if (!predCache.has(key)) {
+    predCache.set(key, (async () => {
+      const ref = refOf(p.id);
+      if (p.type && !/^stor(y|ies)$/i.test(p.type)) return `前置 ${p.id} 不是需求（${p.type}）`;
+      if (p.workspace && w && p.workspace !== w) return `前置 ${ref} 在别的项目（${p.workspace}）`;
+      let s;
+      try {
+        const r = await openApi('/stories', { query: { workspace_id: w || undefined, id: p.id } });
+        s = (Array.isArray(r.data) ? r.data : []).map((x) => x?.Story).find((x) => x && String(x.id).trim() === p.id);
+      } catch (err) {
+        return `前置 ${ref} 查询失败：${errText(err)}`;
+      }
+      if (!s) return `前置 ${ref} 查不到（缺陷、别的项目或已删除）`;
+      if (labelsOf(s).includes(LABELS.delivered)) return null;
+      const status = String(s.status ?? '').trim();
+      if ((await endStatuses(w)).has(status) || (s.v_status && (await endStatuses(w)).has(String(s.v_status).trim()))) return null;
+      return `前置 ${ref}「${s.name || p.id}」未完成（状态 ${s.v_status || status || '空'}，未贴 ${LABELS.delivered}）`;
+    })());
+  }
+  return predCache.get(key);
+}
+
+// 出 null（依赖都满足）或挡住的原因
+async function dependencyBlock(s) {
+  const w = ws(s);
+  let preds;
+  try {
+    const r = await openApi('/stories/get_time_relative_stories', { query: { workspace_id: w || undefined, story_id: s.id } });
+    preds = predecessorsOf(r.data, s.id);
+  } catch (err) {
+    return `查前后置依赖失败，当作挡住：${errText(err)}`;
+  }
+  const reasons = [];
+  for (const p of preds) {
+    const why = await checkPredecessor(p, w);
+    if (why) reasons.push(why);
+  }
+  return reasons.length ? `依赖未满足：${reasons.join('；')}` : null;
+}
 
 await main(async () => {
   const args = await readStdin();
@@ -59,9 +161,16 @@ await main(async () => {
   }
 
   const emptyIds = new Set(empty.map((s) => s.id));
+  const depBlocked = [];
+  const passed = [];
+  for (const s of candidates.filter((c) => !emptyIds.has(c.id))) {
+    const why = await dependencyBlock(s);
+    if (why) depBlocked.push({ id: s.id, ref: refOf(s.id), reason: why });
+    else passed.push(s);
+  }
+
   const unknown = [];
-  const ready = candidates
-    .filter((s) => !emptyIds.has(s.id))
+  const ready = passed
     .map((s) => {
       const raw = s.priority_label || s.priority;
       if (!knownPriority(raw)) unknown.push(`${refOf(s.id)}「${String(raw).trim()}」`);
@@ -70,20 +179,22 @@ await main(async () => {
     .sort((a, b) => a.priority - b.priority || byId(a, b));
   if (unknown.length) notes.push(`不认识的优先级按 2 处理：${unknown.join('、')}`);
 
-  const blocked = empty
-    .sort(byId)
-    .map((s) => ({
+  const blocked = [
+    ...empty.map((s) => ({
       id: s.id,
       ref: refOf(s.id),
       reason: dryRun ? '需求为空（描述与评论都为空）' : `需求为空（描述与评论都为空），已贴 ${LABELS.failed} 并评论`
-    }));
+    })),
+    ...depBlocked
+  ].sort(byId);
 
   for (const n of notes) process.stderr.write(`${n}\n`);
   emit({
     status: 'ok',
     say: [
       ready.length ? `就绪 ${ready.length} 张工单` : '没有就绪的工单',
-      ...(blocked.length ? [`空壳 ${blocked.length} 张`] : []),
+      ...(empty.length ? [`空壳 ${empty.length} 张`] : []),
+      ...(depBlocked.length ? [`依赖挡住 ${depBlocked.length} 张`] : []),
       ...notes
     ].join('，'),
     data: { ready, blocked }

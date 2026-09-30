@@ -140,7 +140,7 @@ const runScript = (name, input, env) => {
   return { out: JSON.parse(r.stdout), stderr: r.stderr };
 };
 
-test('ticket_ready：只看标签入队、工单号为字符串、优先级映射与排序', () => {
+test('ticket_ready：只看标签入队、工单号为字符串、优先级映射与排序', async () => {
   const f = stateFile({
     stories: [
       story('1152360842001004003', { label: 'ready-for-agent', priority: '低' }),
@@ -154,7 +154,13 @@ test('ticket_ready：只看标签入队、工单号为字符串、优先级映�
       story('1152360842001004030', { label: 'other', priority: '高' })
     ]
   });
-  const { out, stderr } = runScript('ticket_ready', {}, tapdEnv(f));
+  const api = await startFakeOpenApi(f);
+  let out, stderr;
+  try {
+    ({ out, stderr } = runScript('ticket_ready', {}, tapdEnv(f, api.endpoint)));
+  } finally {
+    await api.close();
+  }
   assert.equal(out.status, 'ok');
   assert.deepEqual(out.data.ready.map((t) => [t.id, t.priority]), [
     ['1152360842001004010', 1],
@@ -198,7 +204,8 @@ test('ticket_ready：空壳需求进 blocked，贴 afk-failed + 评论；干跑�
     const st = readTapdState(dry);
     assert.equal(st.calls.length, 1, '干跑不改 TAPD');
     assert.equal(st.stories[0].label, 'ready-for-agent');
-    assert.deepEqual(openApiLog(dry).map((l) => /entry_id=(\d+)/.exec(l.url)[1]), ['1152360842001004101', '1152360842001004102']);
+    assert.deepEqual(openApiLog(dry).filter((l) => l.url.startsWith('/comments')).map((l) => /entry_id=(\d+)/.exec(l.url)[1]), ['1152360842001004101', '1152360842001004102']);
+    assert.ok(!openApiLog(dry).some((l) => l.url.includes('story_id=1152360842001004101')), '空壳不查依赖');
   } finally {
     await api1.close();
   }
@@ -217,6 +224,76 @@ test('ticket_ready：空壳需求进 blocked，贴 afk-failed + 评论；干跑�
     assert.equal(c.author, 'bot-npc');
   } finally {
     await api2.close();
+  }
+});
+
+test('ticket_ready：前后置依赖——未完成挡住并指出前置；afk-delivered / 结束类状态放行；不认识的前置挡住；同一前置只查一次', async () => {
+  const rel = (pre, post) => ({ workitem_id: pre, dst_workitem_id: post, src_field: 'due', dst_field: 'begin' });
+  const seed = (extra = {}) => ({
+    stories: [
+      story('1152360842001005001', { label: 'ready-for-agent' }),
+      story('1152360842001005002', { label: 'ready-for-agent' }),
+      story('1152360842001005003', { label: 'ready-for-agent' }),
+      story('1152360842001005004', { label: 'ready-for-agent' }),
+      story('1152360842001005005', { label: 'ready-for-agent' }),
+      story('1152360842001005006', { label: 'ready-for-agent' }),
+      story('1152360842001005090', { name: '前置甲', status: 'open' }),
+      story('1152360842001005091', { name: '前置乙', label: 'afk-delivered', status: 'open' }),
+      story('1152360842001005092', { name: '前置丙', status: 'status_9' }),
+      story('1152360842001005093', { name: '前置丁', status: '已完成' })
+    ],
+    relations: [
+      rel('1152360842001005090', '1152360842001005001'),
+      rel('1152360842001005090', '1152360842001005002'),
+      rel('1152360842001005091', '1152360842001005003'),
+      rel('1152360842001005092', '1152360842001005004'),
+      rel('1152360842001005099', '1152360842001005005'),
+      rel('1152360842001005093', '1152360842001005006'),
+      rel('1152360842001005006', '1152360842001005090')
+    ],
+    ...extra
+  });
+
+  // 工作流取得到：status_9 是结束步骤
+  const f1 = stateFile(seed({ lastSteps: { status_9: '已上线' } }));
+  const api1 = await startFakeOpenApi(f1);
+  try {
+    const { out } = runScript('ticket_ready', { dryRun: true }, tapdEnv(f1, api1.endpoint));
+    assert.deepEqual(out.data.ready.map((t) => t.id), ['1152360842001005003', '1152360842001005004']);
+    const reasons = Object.fromEntries(out.data.blocked.map((b) => [b.id, b.reason]));
+    assert.deepEqual(Object.keys(reasons).sort(), ['1152360842001005001', '1152360842001005002', '1152360842001005005', '1152360842001005006']);
+    assert.match(reasons['1152360842001005001'], /story 1152360842001005090「前置甲」未完成/);
+    assert.match(reasons['1152360842001005005'], /story 1152360842001005099 查不到/);
+    assert.match(reasons['1152360842001005006'], /前置丁/, '工作流取得到时不看写死的状态名');
+    assert.match(out.say, /依赖挡住 4 张/);
+    const log = openApiLog(f1);
+    assert.equal(log.filter((l) => l.url.startsWith('/stories?') && l.url.includes('id=1152360842001005090')).length, 1, '同一前置只查一次');
+    assert.equal(log.filter((l) => l.url.startsWith('/workflows/last_steps')).length, 1);
+    assert.equal(readTapdState(f1).calls.length, 1, '依赖挡住不改 TAPD');
+  } finally {
+    await api1.close();
+  }
+
+  // 工作流取不到：退回 END_STATUSES（经 status_map 翻键）
+  const f2 = stateFile(seed({ statusMap: { status_9: '已拒绝' } }));
+  const api2 = await startFakeOpenApi(f2);
+  try {
+    const { out } = runScript('ticket_ready', { dryRun: true }, tapdEnv(f2, api2.endpoint));
+    assert.deepEqual(out.data.ready.map((t) => t.id), ['1152360842001005003', '1152360842001005004', '1152360842001005006']);
+  } finally {
+    await api2.close();
+  }
+
+  // 依赖接口查不到：当作挡住
+  const f3 = stateFile(seed({ fail: ['relations'] }));
+  const api3 = await startFakeOpenApi(f3);
+  try {
+    const { out } = runScript('ticket_ready', { dryRun: true }, tapdEnv(f3, api3.endpoint));
+    assert.deepEqual(out.data.ready, []);
+    assert.equal(out.data.blocked.length, 6);
+    assert.match(out.data.blocked[0].reason, /查前后置依赖失败/);
+  } finally {
+    await api3.close();
   }
 });
 

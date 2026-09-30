@@ -33,6 +33,20 @@ const server = http.createServer((req, res) => {
     const page = Number(q.page ?? 1);
     return send(res, 200, { status: 1, data: rows.slice((page - 1) * limit, page * limit).map((c) => ({ Comment: c })), info: 'success' });
   }
+  // 前后置依赖：state.relations = [{ workitem_id, dst_workitem_id, src_field, dst_field }]
+  if (req.method === 'GET' && url.pathname === '/stories/get_time_relative_stories') {
+    if ((state.fail ?? []).includes('relations')) return send(res, 500, { status: 0, info: 'boom' });
+    const rows = (state.relations ?? []).filter((r) => r.workitem_id === q.story_id || r.dst_workitem_id === q.story_id);
+    return send(res, 200, { status: 1, data: rows.map((r) => ({ TimeRelation: r })), info: 'success' });
+  }
+  // 工作流结束状态：state.lastSteps = { 状态键: 中文名 }；没给就当接口不可用
+  if (req.method === 'GET' && url.pathname === '/workflows/last_steps') {
+    if (!state.lastSteps) return send(res, 200, { status: 0, info: 'no permission' });
+    return send(res, 200, { status: 1, data: state.lastSteps, info: 'success' });
+  }
+  if (req.method === 'GET' && url.pathname === '/workflows/status_map') {
+    return send(res, 200, { status: 1, data: state.statusMap ?? {}, info: 'success' });
+  }
   if (req.method === 'GET' && url.pathname === '/stories') {
     const rows = (state.stories ?? []).filter((s) => !q.id || String(s.id) === q.id);
     return send(res, 200, { status: 1, data: rows.map((s) => ({ Story: s })), info: 'success' });

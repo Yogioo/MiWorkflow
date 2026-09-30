@@ -418,6 +418,8 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 进度：#20 已搭骨架——`templates/tapd/`（`source.mjs`、`scripts/_tapd.mjs`、三个 `ticket_*` 占位报 failed），
 假 `tapd-cli` / 假 OpenAPI 在 `tests/support/`（`tapd-fakes.mjs`），`init --template tapd` 可用。
 #21 `ticket_ready`、#22 `ticket_view`、#23 `ticket_mark` 已实现（`upload-image` 的文件参数先按 `file=<绝对路径>`，出参取 `image_src`，待真项目实测）。
+#24 前后置依赖已实现：`get_time_relative_stories` 的返回形状、`workflows/last_steps` / `status_map` 取结束类状态都按文档推，待真项目实测；
+取不到工作流时退回 `source.mjs` 的 `END_STATUSES`。
 
 照抄对象：afk-run 的 TAPD 源 `C:\projects\agent-skills\skills\afk-run\scripts\task-sources\tapd.mjs`（`createTapdSource`）
 与测试 `tests/afk-run/tapd.test.mjs`（经 afk-watch 调用；afk-watch 本身不含 TAPD 实现）。调用方式照它：`execFileSync` 起 `tapd-cli`、不经 shell，瞬时错误最多重试 2 次。
