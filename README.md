@@ -109,6 +109,11 @@ issue 约定（机器标签名在 `source.mjs` 的 `LABELS` 里可改；仓库�
 推送失败不关单、整轮停下，本地提交保留，留给人处理。`PUSH = false`（只本地提交）同款语义：
 没发布就不算做完——评论注明「本地提交（未推送）：<sha>」、不关单、保留 `afk-claimed`、整轮停下。
 
+Agent 不直接碰 GitHub：认领 / 读单 / 标记全由 `.workflow/scripts/` 里的 `ticket_ready` / `ticket_view` / `ticket_mark` 做。
+读单读的是**工单快照**（正文 + 全部评论转成的 Markdown，图片下到旁边，在 `.workflow/logs/<runId>/tickets/<id>/`）；
+Agent 要对人说的话（提问、不改的理由、失败原因）写进**回帖稿**（同目录的 `reply-<n>.md`，可带图），由脚本发成评论。
+回帖稿带图时靠 `gh issue comment --attach` 上传，要 `gh` ≥ 2.99.0；版本不够只是图不上传（评论里留占位并提示升级），评论照发。
+
 ### 讨论单：先把需求问清楚
 
 给 issue 贴 `agent-discuss`，跑 `miworkflow github_discuss`（`--max N` 限张数；适合定时跑），

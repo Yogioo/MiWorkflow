@@ -12,7 +12,7 @@
 3. ✅ **C2 运行期 Agent 适配器**（已实现并用三家真 CLI 实测，见 `Core.md` §10.1）
 4. ✅ **C3 首个工作流：GitHub 开发**（`templates/github/`，已实现并用假 gh / 假 Agent / 临时 git 仓库测了 10 条路径）
 5. ✅ **讨论单 + 循环运行 + 会话**（spec #6，开发单 #7–#12，由 `github_dev` 自己开发完）
-6. **F 工单源无关 + TAPD**（见下文 F，2026-09-30 已拍板；先 F2 在 GitHub 上把开发流程的「写死 GitHub」拆掉，再 F3 接 TAPD 开发；F4 搁置）
+6. **F 工单源无关 + TAPD**（见下文 F，2026-09-30 已拍板；✅ F2 已实现（#13–#19），下一步 F3 接 TAPD 开发；F4 搁置）
 7. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
 B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项目专用的（如 Unity 跑测试）。
@@ -366,6 +366,14 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
   （GitHub 上 `gh issue create --attach` 能让 Agent 自己带图建单，这点对 GitHub 不是障碍。）
 
 ### F2. 工单源接口：只管开发流程，固定三个脚本，GitHub / TAPD 各一份实现
+
+✅ **GitHub 一侧已实现**（2026-09-30，#13–#19；规范见 `Core.md` §15，TAPD 实现归 F3）。实现时的取舍：
+- 模板组合只改 `run.mjs` 的复制顺序与菜单过滤（跳过 `_` 开头），没有引入任何清单 / 注册机制
+- `ticket_mark` 只在回帖稿里确实有图时才跑 `gh --version`；版本不够或查不到都按降级处理（占位 + `say`），不判失败
+- 快照下载图片时令牌只经 https 发给 `github.com`，手动跟一跳重定向，跳到别处（S3、或降级成 http）不带令牌
+- Agent 报 `no_change` / 报完成但 git 无改动时，也把回帖稿带进失败评论，不丢 Agent 写的理由
+- 测试仍按场景拆在 `tests/template-github-*.test.mjs`；「同一套场景 × 两家假工单源」与 `ticket_*` 契约测试等 F3 有第二家时再抽
+- 已 `init` 过的项目（含本仓库 `.workflow/`）不回头同步，见 F5 末条
 
 **范围**：只让开发流程与工单源无关。讨论流程（`github_discuss`、`gh_discuss_*`、`gh_tickets_check`、`prompts/grilling|spec|tickets.md`）
 原样保留、只支持 GitHub；原提案里的 `tk_discuss_list` / `tk_post` / `tk_create_tickets`、「AI 标记 / spec 的编码归脚本」挪到 F4。

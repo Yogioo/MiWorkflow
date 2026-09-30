@@ -742,8 +742,24 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 
 **模板**：`templates/<名字>/` 是一份完整的 HOME 片段（`tasks/`、`scripts/`、配置常量），**只在 `init` 时复制**，
 不默认加载 —— 跟 §16「不内置具体任务 / 脚本」不冲突。复制过去就归项目所有，在项目里各自演进，**不回头同步**。
-模板的测试留在内核仓库（假外部命令 / 假 Agent），保证复制出去的那一刻是好的。`init` 按组合复制：先复制共用模板 `templates/_shared/`（开发任务 `dev`、git 脚本、`run_cmd`、`config.mjs`），再复制所选工单源；以 `_` 开头的目录不出现在模板菜单与 `--template` 里。已实现的工单源：
-`templates/github/` = GitHub（`gh_*` 脚本、`source.mjs`、讨论流程 `github_discuss`；配合 `dev`：认领 issue → 开发 → 审查 → 验证 → 提交 → 关单，见 TODO C3）。
+模板的测试留在内核仓库的 `tests/template-*.test.mjs`（假外部命令 / 假 Agent / 临时 git 仓库），保证复制出去的那一刻是好的。`init` 按组合复制：先复制共用模板 `templates/_shared/`（开发任务 `dev`、开发提示词 `prompts/dev|review|fix.md`、git 脚本、`run_cmd`、`config.mjs`），再复制所选工单源；以 `_` 开头的目录不出现在模板菜单与 `--template` 里。
+
+工单源的约定就是三个脚本名 + 输入输出（不做抽象层，TODO F2）；`dev` 只调它们，不知道背后是哪家。工单号一律字符串，日志 / 评论 / 提问里用工单引用 `ref`：
+
+| 脚本 | 入 | 出 |
+|---|---|---|
+| `ticket_ready` | `{}` | `{ ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] }`（已排序：优先级 → 工单号） |
+| `ticket_view` | `{ id }` | `{ id, ref, title, file }`：写出**工单快照** |
+| `ticket_mark` | `{ id, action, commentFile?, comment?, sha? }` | `action` = `claimed` / `done` / `failed` / `unpushed` |
+
+- **工单快照**（读）：正文 + 全部评论转成 Markdown，写到 `logs/<runId>/tickets/<id>/ticket.md`，图片下到同目录 `images/`、相对路径引用；Agent 的 `inputs` 只给路径，自己读。
+- **回帖稿**（写）：`dev` 每次调 Agent 前分配 `logs/<runId>/tickets/<id>/reply-<n>.md`；Agent 有话对人说就写进去（图片放同目录、相对路径），`ticket_mark` 收 `commentFile` 传图发评论；没写就退回一句话的 `comment`。
+- **机器标签**（名字在各工单源的 `source.mjs`，可改）：入队 `ready-for-agent`；`afk-claimed`（认领中）/ `afk-delivered`（已交付）/ `afk-failed`（失败）。依赖满足 = 前置单贴了 `afk-delivered` 或已关单。
+- 每个工单源带 `source.mjs`：这家的常量 + `commitMessage(ticket, kind)`；共用的 `config.mjs` 只留 `DEV / REVIEWER / VERIFY / ROUNDS / PUSH`。
+
+已实现的工单源：
+`templates/github/` = GitHub（`ticket_*` 脚本、`source.mjs`、讨论流程 `github_discuss` 与 `gh_*` 脚本；配合 `dev`：认领 issue → 开发 → 审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`，见 TODO C3、F2）。
+回帖稿带图时用 `gh issue comment --attach` 上传，要 `gh` ≥ 2.99.0；只在确实有图时查版本，不够就把图片换成「图片未上传」占位、`say` 提示升级，评论照发。
 
 ---
 
@@ -796,6 +812,8 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
     人是给 issue 贴 `ready-for-agent`；任务 `dev` 逐个「认领 → 开发 → 审查 → 验证 → 提交 → 关单」，
     失败回滚 + 贴评论 + `afk-failed`。测试留内核仓库（假 gh / 假 Agent / 临时 git 仓库）。
     回滚不销毁提交：`base..HEAD` 的提交先备份成 `refs/afk-backup/*` 再回滚，ref 写进失败评论（TODO B7）。
+16. ✅ 工单源接口（TODO F2）：模板拆成 `_shared` + 工单源、`init` 组合复制；`github_dev` → `dev`；
+    `ticket_ready` / `ticket_view` / `ticket_mark`；工单快照 + 回帖稿；机器标签统一（§15）。
 
 ---
 
