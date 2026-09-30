@@ -155,6 +155,7 @@ async function runTicket(t, ctx) {
   // 重试前回到本轮起点，免得在半成品上续写；那时备份掉的提交也要写进释放评论
   let saved = '';
   const dev = await callAgent(ctx, devPrompt(t, root, reply), {
+    label: '开发Agent',
     ...(DEV ? { agent: DEV } : {}),
     inputs: { cwd: root, ticket: t.file, reply, choices: ['done', 'done_review', 'no_change'] }
   }, async () => { saved += await rollback(base, ctx); });
@@ -178,6 +179,7 @@ async function runTicket(t, ctx) {
   if (needReview) {
     reply = nextReply(t);
     const rev = await callAgent(ctx, reviewPrompt(t, root, changed, reply), {
+      label: '审查Agent',
       ...(REVIEWER ? { agent: REVIEWER } : {}),
       inputs: { cwd: root, ticket: t.file, reply, changed, choices: ['clean', 'refined', 'reject'] }
     });
@@ -201,6 +203,7 @@ async function runTicket(t, ctx) {
       round++;
       reply = nextReply(t);
       const fix = await callAgent(ctx, fixPrompt(t, root, VERIFY, v.data?.tail, reply), {
+        label: '修正Agent',
         ...(DEV ? { agent: DEV } : {}),
         inputs: { cwd: root, ticket: t.file, reply, verify: VERIFY, output: v.data?.tail, choices: ['fixed', 'give_up'] }
       });

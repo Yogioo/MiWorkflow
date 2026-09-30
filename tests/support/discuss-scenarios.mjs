@@ -15,8 +15,10 @@ const dev = (key, title, extra = {}) => ({
   key, title, priority: 'P2', review: false, blockedBy: [], ...extra,
   body: extra.body ?? `## What to build\n\n${title} 的行为\n\n## Acceptance criteria\n\n- [ ] 好了`
 });
+// 日志里的人话：say（动作结果）+ goal（提示词全文，提示词不再当节点名后挪到了这里，§13.1）
 const says = (s) => readdirSync(path.join(s.home, 'logs')).filter((f) => f.endsWith('.jsonl'))
-  .flatMap((f) => readFileSync(path.join(s.home, 'logs', f), 'utf8').trim().split('\n').map((l) => JSON.parse(l).say ?? ''));
+  .flatMap((f) => readFileSync(path.join(s.home, 'logs', f), 'utf8').trim().split('\n')
+    .map((l) => JSON.parse(l)).map((r) => `${r.say ?? ''}\n${r.goal ?? ''}`));
 
 export function defineDiscussScenarios(src) {
   const MARK = src.markRe();

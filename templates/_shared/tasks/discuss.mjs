@@ -55,6 +55,8 @@ const CONTRACT = {
   spec: { choice: 'spec', key: 'spec' },
   tickets: { choice: 'tickets', key: 'tickets' }
 };
+// 节点短名（§13.1、§13.6）：提示词太长，不当节点名，viewer 里显示这几个
+const LABELS = { grilling: '讨论Agent', spec: '规格Agent', tickets: '拆单Agent' };
 
 export default async function ({ script, agent, args }) {
   const max = args.max === undefined ? Infinity : Number(args.max);
@@ -175,8 +177,9 @@ async function askRound(issue, last, agent, mode, project) {
 function callAgent(agent, issue, goal, session, mode, project, { delta = false } = {}) {
   const spec = agentSpec();
   const inputs = { cwd: project, id: issue.id, ref: issue.ref, ...(delta ? {} : { ticket: issueText(issue) }), choices: [CONTRACT[mode].choice] };
-  if (spec) return agent(goal, { agent: session ? { ...spec, session } : spec, inputs });
-  return agent(goal, { inputs: session ? { ...inputs, session } : inputs });
+  const label = LABELS[mode];
+  if (spec) return agent(goal, { label, agent: session ? { ...spec, session } : spec, inputs });
+  return agent(goal, { label, inputs: session ? { ...inputs, session } : inputs });
 }
 
 function agentSpec() {

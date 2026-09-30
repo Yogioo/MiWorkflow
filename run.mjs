@@ -79,7 +79,7 @@ else if (cmd === 'view') {
   await import('./viewer/serve.mjs');
 } else if (cmd === 'skill') process.stdout.write(readFileSync(SKILL, 'utf8'));
 else if (every !== undefined) await loopTask(cmd, every);
-else await runTask(cmd);
+else await runTask(cmd, args);
 
 // ── 参数 ──────────────────────────────────────────────────────────────────
 // --key value / --key=value / --flag(=true)；值一律是字符串。--yes、--dry-run、--every 归内核，不进 args。
@@ -427,7 +427,7 @@ async function loopTask(task, every) {
 }
 
 // ── 跑任务 ────────────────────────────────────────────────────────────────
-async function runTask(task) {
+async function runTask(task, args = {}) {
   useHome();
   // 先定 runId，再加载 core（core 里 runId 是延迟解析的）
   process.env.AGENTFLOW_TASK = task;
@@ -458,7 +458,7 @@ async function runTask(task) {
   try {
     const mod = await import(pathToFileURL(taskFile).href);
     title = mod.title ?? task;
-    log({ primitive: 'run', status: 'running', title, say: `▶ ${title}` });
+    log({ primitive: 'run', status: 'running', title, inputs: args, say: `▶ ${title}` });
     console.log(title); // 人类可见：这次运行在干什么（§13.3）
 
     await mod.default({ script, agent, human, args });

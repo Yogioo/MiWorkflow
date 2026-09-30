@@ -94,8 +94,10 @@ test('--max 限处理张数，逐张按号处理', () => {
   assert.equal(bodies(s, 3).length, 0);
 });
 
+// 日志里的人话：say（动作结果）+ goal（提示词全文，提示词不再当节点名后挪到了这里，§13.1）
 const says = (s) => readdirSync(path.join(s.home, 'logs')).filter((f) => f.endsWith('.jsonl'))
-  .flatMap((f) => readFileSync(path.join(s.home, 'logs', f), 'utf8').trim().split('\n').map((l) => JSON.parse(l).say ?? ''));
+  .flatMap((f) => readFileSync(path.join(s.home, 'logs', f), 'utf8').trim().split('\n')
+    .map((l) => JSON.parse(l)).map((r) => `${r.say ?? ''}\n${r.goal ?? ''}`));
 
 test('续会话：标记记下 cli 与会话号，下一轮续上只喂增量（新评论、正文变化）', () => {
   const s = setup({ issues: [issue(1, { labels: ['agent-discuss'], body: '原始正文' })] });

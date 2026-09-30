@@ -102,6 +102,7 @@ test('script：返回结构里带人话 say', async () => {
     const [first] = rows(runId);
     assert.equal(first.primitive, 'script');
     assert.equal(first.say, 'fixture 收到：测试');
+    assert.deepEqual(first.inputs, { who: '测试' }, '输入信息（args）也记一条，viewer 展开时看（§12）');
     assert.ok('gitSha' in first, '每条记录都带 gitSha（§12）');
 
     rmSync(logPath(runId), { force: true });
@@ -254,7 +255,8 @@ test('agent：先写带 events 的 running 行，结束后写带 ref 的终态�
     }
     assert.ok(running, '动作结束前就应出现 running 行');
     assert.match(running.events, new RegExp(`^${runId}/agent-\\d+\\.events\\.jsonl$`), 'running 行提前带 events');
-    assert.equal(running.say, '把登录接口接好', 'running 的 say 取 goal，不凭空编（§13.1）');
+    assert.equal(running.say, 'Agent', 'running 的 say 取短名（没给 label 就回落 Agent），不把提示词当节点名（§13.1）');
+    assert.equal(running.goal, '把登录接口接好', '提示词全文记在 goal 字段，viewer 展开「输入」时看（§12）');
 
     const r = await p;
     assert.equal(r.status, 'ok');
@@ -263,6 +265,26 @@ test('agent：先写带 events 的 running 行，结束后写带 ref 的终态�
     assert.equal(done.ref, running.seq, '终态行 ref 指回 running 行');
     assert.equal(done.events, running.events, '终态行沿用同一条过程文件');
     assert.equal(done.say, '干完了');
+  } finally {
+    rmSync(fake.file, { force: true });
+    rmSync(logPath(runId), { force: true });
+  }
+});
+
+test('agent：label 当节点名，goal 留全文（§13.1、§13.6）', async () => {
+  const runId = uniq();
+  process.env.AGENTFLOW_TASK = 'unit';
+  process.env.AGENTFLOW_RUN_ID = runId;
+  const fake = writeFakeAgent('__test_agent_label', "process.stdout.write(JSON.stringify({ status: 'ok', choice: 'done', reason: '改完了' }));");
+  try {
+    const { agent } = await import('../core.mjs');
+    await agent('一段很长的提示词\n第二行', { cmd: fake.cmd, label: '开发Agent' });
+    const all = rows(runId).filter((r) => r.primitive === 'agent');
+    assert.ok(all.every((r) => r.label === '开发Agent'), 'running / 终态两行都带 label');
+    const running = all.find((r) => r.status === 'running');
+    assert.equal(running.say, '开发Agent', '节点名是短名');
+    assert.equal(running.goal, '一段很长的提示词\n第二行', '提示词全文进 goal');
+    assert.equal(running.say.includes('一段很长'), false, 'say 不含提示词');
   } finally {
     rmSync(fake.file, { force: true });
     rmSync(logPath(runId), { force: true });

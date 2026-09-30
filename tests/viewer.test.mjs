@@ -153,7 +153,11 @@ const loadPage = () => {
   const els = new Map();
   const el = (s) => { if (!els.has(s)) els.set(s, { innerHTML: '', textContent: '', dataset: {} }); return els.get(s); };
   const ctx = {
-    document: { addEventListener() {}, querySelector: el, getElementById: el },
+    document: {
+      addEventListener(type, fn) { (this._h ??= {})[type] = fn; },
+      querySelector: el,
+      getElementById: el
+    },
     fetch: async () => ({ ok: true, json: async () => [] }),
     setInterval: () => 0,
     localStorage: { store: {}, getItem(k) { return this.store[k] ?? null; }, setItem(k, v) { this.store[k] = String(v); } }
@@ -209,7 +213,7 @@ test('index.html：「进行中 / 已结束」只标在 agent 的进行中行上
     vm.runInContext(`records = ${JSON.stringify(recs)}; renderTimeline();`, ctx);
     return ctx.document.querySelector('#timeline').innerHTML;
   };
-  const runningAgent = { seq: 2, primitive: 'agent', status: 'running', say: '干活', events: 'r/agent-1.events.jsonl' };
+  const runningAgent = { seq: 2, primitive: 'agent', status: 'running', label: '干活', say: '干活', events: 'r/agent-1.events.jsonl' };
 
   let html = render([{ seq: 1, primitive: 'run', status: 'running', say: '▶ 演示' }, runningAgent]);
   const runSeg = html.slice(0, html.indexOf('干活'));
@@ -218,6 +222,57 @@ test('index.html：「进行中 / 已结束」只标在 agent 的进行中行上
 
   html = render([runningAgent, { seq: 3, primitive: 'agent', status: 'ok', ref: 2, say: '干完了' }]);
   assert.ok(html.includes('已结束'), '被 ref 指回的 agent 行显示「已结束」');
+});
+
+test('index.html：展开任何一行都有输入 / 输出 / 执行三段（§13.6）', () => {
+  const ctx = loadPage();
+  const run = (code) => vm.runInContext(code, ctx);
+  const render = (recs) => {
+    run(`records = ${JSON.stringify(recs)}; renderTimeline();`);
+    return ctx.document.querySelector('#timeline').innerHTML;
+  };
+  run('setExpandAll(true)');
+  const html = render([
+    { seq: 1, primitive: 'run', status: 'ok', title: '开发', say: '✔ 开发 完成', task: 'dev', inputs: { max: '1' } },
+    { seq: 2, primitive: 'script', name: 'git_state', status: 'ok', say: '工作区干净', inputs: { cwd: 'x' } },
+    { seq: 3, primitive: 'agent', name: 'agent', label: '开发Agent', status: 'running', goal: '一段提示词', events: 'r/agent-1.events.jsonl' },
+    { seq: 4, primitive: 'agent', name: 'agent', label: '开发Agent', status: 'ok', ref: 3, say: '干完了', choice: 'done' }
+  ]);
+
+  assert.equal((html.match(/class="sec-h"/g) || []).length, 12, '4 行 × 三段');
+  assert.ok(html.includes('一段提示词'), 'agent 的提示词在展开的「输入」里');
+  assert.ok(html.includes('工作区干净'), 'script 的输出在「输出」里');
+  assert.ok(html.includes('任务：dev'), 'run 行的输入带任务名');
+
+  // 节点名是短名，不能是提示词（§13.6）
+  const says = [...html.matchAll(/<div class="say">([\s\S]*?)<\/div>/g)].map((m) => m[1]);
+  const agentSay = says.find((s) => s.includes('开发Agent'));
+  assert.ok(agentSay, 'agent 行的节点名取 label');
+  assert.ok(!agentSay.includes('一段提示词'), '提示词不当节点名');
+});
+
+test('index.html：运行记录能按任务筛，点开关落 localStorage（§13.6）', () => {
+  const ctx = loadPage();
+  const run = (code) => vm.runInContext(code, ctx);
+  run(`runs = [
+    { runId: 'a', task: 'discuss', title: '讨论单', status: 'ok', startedAt: null },
+    { runId: 'b', task: 'dev', title: '开发单', status: 'ok', startedAt: null }
+  ]; renderFilter(); renderRuns();`);
+
+  const chips = ctx.document.querySelector('#filter').innerHTML;
+  assert.ok(chips.includes('data-ftask="discuss"') && chips.includes('data-ftask="dev"'), '每个任务一个开关');
+  assert.ok(chips.includes('全部'), '总是有「全部」');
+
+  // 点 dev 开关：只留 dev，选择落 localStorage
+  const click = (ftask) => ctx.document._h.click({ target: { closest: (s) => (s === 'button[data-ftask]' ? { dataset: { ftask } } : null) } });
+  click('dev');
+  const shown = ctx.document.querySelector('#runs').innerHTML;
+  assert.ok(shown.includes('开发单') && !shown.includes('讨论单'), '只看选中的任务');
+  assert.equal(ctx.localStorage.store['miworkflow.runFilter'], '["dev"]', '选择落 localStorage，刷新后还在');
+
+  // 再点一次取消：空集 = 全部
+  click('dev');
+  assert.ok(ctx.document.querySelector('#runs').innerHTML.includes('讨论单'), '取消筛选后又全出来了');
 });
 
 test('index.html：过程一次拉回上万条也不炸（events.jsonl 能上 10MB）', async () => {

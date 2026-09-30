@@ -106,6 +106,7 @@ export async function script(name, args = {}, opts = {}) {
   log({
     primitive: 'script',
     name,
+    inputs: args, // 输入信息（§12、§13.6）：viewer 展开时看「这步拿什么参数跑的」
     status: result.status,
     error: result.error,
     say: result.say ?? `${name}: ${result.status}`,
@@ -166,9 +167,11 @@ export async function agent(goal, opts = {}) {
   }
 
   // 进行中记录（§13.1）：动作已开始是既成事实，不是对结果的承诺。
-  // say 取 goal 本身（和 human 的 pending 取 prompt 同理），不凭空编「正在努力…」。
+  // say 取任务给的短名（label，缺省 'Agent'）：提示词太长，当节点名会淹掉时间线（§13.6），
+  // 全文改记在 goal 字段里，viewer 展开「输入信息」时再显示。不凭空编「正在努力…」。
+  const label = opts.label ? String(opts.label) : 'Agent';
   const runningSeq = command
-    ? log({ primitive: 'agent', name: 'agent', agent: command.agent, events, status: 'running', say: String(goal) })
+    ? log({ primitive: 'agent', name: 'agent', label, agent: command.agent, events, goal: String(goal), status: 'running', say: label })
     : null;
 
   if (!command) {
@@ -206,6 +209,7 @@ export async function agent(goal, opts = {}) {
   log({
     primitive: 'agent',
     name: 'agent',
+    label,
     agent: command?.agent,
     events,
     ref: runningSeq ?? undefined, // 指回进行中那条，viewer 据此判定步骤已结束（§13.5 的重放机制）
