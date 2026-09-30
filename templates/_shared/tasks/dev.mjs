@@ -9,8 +9,10 @@
 //   miworkflow dev --issue 42         只做工单 42（不看入队和依赖，人点名就跑）
 //   miworkflow dev --confirm          每次发布（推送 + 关单）前 human 确认
 //   miworkflow dev --dry-run          只报会做哪些工单、哪些被挡住，不改工单、不改 git
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH } from '../config.mjs';
+import { commitMessage } from '../source.mjs';
 
 export const title = '开发：认领工单 → 开发 → 审查 → 验证 → 提交 → 关单';
 
@@ -160,9 +162,10 @@ async function runTicket(t, ctx) {
   }
 
   // 6. 提交 + 推送：Agent 一般已经自己提交了（提示词要求的），这里兜底；已提交就用当前 HEAD 走推送。
+  const msg = commitMessage(t, 'dev');
   const c = await script('git_commit', {
-    message: `${t.ref} ${t.title}`,
-    body: `Closes ${t.ref}`,
+    message: msg.message,
+    ...(msg.body ? { body: msg.body } : {}),
     push: PUSH,
     cwd: root
   });
@@ -213,63 +216,42 @@ async function fail(t, reason, base, ctx) {
 
 const lastLines = (text, n = 5) => String(text ?? '').split('\n').filter(Boolean).slice(-n).join(' / ');
 
-// ── 提示词（DEV / REVIEWER 各一段，写法参考 exec-review，不引用）────────────────
-function devPrompt(issue, root) {
-  return [
-    '你在为一张工单开发代码。',
-    '',
-    `工作目录：${root}`,
-    '',
-    'issue：',
-    issue.text,
-    '',
-    '要求：',
-    '- 直接改工作目录里的代码，把 issue 做出来；改完自己检查一遍，别留半成品',
-    `- 做完自己提交：\`git add -A && git commit -m '${issue.ref} ${issue.title}'\`，正文写一行 \`Closes ${issue.ref}\``,
-    '- 不要 git push：推送与关单由工作流负责（提交信息按上面的格式；忘了提交也没关系，工作流会替你补一笔）',
-    '- issue 不需要任何改动（已经满足，或信息不足无法判断）时，choice 用 no_change，reason 说明原因',
-    '- 需要人补充信息才能继续时，status 用 need_human，reason 写你要问的问题',
-    '',
-    '最后只回一段 JSON：{status, choice, reason, data}；status 只能是 ok | need_human | failed；choice 只能是 done | no_change'
-  ].join('\n');
+// ── 提示词：正文在 prompts/dev|review|fix.md，{{名字}} 占位；提交信息由工单源的 commitMessage 给 ──
+const PROMPTS = {
+  dev: fileURLToPath(new URL('../prompts/dev.md', import.meta.url)),
+  review: fileURLToPath(new URL('../prompts/review.md', import.meta.url)),
+  fix: fileURLToPath(new URL('../prompts/fix.md', import.meta.url))
+};
+
+// 一趟替换：填进去的值（工单正文、验证输出）里就算有 {{…}} 也不会再被替换
+function render(kind, vars) {
+  return readFileSync(PROMPTS[kind], 'utf8').replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
 }
 
-function reviewPrompt(issue, root, changed) {
-  return [
-    '你是代码审查者。刚有人为下面的 issue 改了代码，请审查并直接修正问题（你有全部权限）。',
-    '',
-    `工作目录：${root}`,
-    '改动的文件：',
-    ...changed.map((f) => `- ${f}`),
-    '',
-    'issue：',
-    issue.text,
-    '',
-    '看实际改动（git diff 等），审查：是否正确、是否真的解决了 issue、有没有引入问题。有问题就直接改。',
-    `- 你改了就直接提交，信息用：\`${issue.ref} 审查修正：<一句话>\`；不要 git push（推送与关单由工作流负责）`,
-    '- 审查后你认为干净：choice=clean',
-    '- 你做了修改或补充：choice=refined',
-    '- 方向根本错了、应当放弃：choice=reject，并说明',
-    '',
-    '最后只回一段 JSON：{status, choice, reason, data}；choice 只能是 clean | refined | reject'
-  ].join('\n');
+function commitText(t, kind) {
+  const c = commitMessage(t, kind);
+  return c.body ? `\`${c.message}\`，正文写一行 \`${c.body}\`` : `\`${c.message}\``;
 }
 
-function fixPrompt(issue, root, verify, output) {
-  return [
-    '你之前为下面的 issue 做的改动没通过验证，请修到通过为止。',
-    '',
-    `工作目录：${root}`,
-    `验证命令：${Array.isArray(verify) ? verify.join(' ') : verify}`,
-    '输出（末尾）：',
-    String(output ?? '').split('\n').slice(-60).join('\n'),
-    '',
-    'issue：',
-    issue.text,
-    '',
-    '直接改代码。修好了 choice=fixed；判断做不到 choice=give_up 并说明原因。',
-    `- 你改了就直接提交，信息用：\`${issue.ref} 验证不过修正：<一句话>\`；不要 git push（推送与关单由工作流负责）`,
-    '',
-    '最后只回一段 JSON：{status, choice, reason, data}；choice 只能是 fixed | give_up'
-  ].join('\n');
+function devPrompt(t, root) {
+  return render('dev', { cwd: root, ticket: t.text, commit: commitText(t, 'dev') });
+}
+
+function reviewPrompt(t, root, changed) {
+  return render('review', {
+    cwd: root,
+    changed: changed.map((f) => `- ${f}`).join('\n'),
+    ticket: t.text,
+    commit: commitText(t, 'review')
+  });
+}
+
+function fixPrompt(t, root, verify, output) {
+  return render('fix', {
+    cwd: root,
+    verify: Array.isArray(verify) ? verify.join(' ') : verify,
+    output: String(output ?? '').split('\n').slice(-60).join('\n'),
+    ticket: t.text,
+    commit: commitText(t, 'fix')
+  });
 }

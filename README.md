@@ -121,7 +121,8 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
   之后的评论（或再次 `/spec`）都是修改意见，AI 只重写那一段。spec 区域不算「人的内容」，AI 写 spec 不会触发它自己；spec 不贴 `ready-for-agent`
 - 追问的 Agent 由 `source.mjs` 的 `DISCUSS` 指定
 
-改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `VERIFY` / `ROUNDS` / `PUSH`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS`）；
+改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `VERIFY` / `ROUNDS` / `PUSH`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `commitMessage`）；
+开发 / 审查 / 验证修正的提示词在 `.workflow/prompts/dev.md` / `review.md` / `fix.md`；
 模板复制出去后归项目所有，各自演进，不回头同步内核。
 
 ## 内核仓库

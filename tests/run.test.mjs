@@ -322,6 +322,7 @@ test('init --template github：共用 + GitHub 两部分都复制进来', () => 
   assert.equal(r.code, 0, r.stderr);
   const home = path.join(dir, '.workflow');
   for (const f of ['config.mjs', 'tasks/dev.mjs', 'scripts/_lib.mjs', 'scripts/git_commit.mjs', 'scripts/run_cmd.mjs',
+    'prompts/dev.md', 'prompts/review.md', 'prompts/fix.md',
     'source.mjs', 'tasks/github_discuss.mjs', 'scripts/_gh.mjs', 'scripts/ticket_ready.mjs', 'prompts/grilling.md']) {
     assert.ok(existsSync(path.join(home, f)), f);
   }

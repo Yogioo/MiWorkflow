@@ -1,9 +1,42 @@
 // dev（GitHub 工单源）的端到端测试：开发 → 提交 → 关单的正常路径。脚手架在 tests/support/github-template.mjs。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { setup, plan, issue, issueState, labelsOf, comments, cli, gitOut } from './support/github-template.mjs';
+import { fileURLToPath } from 'node:url';
+import { setup, plan, seen, issue, issueState, labelsOf, comments, cli, gitOut } from './support/github-template.mjs';
+
+const SHARED_PROMPTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates', '_shared', 'prompts');
+
+test('共用提示词 dev / review / fix 存在且不含 GitHub 专属字样', () => {
+  for (const f of ['dev.md', 'review.md', 'fix.md']) {
+    const text = readFileSync(path.join(SHARED_PROMPTS, f), 'utf8');
+    assert.doesNotMatch(text, /GitHub|\bgh\b|#N|#\d|Closes|issue/i, f);
+    assert.match(text, /提交信息用：\{\{commit\}\}/, f);
+  }
+});
+
+test('GitHub 下三段提示词里的提交信息与兜底提交一致', () => {
+  const s = setup({
+    issues: [issue(7, { title: '加个文件', labels: ['ready-for-agent'] })],
+    verify: ['node', '-e', "process.exit(require('fs').existsSync('ok.txt') ? 0 : 1)"],
+    push: true
+  });
+  plan(s, [
+    { choice: 'done', reason: '做了', file: { name: 'note.txt', content: 'hi' } },
+    { choice: 'clean', reason: '没问题' },
+    { choice: 'fixed', reason: '补上了', file: { name: 'ok.txt', content: '1' } }
+  ]);
+
+  const r = cli(s, ['dev']);
+  assert.equal(r.code, 0, r.stderr);
+  const [dev, review, fix] = seen(s).map((x) => x.goal);
+  assert.ok(dev.includes("提交信息用：`#7 加个文件`，正文写一行 `Closes #7`"), dev);
+  assert.ok(review.includes('提交信息用：`#7 审查修正：<一句话>`'), review);
+  assert.ok(fix.includes('提交信息用：`#7 验证不过修正：<一句话>`'), fix);
+  assert.equal(gitOut(['log', '-1', '--pretty=%s'], s.root), '#7 加个文件');
+  assert.equal(gitOut(['log', '-1', '--pretty=%b'], s.root), 'Closes #7');
+});
 
 test('成功：认领 → 开发 → 审查 → 提交 → 关单（且推送）', () => {
   const s = setup({ issues: [issue(1, { title: '加个文件', labels: ['ready-for-agent'] })], push: true });

@@ -112,12 +112,6 @@ export const CONFIG = (verify, rounds, push) => [
   ''
 ].join('\n');
 
-export const SOURCE = [
-  "export const LABELS = { ready: 'ready-for-agent', inProgress: 'in-progress', failed: 'afk-failed' };",
-  'export const DISCUSS = null;',
-  ''
-].join('\n');
-
 export function setup({ issues = [], verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false } = {}) {
   const base = tmpDir();
   const root = path.join(base, 'repo');
@@ -128,7 +122,6 @@ export function setup({ issues = [], verify = '', rounds = 2, push = false, dirt
   for (const t of TEMPLATES) cpSync(t, home, { recursive: true });
   const withPush = push || remoteAhead;
   writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush));
-  writeFileSync(path.join(home, 'source.mjs'), SOURCE);
   writeFileSync(path.join(home, '.gitignore'), 'logs/\n');
 
   git(['init', '-q', '--initial-branch=main'], root);
