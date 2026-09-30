@@ -307,6 +307,27 @@ test('ticket_ready：前后置依赖——未完成挡住并指出前置；afk-d
   }
 });
 
+test('ticket_ready：前置在别的项目 → 挡住并写明是别的项目（真实接口里前置项目在 workspace_id）', async () => {
+  // 2026-09-30 真项目实测：关系行里前置所在项目是 `workspace_id`，不是 `src_workspace_id`。
+  const f = stateFile({
+    stories: [story('1152360842001005301', { label: 'ready-for-agent' })],
+    relations: [{
+      workitem_id: '1152360842001005399', dst_workitem_id: '1152360842001005301',
+      src_field: 'due', dst_field: 'begin', workspace_id: '99999999',
+      workitem_type: 'story', dst_workitem_type: 'story', relation_type: 'after'
+    }]
+  });
+  const api = await startFakeOpenApi(f);
+  try {
+    const { out } = runScript('ticket_ready', { dryRun: true }, tapdEnv(f, api.endpoint));
+    assert.deepEqual(out.data.ready, []);
+    assert.equal(out.data.blocked.length, 1);
+    assert.match(out.data.blocked[0].reason, /前置 story 1152360842001005399 在别的项目（99999999）/);
+  } finally {
+    await api.close();
+  }
+});
+
 test('htmlToMarkdown：标题 / 表格 / 列表 / 加粗 / 行内代码 / 链接 / 实体', () => {
   const md = htmlToMarkdown([
     '<h2>验收</h2><p>要 <strong>加粗</strong>、<code>npm&nbsp;test</code> 和 <a href="https://x.cn/a">链接</a> &amp; 实体</p>',

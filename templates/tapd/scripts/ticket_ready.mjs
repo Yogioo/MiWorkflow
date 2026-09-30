@@ -58,8 +58,12 @@ function endStatuses(w) {
   return endCache.get(w);
 }
 
-// get_time_relative_stories 的返回按接口文档推：关系行 { workitem_id, dst_workitem_id, src_field, dst_field }，
-// 可能包一层（{ TimeRelation: … }）；本单是 dst 的那些行，workitem_id 就是前置。
+// get_time_relative_stories 的真实返回（2026-09-30 真项目实测，见 TODO F4 Step 0）：
+//   data: [{ WorkitemTimeRelation: { id, workspace_id, workitem_type, workitem_id,
+//            src_field, dst_workspace_id, dst_workitem_type, dst_workitem_id, dst_field,
+//            relation_type, lag_time } }]
+// 可能包一层（测试的假接口用 { TimeRelation: … }）；本单是 dst 的那些行，workitem_id 就是前置，
+// 前置所在项目是 workspace_id（不是 src_workspace_id）。
 const unwrap = (row) => {
   const vals = row && typeof row === 'object' ? Object.values(row) : [];
   return vals.length === 1 && vals[0] && typeof vals[0] === 'object' && !Array.isArray(vals[0]) ? vals[0] : row;
@@ -72,7 +76,7 @@ function predecessorsOf(data, id) {
     const pred = String(r.workitem_id ?? '').trim();
     if (!pred) continue;
     const type = String(r.workitem_type ?? r.src_workitem_type ?? r.entity_type ?? '').trim();
-    const w = String(r.src_workspace_id ?? '').trim();
+    const w = String(r.workspace_id ?? r.src_workspace_id ?? '').trim();
     out.push({ id: pred, type, workspace: w });
   }
   return out;
