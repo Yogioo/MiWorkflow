@@ -65,7 +65,7 @@ async function askRound(issue, last, agent) {
   let res;
   try {
     if (prev) {
-      res = await callAgent(agent, issue, deltaPrompt(issue, last), prev);
+      res = await callAgent(agent, issue, deltaPrompt(issue, last), prev, { delta: true });
       if (res.choice === 'session_not_found') {
         res = await callAgent(agent, issue, `续不上，改为重放（${res.reason || prev}）\n\n${prompt(issue)}`, own);
       }
@@ -83,9 +83,10 @@ async function askRound(issue, last, agent) {
 }
 
 // 会话号是适配器参数（Core §10）；自定义命令（AGENTFLOW_AGENT_CMD）没有适配器参数，只能放进 inputs。
-function callAgent(agent, issue, goal, session) {
+// inputs 会原样进适配器提示词：续会话时不带完整正文，否则增量白喂。
+function callAgent(agent, issue, goal, session, { delta = false } = {}) {
   const spec = agentSpec();
-  const inputs = { cwd: PROJECT, number: issue.number, issue: issue.text, choices: ['ask'] };
+  const inputs = { cwd: PROJECT, number: issue.number, ...(delta ? {} : { issue: issue.text }), choices: ['ask'] };
   if (spec) return agent(goal, { agent: session ? { ...spec, session } : spec, inputs });
   return agent(goal, { inputs: session ? { ...inputs, session } : inputs });
 }

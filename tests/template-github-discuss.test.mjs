@@ -112,6 +112,7 @@ test('续会话：标记记下 cli 与会话号，下一轮续上只喂增量（
   assert.equal(second.session, 'S1');
   assert.match(second.goal, /人的新回复/);
   assert.doesNotMatch(second.goal, /原始正文|第一问/, '只喂增量');
+  assert.equal(second.issue, undefined, 'inputs 也不带完整正文');
 
   edit(s, (st) => { st.issues[0].body = '改过的正文'; });
   plan(s, [{ ...ask('第三问'), session: 'S1' }]);
@@ -135,6 +136,7 @@ test('续会话返回 session_not_found → 改为重放完整正文 + 全部评
   assert.match(replay.goal, /原始正文/);
   assert.match(replay.goal, /第一问/);
   assert.match(replay.goal, /人的新回复/);
+  assert.match(replay.issue, /原始正文/);
   assert.ok(says(s).some((x) => x.includes('续不上，改为重放')));
   assert.match(bodies(s, 1)[2], /重放后的追问[\s\S]*session=S2/);
 });

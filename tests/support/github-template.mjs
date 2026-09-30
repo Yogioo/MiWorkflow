@@ -71,7 +71,7 @@ writeFileSync(FAKE_AGENT, [
   'const planFile = process.env.FAKE_AGENT_PLAN;',
   'const plan = JSON.parse(readFileSync(planFile, "utf8"));',
   'const step = plan.shift();',
-  'writeFileSync(planFile + ".seen.jsonl", JSON.stringify({ goal: pkg.goal, session: pkg.inputs?.session }) + "\\n", { flag: "a" });',
+  'writeFileSync(planFile + ".seen.jsonl", JSON.stringify({ goal: pkg.goal, session: pkg.inputs?.session, issue: pkg.inputs?.issue }) + "\\n", { flag: "a" });',
   'writeFileSync(planFile, JSON.stringify(plan));',
   'if (step.file) writeFileSync(path.join(pkg.inputs.cwd, step.file.name), step.file.content);',
   'if (step.ghComment) {',
