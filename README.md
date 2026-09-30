@@ -156,7 +156,7 @@ miworkflow dev                         # 把就绪需求逐个做完；--issue <
 - 空壳拒单：描述与评论都空的需求不做，贴 `afk-failed` + 评论请人补充（`--dry-run` 只报不改）
 - 工单引用写成 `story <需求ID>`；提交信息按 `source.mjs` 的 `commitMessage`（先用 `--story=<需求ID> --user=<评论人> <标题>`，源码关联写法待实测）
 
-**完成不关单**：做完只贴 `afk-delivered`、摘 `ready-for-agent` / `afk-claimed`、发评论，需求状态不动——人验收后自己在 TAPD 里流转状态。
+**完成不关单**：做完贴 `afk-delivered`、摘 `afk-claimed`、发评论（`ready-for-agent` 留着，有机器标签就不再入队），需求状态不动——人验收后自己在 TAPD 里流转状态。
 失败、未推送的处理与 GitHub 相同（失败保留 `ready-for-agent`、贴 `afk-failed`；未推送保留 `afk-claimed`、评论注明本地提交）。
 工单快照里的图片经 `tapd-cli attachment get-image` 下载；回帖稿的图逐张 `upload-image` 后随评论发出。
 
