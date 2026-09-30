@@ -44,6 +44,7 @@ writeFileSync(FAKE_GH, [
   '  for (let k = 0; k < rest.length; k++) {',
   '    if (rest[k] === "--add-label") { const name = rest[++k]; if (!i.labels.some((l) => l.name === name)) i.labels.push({ name }); }',
   '    if (rest[k] === "--remove-label") { const name = rest[++k]; i.labels = i.labels.filter((l) => l.name !== name); }',
+  '    if (rest[k] === "--body") i.body = rest[++k];',
   '  }',
   '  save(state); out({ ok: true });',
   '} else if (action === "comment") {',

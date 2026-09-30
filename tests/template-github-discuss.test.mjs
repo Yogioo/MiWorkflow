@@ -1,4 +1,4 @@
-// github_discuss 模板的端到端测试：进入、带标记追问、哈希判轮、竞态补发、改正文、失败不重试、--max。
+// github_discuss 模板的端到端测试：进入、带标记追问、哈希判轮、竞态补发、改正文、失败不重试、--max、/spec。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -12,10 +12,10 @@ const reply = (s, num, body) => edit(s, (st) => st.issues.find((i) => i.number =
 const bodies = (s, num) => issueState(s, num).comments.map((c) => c.body);
 const run = (s, argv = []) => { const r = cli(s, ['github_discuss', ...argv]); assert.equal(r.code, 0, r.stderr); return r; };
 
-test('进入：只挑 agent-discuss 且无阶段或 grilling；首轮贴 discuss:grilling、评论带标记；哈希不变不重复', () => {
+test('进入：只挑 agent-discuss 且无阶段或 grilling / spec；首轮贴 discuss:grilling、评论带标记；哈希不变不重复', () => {
   const s = setup({ issues: [
     issue(1, { labels: ['agent-discuss'] }),
-    issue(2, { labels: ['agent-discuss', 'discuss:spec'] }),
+    issue(2, { labels: ['agent-discuss', 'discuss:tickets'] }),
     issue(3, { labels: [] })
   ] });
   plan(s, [ask('1. 问题一？推荐：A')]);
@@ -154,4 +154,74 @@ test('标记里没有会话号（上一轮 CLI 不交回）→ 直接重放', ()
   assert.match(second.goal, /原始正文/);
   assert.match(second.goal, /第一问/);
   assert.match(second.goal, /人的新回复/);
+});
+
+const specOut = (spec) => ({ choice: 'spec', data: { spec } });
+const bodyOf = (s, num) => issueState(s, num).body;
+const SPEC_AREA = /<!-- miworkflow:spec:begin -->\n([\s\S]*)\n<!-- miworkflow:spec:end -->$/;
+
+test('/spec：spec 写进正文标记区域、原文保留在上面；阶段改 discuss:spec；不贴 ready-for-agent；AI 写 spec 不触发自己', () => {
+  const s = setup({ issues: [issue(1, { labels: ['agent-discuss'], body: '人写的原文' })] });
+  plan(s, [ask('1. 问题一？')]);
+  run(s);
+  reply(s, 1, '/spec');
+  plan(s, [specOut('## Problem Statement\n第一版')]);
+  run(s);
+  assert.match(seen(s)[1].goal, /Problem Statement/);
+  assert.match(seen(s)[1].goal, /人写的原文/);
+  const body = bodyOf(s, 1);
+  assert.ok(body.startsWith('人写的原文\n\n'), body);
+  assert.equal(SPEC_AREA.exec(body)[1], '## Problem Statement\n第一版');
+  assert.deepEqual(labelsOf(s, 1), ['agent-discuss', 'discuss:spec']);
+  assert.ok(!labelsOf(s, 1).includes('ready-for-agent'));
+  assert.match(bodies(s, 1)[2], /spec 区域[\s\S]*<!-- miworkflow:discuss hash=/);
+
+  plan(s, []);
+  run(s);
+  assert.equal(bodies(s, 1).length, 3, 'AI 写 spec 不触发它自己');
+  assert.equal(seen(s).length, 2);
+});
+
+test('spec 阶段评论改 spec：只替换 spec 区域，不动原文；再次 /spec 同样；人改原文仍触发', () => {
+  const s = setup({ issues: [issue(1, { labels: ['agent-discuss'], body: '人写的原文' })] });
+  reply(s, 1, '/spec');
+  plan(s, [specOut('第一版')]);
+  run(s);
+  assert.equal(SPEC_AREA.exec(bodyOf(s, 1))[1], '第一版');
+
+  reply(s, 1, '用户故事再补一条');
+  plan(s, [specOut('第二版')]);
+  run(s);
+  const second = seen(s)[1];
+  assert.match(second.goal, /当前 spec[\s\S]*第一版/);
+  assert.match(second.goal, /用户故事再补一条/);
+  assert.match(second.goal, /choice 只能是 spec/);
+  assert.equal(bodyOf(s, 1), '人写的原文\n\n<!-- miworkflow:spec:begin -->\n第二版\n<!-- miworkflow:spec:end -->');
+  assert.match(bodies(s, 1).at(-1), /改写 spec/);
+
+  reply(s, 1, '/spec');
+  plan(s, [specOut('第三版')]);
+  run(s);
+  assert.equal(bodyOf(s, 1), '人写的原文\n\n<!-- miworkflow:spec:begin -->\n第三版\n<!-- miworkflow:spec:end -->');
+
+  plan(s, []);
+  run(s);
+  assert.equal(seen(s).length, 3, 'spec 区域不计入哈希');
+
+  edit(s, (st) => { st.issues[0].body = st.issues[0].body.replace('人写的原文', '人改过的原文'); });
+  plan(s, [specOut('第四版')]);
+  run(s);
+  assert.equal(seen(s).length, 4, '人改原文仍触发');
+  assert.equal(bodyOf(s, 1), '人改过的原文\n\n<!-- miworkflow:spec:begin -->\n第四版\n<!-- miworkflow:spec:end -->');
+  assert.deepEqual(labelsOf(s, 1), ['agent-discuss', 'discuss:spec']);
+});
+
+test('写 spec 失败：正文不动，发带标记的失败评论', () => {
+  const s = setup({ issues: [issue(1, { labels: ['agent-discuss'], body: '人写的原文' })] });
+  reply(s, 1, '/spec');
+  plan(s, [ask('答非所问')]);
+  run(s);
+  assert.equal(bodyOf(s, 1), '人写的原文');
+  assert.match(bodies(s, 1).at(-1), /写 spec 失败[\s\S]*choice=spec/);
+  assert.match(bodies(s, 1).at(-1), MARK);
 });

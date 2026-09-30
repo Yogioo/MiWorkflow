@@ -117,6 +117,8 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
 
 - 人回复评论或改正文 → 下一次运行接着问；没新内容就不重复回复（AI 评论里的隐藏标记记着它读到的内容哈希）
 - 一轮失败会发一条评论写明原因，不自动重试、不贴 `afk-failed`；回复任意内容即重试
+- 回复 `/spec` → AI 按 `.workflow/prompts/spec.md` 把 spec 写进正文末尾的 spec 标记区域（原文留在上面），阶段改为 `discuss:spec`；
+  之后的评论（或再次 `/spec`）都是修改意见，AI 只重写那一段。spec 区域不算「人的内容」，AI 写 spec 不会触发它自己；spec 不贴 `ready-for-agent`
 - 追问的 Agent 由 `config.mjs` 的 `DISCUSS` 指定
 
 改行为就改 `.workflow/config.mjs`（`DEV` / `REVIEWER` / `DISCUSS` / `VERIFY` / `ROUNDS` / `PUSH` / 标签名）；
