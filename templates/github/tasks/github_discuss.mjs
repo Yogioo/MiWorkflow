@@ -54,7 +54,7 @@ export default async function ({ script, agent, args }) {
     if (hash === last?.hash) continue;
 
     handled++;
-    const mode = hasLabel(issue, SPEC) || freshHuman(issue).some((c) => SPEC_CMD.test(c.body.trim())) ? 'spec' : 'grilling';
+    const mode = hasLabel(issue, SPEC) || freshHuman(issue, last).some((c) => SPEC_CMD.test(c.body.trim())) ? 'spec' : 'grilling';
     if (mode === 'spec') {
       if (!hasLabel(issue, SPEC) || hasLabel(issue, GRILLING)) {
         await script('gh_discuss_post', { number: issue.number, addLabel: SPEC, ...(hasLabel(issue, GRILLING) ? { removeLabel: GRILLING } : {}) });
@@ -63,12 +63,12 @@ export default async function ({ script, agent, args }) {
       await script('gh_discuss_post', { number: issue.number, addLabel: GRILLING });
     }
     const out = await askRound(issue, last, agent, mode);
-    const mark = marker(hash, out.cli, out.session, bodyHash(issue));
+    const mark = marker(hash, humanComments(issue).length, out.cli, out.session, bodyHash(issue));
     const post = { number: issue.number };
     if (!out.ok) {
       post.body = `这一轮${mode === 'spec' ? '写 spec ' : '追问'}失败：${out.reason}\n\n回复任意内容重试。\n\n${mark}`;
     } else if (mode === 'spec') {
-      post.setBody = withSpec(issue.body, out.text);
+      post.setBody = withSpec(issue.body, out.text.replace(/<!--\s*miworkflow:spec:(?:begin|end)\s*-->/g, ''));
       post.body = `${specOf(issue.body) === null ? '已写好 spec' : '已按评论改写 spec'}，见正文的 spec 区域。继续评论修改意见，AI 会重写那一段。\n\n${mark}`;
     } else {
       post.body = `${out.text}\n\n${mark}`;
@@ -146,7 +146,11 @@ function specOf(body) {
 
 const withSpec = (body, spec) => [humanBody(body), `${SPEC_BEGIN}\n${spec}\n${SPEC_END}`].filter(Boolean).join('\n\n');
 
-function freshHuman(issue) {
+const humanComments = (issue) => issue.comments.filter((c) => !isAi(c));
+
+// AI 上一轮开始后才出现的人的评论：按标记里的 seen（该轮读到的人评论条数）切；AI 思考期间补发的评论排在 AI 评论之前，也算新的。
+function freshHuman(issue, last) {
+  if (/^\d+$/.test(last?.seen ?? '')) return humanComments(issue).slice(Number(last.seen));
   const lastAi = issue.comments.map(isAi).lastIndexOf(true);
   return issue.comments.slice(lastAi + 1).filter((c) => !isAi(c));
 }
@@ -166,9 +170,9 @@ function lastMark(issue) {
 
 const bodyHash = (issue) => createHash('sha256').update(humanBody(issue.body)).digest('hex').slice(0, 16);
 
-const marker = (hash, cli, session, body) => session
-  ? `<!-- miworkflow:discuss hash=${hash} cli=${cli} session=${session} body=${body} -->`
-  : `<!-- miworkflow:discuss hash=${hash} -->`;
+const marker = (hash, seen, cli, session, body) => session
+  ? `<!-- miworkflow:discuss hash=${hash} seen=${seen} cli=${cli} session=${session} body=${body} -->`
+  : `<!-- miworkflow:discuss hash=${hash} seen=${seen} -->`;
 
 // 正文只给人写的原文；spec 区域单独给（spec 阶段才需要）
 const issueText = (issue) => [
@@ -190,7 +194,7 @@ function deltaPrompt(issue, last, mode) {
     ...(mode === 'spec' ? [readFileSync(PROMPTS.spec, 'utf8').trim(), ''] : []),
     `issue #${issue.number} 自你上次发言之后的新内容：`,
     ...(last.body !== bodyHash(issue) ? ['', '正文改成了：', humanBody(issue.body)] : []),
-    ...freshHuman(issue).map((c) => `\n---\n@${c.author} 评论（${c.at}）：\n${c.body}`),
+    ...freshHuman(issue, last).map((c) => `\n---\n@${c.author} 评论（${c.at}）：\n${c.body}`),
     ...specSection(issue, mode),
     '',
     mode === 'spec' ? '按上面的写法交回完整 spec。' : '按前面的规则接着追问。',

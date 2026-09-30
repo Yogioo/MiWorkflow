@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setup, plan, issue, issueState, labelsOf, readState, seen, cli } from './support/github-template.mjs';
 
-const MARK = /<!-- miworkflow:discuss hash=[0-9a-f]+ -->/;
+const MARK = /<!-- miworkflow:discuss hash=[0-9a-f]+ seen=\d+ -->/;
 const ask = (comment) => ({ choice: 'ask', data: { comment } });
 const edit = (s, fn) => { const st = readState(s); fn(st); writeFileSync(s.stateFile, JSON.stringify(st)); };
 const reply = (s, num, body) => edit(s, (st) => st.issues.find((i) => i.number === num).comments.push({ author: 'human', at: '', body }));
@@ -101,7 +101,7 @@ test('续会话：标记记下 cli 与会话号，下一轮续上只喂增量（
   const s = setup({ issues: [issue(1, { labels: ['agent-discuss'], body: '原始正文' })] });
   plan(s, [{ ...ask('第一问'), session: 'S1' }]);
   run(s);
-  assert.match(bodies(s, 1)[0], /<!-- miworkflow:discuss hash=[0-9a-f]+ cli=cmd session=S1 body=[0-9a-f]+ -->$/);
+  assert.match(bodies(s, 1)[0], /<!-- miworkflow:discuss hash=[0-9a-f]+ seen=\d+ cli=cmd session=S1 body=[0-9a-f]+ -->$/);
   assert.equal(seen(s)[0].session, undefined);
   assert.match(seen(s)[0].goal, /原始正文/);
 
@@ -224,4 +224,15 @@ test('写 spec 失败：正文不动，发带标记的失败评论', () => {
   assert.equal(bodyOf(s, 1), '人写的原文');
   assert.match(bodies(s, 1).at(-1), /写 spec 失败[\s\S]*choice=spec/);
   assert.match(bodies(s, 1).at(-1), MARK);
+});
+
+test('AI 思考期间人发的 /spec（排在 AI 评论之前）下一次运行仍进 spec 阶段', () => {
+  const s = setup({ issues: [issue(1, { labels: ['agent-discuss'], body: '人写的原文' })] });
+  plan(s, [ask('1. 问题一？')]);
+  run(s);
+  edit(s, (st) => { const c = st.issues[0].comments; c.splice(c.length - 1, 0, { author: 'alice', at: '', body: '/spec' }); });
+  plan(s, [specOut('第一版')]);
+  run(s);
+  assert.equal(SPEC_AREA.exec(bodyOf(s, 1))[1], '第一版');
+  assert.deepEqual(labelsOf(s, 1), ['agent-discuss', 'discuss:spec']);
 });
