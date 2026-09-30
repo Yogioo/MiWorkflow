@@ -17,9 +17,14 @@ export const LABELS = {
   failed: 'afk-failed'          // 失败，等人看（摘掉它才重新入队）
 };
 
-// TAPD 的 priority 是中文档位；空和不认识的都当 2。数字越小越先做。
+// TAPD 的 priority 是中文档位；空和不认识的都当 2（不认识的由 ticket_ready 提示）。数字越小越先做。
 export const PRIORITY = { 高: 1, 中: 2, 低: 3 };
 export const priorityOf = (raw) => PRIORITY[String(raw ?? '').trim()] ?? 2;
+export const knownPriority = (raw) => !String(raw ?? '').trim() || String(raw).trim() in PRIORITY;
+
+// 工单引用：日志、评论、human() 提问里用。写全 ID：TAPD 界面上的短 ID 跨项目会重，
+// 且不像 GitHub 的 #N 那样一看就知道是哪家，所以带上类型前缀 `story <需求ID>`。
+export const refOf = (id) => `story ${id}`;
 
 // 提交信息：kind 为 dev（开发 / 工作流兜底提交）、review（审查修正）、fix（验证不过修正）。
 // 出 { message, body? }；<一句话> 原样交给 Agent 自己填。

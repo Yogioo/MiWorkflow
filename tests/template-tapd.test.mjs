@@ -128,12 +128,101 @@ test('source.mjs：优先级映射与提交信息', async () => {
   assert.throws(() => src.commitMessage(t, 'x'), /不认 kind/);
 });
 
+const HOME = path.join(TMP, 'home');
+mkdirSync(HOME, { recursive: true });
+for (const t of ['_shared', 'tapd']) cpSync(path.join(ROOT, 'templates', t), HOME, { recursive: true });
+
+const runScript = (name, input, env) => {
+  const r = spawnSync(process.execPath, [path.join(HOME, 'scripts', `${name}.mjs`)], {
+    input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, ...env }
+  });
+  assert.equal(r.status, 0, r.stderr);
+  return { out: JSON.parse(r.stdout), stderr: r.stderr };
+};
+
+test('ticket_ready：只看标签入队、工单号为字符串、优先级映射与排序', () => {
+  const f = stateFile({
+    stories: [
+      story('1152360842001004003', { label: 'ready-for-agent', priority: '低' }),
+      story('1152360842001004002', { label: 'ready-for-agent', priority: '' }),
+      story('1152360842001004001', { label: 'ready-for-agent', priority: '中', owner: '' }),
+      story('1152360842001004010', { label: 'x|ready-for-agent', priority: '高' }),
+      story('1152360842001004011', { label: 'ready-for-agent', priority: '紧急' }),
+      story('1152360842001004020', { label: 'ready-for-agent|afk-claimed', priority: '高' }),
+      story('1152360842001004021', { label: 'ready-for-agent|afk-delivered' }),
+      story('1152360842001004022', { label: 'afk-failed|ready-for-agent' }),
+      story('1152360842001004030', { label: 'other', priority: '高' })
+    ]
+  });
+  const { out, stderr } = runScript('ticket_ready', {}, tapdEnv(f));
+  assert.equal(out.status, 'ok');
+  assert.deepEqual(out.data.ready.map((t) => [t.id, t.priority]), [
+    ['1152360842001004010', 1],
+    ['1152360842001004001', 2],
+    ['1152360842001004002', 2],
+    ['1152360842001004011', 2],
+    ['1152360842001004003', 3]
+  ]);
+  for (const t of out.data.ready) {
+    assert.equal(typeof t.id, 'string');
+    assert.equal(t.ref, `story ${t.id}`);
+    assert.equal(t.title, `story ${t.id}`);
+  }
+  assert.deepEqual(out.data.blocked, []);
+  assert.match(out.say, /紧急/);
+  assert.match(stderr, /紧急/);
+  const calls = readTapdState(f).calls;
+  assert.equal(calls.length, 1, '一次列表请求拿全部候选');
+  assert.deepEqual(calls[0].slice(0, 3), ['story', 'list', 'label=ready-for-agent']);
+  assert.ok(!calls.some((c) => c[0] === 'bug'), '缺陷不处理');
+});
+
+test('ticket_ready：空壳需求进 blocked，贴 afk-failed + 评论；干跑不改 TAPD；只对描述为空的读评论', async () => {
+  const seed = () => ({
+    stories: [
+      story('1152360842001004101', { label: 'ready-for-agent', description: '<p> &nbsp;</p>' }),
+      story('1152360842001004102', { label: 'ready-for-agent', description: '' }),
+      story('1152360842001004103', { label: 'ready-for-agent', description: '<p><img src="/tfl/a.png"/></p>' }),
+      story('1152360842001004104', { label: 'ready-for-agent' })
+    ],
+    comments: [{ id: '1', entry_type: 'stories', entry_id: '1152360842001004102', description: '<p><img src="/tfl/b.png"/></p>', author: 'h', created: '1' }]
+  });
+
+  const dry = stateFile(seed());
+  const api1 = await startFakeOpenApi(dry);
+  try {
+    const { out } = runScript('ticket_ready', {}, { ...tapdEnv(dry, api1.endpoint), AGENTFLOW_DRY_RUN: '1', TAPD_NPC_ROLE: '' });
+    assert.deepEqual(out.data.ready.map((t) => t.id), ['1152360842001004102', '1152360842001004103', '1152360842001004104']);
+    assert.deepEqual(out.data.blocked.map((t) => t.id), ['1152360842001004101']);
+    assert.match(out.data.blocked[0].reason, /需求为空/);
+    const st = readTapdState(dry);
+    assert.equal(st.calls.length, 1, '干跑不改 TAPD');
+    assert.equal(st.stories[0].label, 'ready-for-agent');
+    assert.deepEqual(openApiLog(dry).map((l) => /entry_id=(\d+)/.exec(l.url)[1]), ['1152360842001004101', '1152360842001004102']);
+  } finally {
+    await api1.close();
+  }
+
+  const live = stateFile(seed());
+  const api2 = await startFakeOpenApi(live);
+  try {
+    const { out } = runScript('ticket_ready', {}, { ...tapdEnv(live, api2.endpoint), TAPD_NPC_ROLE: 'bot-npc' });
+    assert.deepEqual(out.data.blocked.map((t) => t.id), ['1152360842001004101']);
+    assert.match(out.data.blocked[0].reason, /afk-failed/);
+    const st = readTapdState(live);
+    assert.equal(st.stories[0].label, 'ready-for-agent|afk-failed');
+    const c = st.comments.at(-1);
+    assert.equal(c.entry_id, '1152360842001004101');
+    assert.equal(c.description, '需求为空，请补充描述后摘掉 afk-failed');
+    assert.equal(c.author, 'bot-npc');
+  } finally {
+    await api2.close();
+  }
+});
+
 test('占位的 ticket_* 脚本报 failed', () => {
-  const home = path.join(TMP, 'home');
-  mkdirSync(home, { recursive: true });
-  for (const t of ['_shared', 'tapd']) cpSync(path.join(ROOT, 'templates', t), home, { recursive: true });
-  for (const name of ['ticket_ready', 'ticket_view', 'ticket_mark']) {
-    const r = spawnSync(process.execPath, [path.join(home, 'scripts', `${name}.mjs`)], { input: '{}', encoding: 'utf8' });
+  for (const name of ['ticket_view', 'ticket_mark']) {
+    const r = spawnSync(process.execPath, [path.join(HOME, 'scripts', `${name}.mjs`)], { input: '{}', encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
     const out = JSON.parse(r.stdout);
     assert.equal(out.status, 'failed', name);
