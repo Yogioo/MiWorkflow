@@ -194,7 +194,7 @@ async function notPublished(outcome, t, sha, ctx) {
   return outcome;
 }
 
-// 任何一步失败：回滚到起点，摘 in-progress、贴 afk-failed + 评论原因，保留 ready-for-agent
+// 任何一步失败：回滚到起点，ticket_mark failed 并附原因（怎么落到工单上由工单源决定）
 // 回滚如果要丢掉提交，git_restore 会先备份成 ref——把那个 ref 写进评论，人才能捞回来（TODO B7）
 async function fail(t, reason, base, ctx) {
   const { script } = ctx;
@@ -216,7 +216,7 @@ const lastLines = (text, n = 5) => String(text ?? '').split('\n').filter(Boolean
 // ── 提示词（DEV / REVIEWER 各一段，写法参考 exec-review，不引用）────────────────
 function devPrompt(issue, root) {
   return [
-    '你在为一个 GitHub issue 开发代码。',
+    '你在为一张工单开发代码。',
     '',
     `工作目录：${root}`,
     '',
