@@ -11,7 +11,9 @@
 2. ✅ **B3 零配置使用**（已实现并实测，见 `Core.md` §3、§5、§13.6、§15）
 3. ✅ **C2 运行期 Agent 适配器**（已实现并用三家真 CLI 实测，见 `Core.md` §10.1）
 4. ✅ **C3 首个工作流：GitHub 开发**（`templates/github/`，已实现并用假 gh / 假 Agent / 临时 git 仓库测了 10 条路径）
-5. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
+5. ✅ **讨论单 + 循环运行 + 会话**（spec #6，开发单 #7–#12，由 `github_dev` 自己开发完）
+6. **F 工单源无关 + TAPD**（见下文 F；先 F1–F2 在 GitHub 上把「写死 GitHub」拆掉、行为不变，再 F3–F4 接 TAPD）
+7. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
 B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项目专用的（如 Unity 跑测试）。
 
@@ -328,6 +330,130 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
       测试（内核仓库）：假 `gh` 可执行文件 + 临时 git 仓库 + 假 Agent，覆盖 成功关单 / 审查拒绝回滚 / 验证超轮回滚 /
       `need_human` / `no_change` / 推送失败停下 / 依赖挡住 / `--issue` 点名 / 工作区不干净拒跑。
       实测：在一个自己的测试仓库上开两三个 issue，从 `init` 一路跑到关单。
+
+## F. 工单源无关：GitHub 之外接 TAPD（2026-09-30 提出，待拍板）
+
+**起因**：日常工作的工单在 TAPD。`github_dev` / `github_discuss`（#6–#12）跑通了，但处处写死 GitHub，
+不能「换三个脚本」就接 TAPD。目标：开发流程、讨论流程、提示词只写一份，工单系统只是一组可替换的脚本。
+
+### F0. 现在写死 GitHub 的地方（盘点，2026-09-30 的 `templates/github/`）
+
+- **脚本层**：`gh_ready` / `gh_issue_view` / `gh_issue_mark` / `gh_discuss_list` / `gh_discuss_post` / `gh_tickets_check`
+  直接调 `gh`，输入输出带 GitHub 形状（`number`、`labels[].name`）。这一层本来就该按工单系统各写一份，问题不大。
+- **任务层**（两个任务 JS 里）：
+  - 工单号当整数、显示成 `#N`；日志、评论、提交信息里到处拼 `#${number}`。TAPD 需求 ID 是十几位的长数字，不能当 `#N`
+  - AI 标记是评论末尾的 HTML 注释 `<!-- miworkflow:discuss hash=… -->`，由任务自己用正则解析
+  - spec / 开发单清单写在正文的 HTML 注释区域里，任务自己拼正文
+  - 开发单清单写成 `- [ ] #N` 任务列表；「完成」= 关单
+  - 优先级按 `P0`~`P4` 标签算
+- **提示词层**（问题最大）：
+  - `prompts/tickets.md` 让 Agent **自己**跑 `gh issue create`、`gh label create`，按 GitHub 正文格式写 Parent / 依赖
+  - `github_dev` 的 DEV / REVIEWER / FIX 提示词写死提交信息 `#N <标题>` + `Closes #N`
+  - `grilling.md` / `spec.md` 开头就是「你在 GitHub issue 里」
+  - 这三段是 Agent 直接操作工单系统，换 TAPD 就要重写整套提示词，还得教 Agent 用 `tapd-cli`（竖线分隔标签、下划线参数、多行评论换行……一堆坑）
+
+### F1. 原则：Agent 只产出内容，工单系统只由脚本碰
+
+**这是要拍板的核心决定，会推翻 #6 的 Q14（「开发单由 Agent 自己用 `gh` 建」）。**
+
+- Agent 的输出只是内容：追问评论的正文、spec 正文、**结构化的开发单列表**、代码提交。
+  它不再调 `gh` / `tapd-cli`，提示词里不出现任何工单系统的名字和命令。
+- 写回工单系统（发评论、改正文、贴标签、建单、写依赖）全部由脚本做，按依赖顺序建单、把临时编号换成真实 ID、写原生依赖。
+- 和 §16「不执行 Agent 输出的 actions」的关系：开发单列表是**数据**不是**动作** —— 跟现在工作流把 Agent 交回的 spec 写进正文是同一类事。
+  脚本只认固定形状（标题 / 正文 / 优先级 / 依赖），不认任何命令。
+- 收益：提示词一份通用；回查（`gh_tickets_check`）大部分变成「建单前校验数据」（环、自依赖、优先级范围），在建单**之前**拦住，
+  不必再「建完回查不通过 → 评论让人修」；TAPD 的标签 / 参数坑只在脚本里处理一次，有测试兜着。
+- 代价：「Agent 自己建单」那条路径（#12）要改；Agent 看不到自己建出的单号 —— 它也不需要。
+
+开发单列表的形状（Agent 交回 `data.tickets`）：
+
+```js
+[{ key: 'a', title: '…', body: '<Markdown：What to build + Acceptance criteria>', priority: 2, blockedBy: [] },
+ { key: 'b', title: '…', body: '…', priority: 1, blockedBy: ['a'] }]
+// key 只在这一份列表里有效，脚本建单时换成真实 ID；priority 0~4（0 最急）；Parent 由脚本写，Agent 不写
+```
+
+### F2. 工单源接口：固定一组脚本，GitHub / TAPD 各一份实现
+
+任务只调这组脚本，不知道背后是哪家。**ID 一律字符串**；另给一个 `ref` 供人看（GitHub `#12`、TAPD `【需求】标题 (1001234)` 之类）。
+正文、评论一律交成 **Markdown**（TAPD 的 HTML 在脚本里转，内嵌图片在脚本里下载到本地、换成本地路径 —— afk-run ADR-0004）。
+
+| 脚本（暂名） | 入 | 出 | 说明 |
+|---|---|---|---|
+| `tk_ready` | `{}` | `[{ id, ref, title, priority }]` | 就绪 + 依赖都满足 + 已排序（优先级 → ID） |
+| `tk_view` | `{ id }` | `{ id, ref, title, body, stage, comments: [{ id, author, at, body, mark }], spec, tickets }` | `mark` = 解析好的 AI 标记（没有就 `null`）；`body` 已去掉机器写的区域；`spec` = 当前 spec |
+| `tk_mark` | `{ id, action, comment?, sha? }` | — | `claimed` / `done` / `failed` / `unpushed`；各家「完成」语义不同（见 F3） |
+| `tk_discuss_list` | `{}` | `[{ id, ref }]` | 处于讨论流程、可能轮到 AI 的单（入口 + 未到 `ticketed`） |
+| `tk_post` | `{ id, comment?, mark?, stage?, spec?, ticketList? }` | — | 发一条 AI 评论（`mark` 由脚本编码进去）、改阶段、写 spec、写开发单清单 |
+| `tk_create_tickets` | `{ parent, tickets }` | `{ created: [{ key, id, ref }], problems }` | 先校验数据（环 / 自依赖 / 引用不存在 / 优先级），再按依赖顺序建单 + 写原生依赖 + 写 Parent |
+
+- **AI 标记的编码归脚本**：任务只读写 `mark` 对象（`hash` / `seen` / `cli` / `session` / `body`），不再自己拼、自己用正则解析。
+  GitHub 仍是评论末尾的 HTML 注释；TAPD 评论是富文本，HTML 注释很可能被过滤，改成可见的一行（afk-run 用 `[AFK]` 前缀），**要实测**。
+- **spec 放哪归脚本**：`tk_view` 交回 `spec`，`tk_post` 收 `spec`。GitHub 仍写正文的 spec 区域；TAPD 见 F4。
+- **提交信息归配置**：`config.mjs` 给一个函数 `commitMessage(ticket, kind)`（`kind` = 开发 / 审查修正 / 验证不过修正），
+  GitHub 默认 `#N 标题` + `Closes #N`；TAPD 用它的源码关联关键字（形如 `--story=<ID>`，**写法要实测**）。任务把算好的提交信息交给 Agent，
+  提示词里只说「提交信息用：<这里给的>」。
+- **提示词全部进 `prompts/`**：`dev.md` / `review.md` / `fix.md`（从 `github_dev` 的任务 JS 里搬出来）+ `grilling.md` / `spec.md` / `tickets.md`，
+  措辞改成「工单」「讨论单」，不提 GitHub / TAPD。工单系统相关的只有任务注入的几行上下文（工单引用、提交信息）。
+- **任务改名**：`github_dev` → `dev`，`github_discuss` → `discuss`（任务不再是 GitHub 专属）。
+- **模板组合**（要改 `init`）：`templates/` 拆成「共用部分」（任务、提示词、git 脚本、`run_cmd`）+「工单源部分」（`tk_*` 脚本 + 该家的配置常量）。
+  `init` 选 `github` / `tapd` = 共用 + 对应工单源。备选：每家一份完整模板（`init` 不用改，但任务和提示词两份，修一处要改两处 —— B7 那种修复就得改两遍）。
+- **不做通用「任务源」抽象层 / 插件机制**：约定就是「这几个脚本名 + 输入输出」，按 §16 不内置 registry。
+
+### F3. TAPD 开发流程（`dev` 接 TAPD）
+
+照搬 afk-run TAPD 源踩过的坑（`~/.agents/skills/afk-run/references/task-sources.md`）：
+
+- **入队 = 标签**：`ready-for-agent`，排除机器标签（`afk-claimed` / `afk-delivered` / `afk-failed`）。afk-run 另要求「处理人 = 指定账号」—— 要不要照搬，待定
+- **标签写法**：多值用 `|` 分隔；写成逗号**不报错**，TAPD 会把整串当成一个新标签名建出来 → 每次写完回读校验
+- **参数一律下划线**（`entry_id`）：连字符会被静默丢掉，带过滤的查询变成不带过滤
+- **评论要评论人**（`TAPD_NPC_ROLE` 或配置）；缺了在动标签**之前**就报错，不留「标签改了、评论没写」的半成品
+- **多行评论**：不能 JSON 转义后拼进参数，否则 TAPD 里出现字面量 `\n`；写完回读
+- **优先级**：TAPD 是 高 / 中 / 低（`priority_label`），映射到 0~4 的某几档
+- **空壳需求**（描述、评论都空）拒单：贴 `afk-failed` + 评论，不凭标题猜
+- **「完成」不关单**：TAPD 的状态与处理人属于人和策划的流程，机器不改（afk-run ADR-0002）。完成 = 撤 `afk-claimed` + 贴 `afk-delivered` + 评论提交号，人验收后自己流转状态
+- **依赖**（afk-run 的 TAPD 源**完全没做**，是新活）：用 TAPD 原生前后置依赖，`tapd-cli` 没封装，要带令牌直接调
+  `stories/get_time_relative_stories` / `stories/save_time_relations`（tapd-cli 技能「已知限制」一节有写法）。
+  **依赖满足的判据要拍板**：前置需求贴了 `afk-delivered` 就算，还是状态流转到「已完成」才算？前者快（机器做完就能接着做），后者稳（人验收过）
+- **调用配额**：个人令牌每天有调用上限（`with_usage=1` 可看剩余）。`--every` 轮询 + 逐单拉评论很快就用光 → `tk_ready` / `tk_discuss_list` 先按修改时间粗筛
+- **只接需求（story）**，缺陷（bug）以后再说
+- 假 `tapd-cli`：照 `MIWORKFLOW_GH` 的做法，`MIWORKFLOW_TAPD` 指向一个 JS 文件
+
+### F4. TAPD 讨论流程（`discuss` 接 TAPD）
+
+- **AI 标记**：见 F2，先实测 TAPD 评论里 HTML 注释能不能原样存下来；不能就用可见的一行
+- **spec 放哪**（待拍板）：
+  - 写进需求描述的一段区域：跟 GitHub 一致，但要改写人写的 HTML 描述，风险大
+  - 发成一条带 `kind=spec` 标记的 AI 评论，最新一条就是当前 spec：不碰人写的描述，实现简单（推荐）
+  - 写进 Wiki 页面并在评论里挂链接：适合很长的 spec，多一个实体
+- **拆单**：`tk_create_tickets` 建**子需求**（挂在讨论单下，`parent_id` 类参数，**要实测 tapd-cli 支不支持**）+ 写前后置依赖；
+  开发单清单写成一条 AI 评论（TAPD 页面上子需求列表本身也能看进度）
+- **阶段**：仍用标签（`discuss:grilling` / `discuss:spec` / `discuss:ticketed`）；TAPD 标签是项目级的，第一次用要先在项目里有这些标签
+- **配额**：讨论单每个周期都要读评论算哈希，是配额大头；按修改时间粗筛后只读有变化的单
+
+### F5. 顺序与测试
+
+1. **F1 + 提示词搬家（只在 GitHub 上，行为不变）**：Agent 交回开发单列表、脚本建单；DEV / REVIEWER / FIX 提示词进 `prompts/`；
+   提示词去掉 GitHub 字样；提交信息改由 `config.mjs` 的函数给
+2. **F2 接口成形（仍只有 GitHub）**：`gh_*` → `tk_*`，任务改名 `dev` / `discuss`，标记 / spec / 清单的编码挪进脚本，模板拆成共用 + 工单源，`init` 改组合
+3. **F3 TAPD 开发**：`tk_ready` / `tk_view` / `tk_mark` 的 TAPD 实现 + 前后置依赖；假 `tapd-cli` 测试；在一个真 TAPD 项目里实测一轮
+4. **F4 TAPD 讨论**：标记实测、spec 位置、子需求 + 依赖建单
+
+- 测试：现有模板端到端测试改成「同一套场景 × 两家假工单源」各跑一遍（接口一致就该都绿）；
+  另给 `tk_*` 脚本各自一套契约测试（同样的入参，两家交回同样形状）
+- 每一步 `node --test` 全绿；F1、F2 结束时 GitHub 流程行为与 #12 之后一致（现有测试不改断言，只改调用的脚本名 / 任务名）
+- 已经 `init` 过的项目（包括本仓库自己的 `.workflow/`）：模板复制出去就归项目所有、不回头同步（§15），要用新流程就重新 `init` 到新目录再搬配置
+
+### F6. 待拍板清单
+
+1. **Agent 不再直接操作工单系统**（F1，推翻 #6 Q14）—— 推荐：是
+2. **模板组合**：共用 + 工单源、`init` 组合（推荐）/ 每家一份完整模板
+3. **任务改名** `dev` / `discuss` —— 推荐：是
+4. **TAPD 依赖满足的判据**：前置贴了 `afk-delivered` / 状态到「已完成」
+5. **TAPD 入队是否要求处理人 = 指定账号**
+6. **TAPD spec 放哪**：描述区域 / AI 评论（推荐）/ Wiki
+7. **TAPD 只接需求**，缺陷以后 —— 推荐：是
+8. **实测项**（不用拍板，F3 / F4 开工前先测）：TAPD 评论里 HTML 注释能否保留、tapd-cli 建子需求的参数、源码关联关键字写法、每日配额够不够 `--every 5m`
 
 ## E. 来自 MiCan 的经验（先不做，写明什么时候做）
 
