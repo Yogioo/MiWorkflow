@@ -147,11 +147,15 @@ Agent 每次都要写**回帖稿**（同目录的 `reply-<n>.md`，可带图）�
 AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一条评论，问题全部编号、每题附推荐答案；
 问完会提示「回复 /spec 生成」。首次处理贴 `discuss:grilling`；讨论期间 Agent 对仓库只读。
 
-- 人回复评论或改正文 → 下一次运行接着问；没新内容就不重复回复（AI 评论里的隐藏标记记着它读到的内容哈希）
+- 人回复评论或改正文 → 下一次运行接着问；没新内容就不重复回复（AI 评论里的标记记着它读到的内容哈希）
 - 一轮失败会发一条评论写明原因，不自动重试、不贴 `afk-failed`；回复任意内容即重试
-- 回复 `/spec` → AI 按 `.workflow/prompts/spec.md` 把 spec 写进正文末尾的 spec 标记区域（原文留在上面），阶段改为 `discuss:spec`；
-  之后的评论（或再次 `/spec`）都是修改意见，AI 只重写那一段。spec 区域不算「人的内容」，AI 写 spec 不会触发它自己；spec 不贴 `ready-for-agent`
+- 回复 `/spec` → AI 按 `.workflow/prompts/spec.md` 交回完整 spec，**写在哪由工单源决定**（GitHub：写进正文末尾的 spec 标记区域，原文留在上面），
+  阶段改为 `discuss:spec`；之后的评论（或再次 `/spec`）都是修改意见，AI 只重写 spec。spec 不算「人的内容」，AI 写 spec 不会触发它自己；spec 不贴 `ready-for-agent`
+- spec 阶段回复 `/tickets` → AI 按 `.workflow/prompts/tickets.md` 交回**开发单结构**（`data.tickets`），
+  **建单 / 贴标签 / 写依赖由脚本做**（Agent 不碰工单系统）；通过就写清单、阶段改为 `discuss:ticketed`，此后不再响应
 - 追问的 Agent 由 `source.mjs` 的 `DISCUSS` 指定
+
+这一套只在 GitHub 上有实现（`--template github`）；TAPD 的讨论流程还没做，`--template tapd` 里是报「尚未实现」的占位桩（TODO F4）。
 
 改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `REVIEW` / `VERIFY` / `ROUNDS` / `PUSH`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY`）；
 开发 / 审查 / 验证修正的提示词在 `.workflow/prompts/dev.md` / `review.md` / `fix.md`（模板文件，升级会覆盖）；

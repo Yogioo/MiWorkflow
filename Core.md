@@ -759,14 +759,19 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 
 三个脚本失败时，若是**工单系统暂时不可用**（5xx、网络、限流，脚本内已退避重试用完），出参 `data` 带 `transient: true`；`dev` 据此整轮停下、不计入失败、不回滚已推送的代码。其他失败不带。
 
-讨论流程同理，也是固定四个脚本名；`discuss` 任务只调它们，不知道背后是哪家：
+讨论流程同理，也是固定四个脚本名；`discuss` 任务只调它们，不知道背后是哪家。
+任务认的是**规范形状**，源负责与自家存储形态互转——spec 放哪（GitHub：正文的机器区域；TAPD：一条标记评论）、
+AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 HTML 注释，得用别的形态）、开发单清单放哪，都是各家自己的事：
 
 | 脚本 | 入 | 出 |
 |---|---|---|
-| `discuss_list` | `{ enter, grilling, spec }` | `{ issues: [{ number, title, labels }] }`：打开、贴了 `enter`、阶段标签空或 `grilling` / `spec`，按工单号升序 |
-| `discuss_view` | `{ number }` | `{ number, title, body, comments, text, labels }`：正文 + 全部评论（不截断）与拼好给 Agent 看的文本 |
-| `discuss_post` | `{ number, setBody?, addLabel?, removeLabel?, body? }` | `{ did: string[] }`：改正文 / 贴摘标签 / 发评论都可选、按序做 |
-| `discuss_check` | `{ parent }` | `{ tickets: [{ number, title }], problems: string[] }`：回查讨论单拆出的开发单能不能被开发队列解析 |
+| `discuss_list` | `{ enter, grilling, spec }` | `{ items: [{ id, ref, title, labels }] }`：打开、贴了 `enter`、阶段标签空或 `grilling` / `spec`，按工单号升序 |
+| `discuss_view` | `{ id }` | `{ id, ref, title, body, spec, labels, comments }`。`body` = 人写的正文（机器区域与机器评论已去掉）；`spec` = 当前 spec 或 `null`；`comments` = `[{ id, author, at, text, ai, mark }]`，`ai` 是「这条是不是 AI 发的」，`mark`（AI 才有）= `{ hash, seen, cli, session, body }` 记账字段 |
+| `discuss_post` | `{ id, body?, mark?, spec?, setTickets?, addLabel?, removeLabel? }` | `{ did: string[] }`：发评论（末尾由源附上 `mark`）/ 写 spec / 写开发单清单 / 贴摘标签，都可选、按序做 |
+| `tickets_create` | `{ parentId, tickets: [{ key, title, body, priority, review, blockedBy }] }` | `{ tickets: [{ key, id, ref, title }], problems: string[] }`：**建单 / 贴标签 / 写依赖 / 回查都在脚本里**；`problems` 非空 = 没建好（可能部分建出来了），任务据此不改阶段 |
+
+拆单与开发一样：Agent 不碰工单系统，只交 `data.tickets` 结构（`key` / `title` / `body` / `priority` / `review` / `blockedBy`），
+建单与依赖由 `tickets_create` 落地——TAPD 的依赖只能直连 OpenAPI 写（`tapd-cli` 没封装），Agent 做不了（TODO F4）。
 
 - **工单快照**（读）：正文 + 全部评论转成 Markdown，写到 `logs/<runId>/tickets/<id>/ticket.md`，图片下到同目录 `images/`、相对路径引用；Agent 的 `inputs` 只给路径，自己读。
 - **回帖稿**（写）：`dev` 每次调 Agent 前分配 `logs/<runId>/tickets/<id>/reply-<n>.md`，提示词要求**必写**（写给没看过过程的人：做了什么、关键取舍、怎么验证的、遗留风险；图片放同目录、相对路径）。

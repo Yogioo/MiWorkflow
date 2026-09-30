@@ -98,6 +98,27 @@ export async function downloadImage(url, { token, fetch: doFetch, maxHops = 5, t
 
 export const anyNeedsToken = (urls) => urls.some((u) => { try { return needsToken(u); } catch { return false; } });
 
+// 贴标签时仓库里可能还没这个标签：建出来再贴一次（--add-label / --label 的值会被查出来）。
+// 摘标签失败不算致命，由调用方自己决定要不要忽略。
+export function runGhWithLabels(argv, repoArg = []) {
+  const at = (flag) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : null);
+  try {
+    return runGh(argv);
+  } catch (err) {
+    const adding = at('--add-label') ?? at('--label');
+    // 工单系统故障（重试已用完）不是缺标签，别再去建
+    if (!adding || err.transient) throw err;
+    try {
+      runGh(['label', 'create', adding, '--description', 'MiWorkflow 机器标签', ...repoArg]);
+    } catch (createErr) {
+      const e = new Error(`贴标签 ${adding} 失败（${err.message}），建标签也失败：${createErr.message}`);
+      if (createErr.transient) e.transient = true;
+      throw e;
+    }
+    return runGh(argv);
+  }
+}
+
 // ── issue / label 小工具 ──────────────────────────────────────────────────
 export const labelName = (label) =>
   typeof label === 'string' ? label : (label?.name ?? '');
@@ -144,6 +165,7 @@ export function viewIssue(number, repoArg = []) {
   const issue = JSON.parse(raw);
 
   const comments = (issue.comments ?? []).map((c) => ({
+    id: String(c.id ?? ''),
     author: commentAuthor(c),
     at: c.createdAt ?? '',
     body: c.body ?? ''
@@ -166,3 +188,66 @@ export function viewIssue(number, repoArg = []) {
     labels: (issue.labels ?? []).map(labelName)
   };
 }
+
+// ── 讨论流程的机器区域与 AI 标记（GitHub 形态）────────────────────────────
+// 这是「规范形状 ↔ GitHub 存储形态」的翻译层，只给 discuss_view / discuss_post 用（Core.md §15）。
+//
+// spec 与开发单清单写在 issue 正文的两个 HTML 注释区域里（人写的原文留在上面）；
+// AI 记账标记是评论末尾的 HTML 注释——只认末尾：人引用 AI 评论时标记会落在中间，不能把人写的当成 AI 的。
+export const SPEC_BEGIN = '<!-- miworkflow:spec:begin -->';
+export const SPEC_END = '<!-- miworkflow:spec:end -->';
+const SPEC_AREA = /<!--\s*miworkflow:spec:begin\s*-->([\s\S]*?)<!--\s*miworkflow:spec:end\s*-->/g;
+const TICKETS_BEGIN = '<!-- miworkflow:tickets:begin -->';
+const TICKETS_END = '<!-- miworkflow:tickets:end -->';
+const TICKETS_AREA = /<!--\s*miworkflow:tickets:begin\s*-->[\s\S]*?<!--\s*miworkflow:tickets:end\s*-->/g;
+const MARK_RE = /<!--\s*miworkflow:discuss\s+hash=([0-9a-f]+)((?:\s+\w+=\S+?)*)\s*-->\s*$/;
+
+// 人写的正文：去掉 spec 区域与开发单区域
+const humanBody = (body) => String(body ?? '').replace(SPEC_AREA, '').replace(TICKETS_AREA, '').trimEnd();
+
+// 当前 spec（最后一次写的那个区域）或 null
+const specOf = (body) => {
+  const m = [...String(body ?? '').matchAll(SPEC_AREA)];
+  return m.length ? m[m.length - 1][1].trim() : null;
+};
+
+const ticketsOf = (body) => [...String(body ?? '').matchAll(TICKETS_AREA)].map((m) => m[0]).pop() ?? null;
+
+// 拼回正文：人写的原文 + spec 区域 + 开发单区域；传 null 表示去掉那一段
+export const withRegions = (body, { spec, tickets } = {}) => {
+  const nextSpec = spec === undefined ? specOf(body) : spec;
+  const nextTickets = tickets === undefined ? ticketsOf(body) : tickets;
+  return [
+    humanBody(body),
+    nextSpec === null || nextSpec === undefined ? null : `${SPEC_BEGIN}\n${nextSpec}\n${SPEC_END}`,
+    nextTickets === null || nextTickets === undefined ? null : `${TICKETS_BEGIN}\n${nextTickets}\n${TICKETS_END}`
+  ].filter(Boolean).join('\n\n');
+};
+
+export const humanBodyOf = humanBody;
+export const specOfBody = specOf;
+
+// 评论末尾的记账标记 → { hash, seen, cli, session, body } 或 null
+// 测试 / 替换用不到：形状是讨论流程的公共契约，两家工单源都按它出。
+export function parseMark(body) {
+  const m = MARK_RE.exec(String(body ?? ''));
+  if (!m) return null;
+  const fields = Object.fromEntries([...m[2].matchAll(/(\w+)=(\S+)/g)].map((x) => [x[1], x[2]]));
+  return {
+    hash: m[1],
+    ...(fields.seen !== undefined ? { seen: Number(fields.seen) } : {}),
+    ...(fields.cli ? { cli: fields.cli } : {}),
+    ...(fields.session ? { session: fields.session } : {}),
+    ...(fields.body ? { body: fields.body } : {})
+  };
+}
+
+// 评论正文去掉末尾的标记（给人看 / 参与哈希的内容）
+export const stripMark = (body) => String(body ?? '').replace(MARK_RE, '').trimEnd();
+
+// 记账字段渲染成 GitHub 的标记形态
+const MARK_FIELDS = ['hash', 'seen', 'cli', 'session', 'body'];
+export const renderMark = (mark) =>
+  `<!-- miworkflow:discuss ${MARK_FIELDS
+    .filter((k) => mark?.[k] !== undefined && mark[k] !== null && mark[k] !== '')
+    .map((k) => `${k}=${mark[k]}`).join(' ')} -->`;
