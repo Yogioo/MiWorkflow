@@ -380,6 +380,15 @@ test('ticket_mark：回读不一致判失败；缺评论人时标签未被改动
     assert.equal(st.calls.length, 0, '动标签之前就报错');
   });
 
+  const old = Array.from({ length: 35 }, (_, i) => ({
+    id: String(i + 1), entry_type: 'stories', entry_id: SID, description: `旧评论 ${i}`, author: 'alice', created: `2025-01-01 00:00:${String(i).padStart(2, '0')}`
+  }));
+  await withMark('ready-for-agent|afk-claimed', (mark, f) => {
+    const { out } = mark({ action: 'done', sha: 'abc' });
+    assert.equal(out.status, 'ok', `评论超过一页也能回读到新评论：${out.say}`);
+    assert.equal(readTapdState(f).comments.length, 36);
+  }, { comments: old });
+
   await withMark('ready-for-agent|afk-claimed', (mark, f) => {
     const { out } = mark({ action: 'done', sha: 'abc', dryRun: true });
     assert.equal(out.status, 'ok');

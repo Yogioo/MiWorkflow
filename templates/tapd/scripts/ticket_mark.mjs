@@ -99,12 +99,14 @@ function readStory(id) {
   return story;
 }
 
-// 发完经 OpenAPI 回读（`tapd-cli comment list` 会剥 HTML，数不了图）：评论在、没有字面量 \n、图片数量对得上
+// 发完经 OpenAPI 回读（`tapd-cli comment list` 会剥 HTML，数不了图）：评论在、没有字面量 \n、图片数量对得上。
+// 按评论 id 查：/comments 默认只给一页，老单评论多时新评论不在第一页
 async function verifyComment(workspace, id, commentId, body, uploaded) {
-  const r = await openApi('/comments', { query: { workspace_id: workspace || undefined, entry_type: 'stories', entry_id: id } });
+  if (!commentId) throw new Error(`${refOf(id)} comment add 没回评论 id，无法回读`);
+  const r = await openApi('/comments', { query: { workspace_id: workspace || undefined, id: commentId, entry_type: 'stories', entry_id: id } });
   const rows = (Array.isArray(r.data) ? r.data : []).map((x) => x?.Comment).filter(Boolean);
-  const c = rows.find((x) => commentId && String(x.id) === commentId);
-  if (!c) throw new Error(`${refOf(id)} 评论发出后回读不到（评论 ${commentId || '无 id'}）`);
+  const c = rows.find((x) => String(x.id) === commentId);
+  if (!c) throw new Error(`${refOf(id)} 评论发出后回读不到（评论 ${commentId}）`);
   const text = String(c.description ?? '');
   if (text.includes('\\n') && !body.includes('\\n')) throw new Error(`${refOf(id)} 评论回读出现字面量 \\n（换行被转义了）`);
   const count = (s) => [...s.matchAll(/<img\b|!\[[^\]]*\]\(/gi)].length;
