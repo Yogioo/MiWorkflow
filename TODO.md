@@ -479,6 +479,8 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 
 - 测试：开发流程的端到端测试改成「同一套场景 × 两家假工单源」各跑一遍（接口一致就该都绿）；
   另给 `ticket_*` 脚本各自一套契约测试（同样的入参，两家交回同样形状）
+  - 已做（#25）：`tests/support/dev-sources.mjs` 把两家假工单源接成同一套接口，`dev-scenarios.mjs` / `ticket-contract.mjs`
+    各写一遍，由 `tests/dev-<源>.test.mjs`、`tests/tickets-contract-<源>.test.mjs` 各跑一次；原 `template-github-*` 用例保留
 - 每一步 `node --test` 全绿；F2 结束时 GitHub 开发流程的行为与 #12 之后一致，**有意的变化只有**：机器标签名、Agent 读快照文件、
   写回帖稿（断言跟着这三处改，其余只改脚本名 / 任务名）；讨论流程的测试不动
 - 已经 `init` 过的项目（包括本仓库自己的 `.workflow/`）：模板复制出去就归项目所有、不回头同步（§15），要用新流程就重新 `init` 到新目录再搬配置

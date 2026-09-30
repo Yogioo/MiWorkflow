@@ -12,8 +12,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-// 与 init --template github 同一套组合：先共用模板，再 GitHub 工单源
-const TEMPLATES = ['_shared', 'github'].map((t) => path.join(ROOT, 'templates', t));
+// 与 init 同一套组合：先共用模板，再所选工单源（缺省 GitHub）
+const templatesOf = (source) => ['_shared', source].map((t) => path.join(ROOT, 'templates', t));
 
 const TMP = mkdtempSync(path.join(os.tmpdir(), 'miworkflow-c3-'));
 after(() => rmSync(TMP, { recursive: true, force: true }));
@@ -146,14 +146,14 @@ export const CONFIG = (verify, rounds, push) => [
 ].join('\n');
 
 // repoLabels：给了就只认这些仓库标签（贴没有的会报错，要先 gh label create）；不给 = 什么标签都能贴
-export function setup({ issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {} } = {}) {
+export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {} } = {}) {
   const base = tmpDir();
   const root = path.join(base, 'repo');
   mkdirSync(root, { recursive: true });
 
   const home = path.join(root, '.workflow');
   mkdirSync(home, { recursive: true });
-  for (const t of TEMPLATES) cpSync(t, home, { recursive: true });
+  for (const t of templatesOf(source)) cpSync(t, home, { recursive: true });
   const withPush = push || remoteAhead;
   writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush));
   writeFileSync(path.join(home, '.gitignore'), 'logs/\n');
