@@ -141,9 +141,12 @@ export const issue = (number, { title = `issue ${number}`, body = `做 ${number}
   number, title, body, labels: labels.map((name) => ({ name })), state, comments: []
 });
 
-export const CONFIG = (verify, rounds, push, retryDelays = [0, 0]) => [
+// review：config.mjs 的 REVIEW。缺省 'always'——既有场景大多在验审查路径，保持它们照旧覆盖；
+// 审不审（'auto'）另有用例（tests/support/dev-scenarios.mjs 里的「审查分级」）。
+export const CONFIG = (verify, rounds, push, retryDelays = [0, 0], review = 'always') => [
   'export const DEV = null;',
   'export const REVIEWER = null;',
+  `export const REVIEW = ${JSON.stringify(review)};`,
   `export const VERIFY = ${JSON.stringify(verify)};`,
   `export const ROUNDS = ${rounds};`,
   `export const PUSH = ${push};`,
@@ -153,7 +156,7 @@ export const CONFIG = (verify, rounds, push, retryDelays = [0, 0]) => [
 
 // repoLabels：给了就只认这些仓库标签（贴没有的会报错，要先 gh label create）；不给 = 什么标签都能贴
 // retryDelays：Agent 基础设施故障的重试间隔，测试里缺省 [0, 0]（不真等）
-export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {}, retryDelays = [0, 0], ticketRetryDelays = [0, 0, 0] } = {}) {
+export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {}, retryDelays = [0, 0], ticketRetryDelays = [0, 0, 0], review = 'always' } = {}) {
   const base = tmpDir();
   const root = path.join(base, 'repo');
   mkdirSync(root, { recursive: true });
@@ -166,7 +169,7 @@ export function setup({ source = 'github', issues = [], repoLabels, verify = '',
   writeFileSync(srcFile, readFileSync(srcFile, 'utf8')
     .replace(/(export const (?:GH|TAPD)_RETRY_DELAYS = )\[[^\]]*\];/, `$1${JSON.stringify(ticketRetryDelays)};`));
   const withPush = push || remoteAhead;
-  writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush, retryDelays));
+  writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush, retryDelays, review));
   writeFileSync(path.join(home, '.gitignore'), 'logs/\n');
 
   git(['init', '-q', '--initial-branch=main'], root);

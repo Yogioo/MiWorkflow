@@ -9,7 +9,8 @@ export const LABELS = {
   ready: 'ready-for-agent',     // 入队
   claimed: 'afk-claimed',       // 认领中
   delivered: 'afk-delivered',   // 已交付（完成时贴；依赖判定认它，跟关单等价）
-  failed: 'afk-failed'          // 失败，等人看（摘掉它才重新入队）
+  failed: 'afk-failed',         // 失败，等人看（摘掉它才重新入队）
+  review: 'needs-review'        // 要审查（REVIEW='auto' 时，贴了才起审查 Agent；见 config.mjs）
 };
 
 // 工单系统故障（网络、5xx、GraphQL 通用服务端报错、限流）时 gh 调用的退避间隔（毫秒），一项一次重试；[] = 不重试。

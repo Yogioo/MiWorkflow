@@ -7,6 +7,12 @@
 export const DEV = null;
 export const REVIEWER = null;
 
+// 要不要叫审查 Agent（REVIEWER）
+// 'auto'（缺省）：工单贴了「要审查」标签（各工单源 source.mjs 的 LABELS.review）才审，
+//   或 DEV 在回话里选 done_review 主动升级；其余单子 DEV 自测 + VERIFY 就够，不起审查 Agent。
+// 'always'：每张单都审（跟以前一样）。
+export const REVIEW = 'auto';
+
 // 验证命令：跑在项目根，退出码 0 算过。空字符串 = 不验证，直接进提交流程。
 // 字符串走 shell（可有管道、&&）；也可以写数组精确到参数，如 ['npm', 'test']。
 export const VERIFY = '';

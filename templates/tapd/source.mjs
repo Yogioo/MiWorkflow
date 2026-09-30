@@ -15,7 +15,8 @@ export const LABELS = {
   ready: 'ready-for-agent',     // 入队
   claimed: 'afk-claimed',       // 认领中
   delivered: 'afk-delivered',   // 已交付
-  failed: 'afk-failed'          // 失败，等人看（摘掉它才重新入队）
+  failed: 'afk-failed',         // 失败，等人看（摘掉它才重新入队）
+  review: 'needs-review'        // 要审查（REVIEW='auto' 时，贴了才起审查 Agent；见 config.mjs）
 };
 
 // 前后置依赖的满足判据：前置需求贴了 LABELS.delivered，或已到结束类状态。

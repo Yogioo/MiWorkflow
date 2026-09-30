@@ -308,4 +308,58 @@ export function defineDevScenarios(src) {
     assert.ok(c.indexOf('要接口文档') >= 0 && c.indexOf('要接口文档') < c.indexOf('## 问题'), c);
     assert.ok(c.includes('接口文档在哪？'), c);
   });
+
+  // ── 审查分级（TODO G1）：REVIEW='auto' 时按工单标签 + DEV 升级决定审不审 ──
+  const REVIEW_LABEL = 'needs-review';
+
+  scenario('审查分级 auto：工单没贴要审查标签 → 跳过审查，DEV 完成后直接验证提交', {
+    tickets: [{ key: 1, title: '加个文件', labels: READY }], push: true, review: 'auto'
+  }, (s, view) => {
+    plan(s, [{ choice: 'done', reason: '做完', file: { name: 'note.txt', content: 'hi' } }]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(seen(s).length, 1, '只叫了开发 Agent');
+    assert.ok(seen(s)[0].goal.includes('done_review'), '提示词告诉 DEV 可以升级审查');
+    assertDelivered(view(1));
+    assert.ok(view(1).comments.some((c) => c.includes('没审查')), view(1).comments.join('\n'));
+    assert.ok(existsSync(path.join(s.root, 'note.txt')));
+  });
+
+  scenario('审查分级 auto：工单贴了要审查标签 → DEV 选 done 也照审', {
+    tickets: [{ key: 1, title: '加个文件', labels: [...READY, REVIEW_LABEL] }], push: true, review: 'auto'
+  }, (s, view) => {
+    plan(s, DONE_STEPS());
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(seen(s).length, 2, '开发 + 审查');
+    const t = view(1);
+    assert.equal(t.closed, src.name === 'github', '按各家语义交付');
+    assert.ok(t.labels.includes('afk-delivered'), t.labels.join(','));
+    assert.ok(!t.labels.includes('afk-claimed'), t.labels.join(','));
+    assert.ok(view(1).comments.some((c) => c.includes('审查者看过，没有改动')), view(1).comments.join('\n'));
+  });
+
+  scenario('审查分级 auto：DEV 选 done_review 主动升级 → 照常审', {
+    tickets: [{ key: 1, title: '加个文件', labels: READY }], push: true, review: 'auto'
+  }, (s, view) => {
+    plan(s, [
+      { choice: 'done_review', reason: '改了公共接口', file: { name: 'note.txt', content: 'hi' } },
+      { choice: 'clean', reason: '没问题' }
+    ]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(seen(s).length, 2, '升级后就该起审查');
+    assertDelivered(view(1));
+    assert.ok(view(1).comments.some((c) => c.includes('审查者看过，没有改动')), view(1).comments.join('\n'));
+  });
+
+  scenario('REVIEW=always → 没贴标签也每张都审', {
+    tickets: [{ key: 1, title: '加个文件', labels: READY }], push: true, review: 'always'
+  }, (s, view) => {
+    plan(s, DONE_STEPS());
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(seen(s).length, 2, '开发 + 审查');
+    assertDelivered(view(1));
+  });
 }

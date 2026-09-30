@@ -42,16 +42,17 @@ test('ticket_ready：入 {}，出 ready / blocked；工单号是字符串，引�
   assert.doesNotMatch(b.reason, /#2/, '勾上的依赖不算');
 });
 
-test('ticket_view：入 { id }，出 { id, ref, title, file }；快照在本次运行日志目录下，带正文与全部评论', () => {
+test('ticket_view：入 { id }，出 { id, ref, title, file, review }；快照在本次运行日志目录下，带正文与全部评论', () => {
   const s = setup({ issues: [issue(7, { title: '读我', body: '正文内容' })] });
   runScript(s, 'ticket_mark', { id: '7', action: 'failed', comment: '上次挂了' });
 
   const r = runScript(s, 'ticket_view', { id: '7' }, { AGENTFLOW_RUN_ID: 'run-1' });
   assert.equal(r.status, 'ok', r.error);
-  assert.deepEqual(keys(r.data), ['file', 'id', 'ref', 'title']);
+  assert.deepEqual(keys(r.data), ['file', 'id', 'ref', 'review', 'title']);
   assert.equal(r.data.id, '7');
   assert.equal(r.data.ref, '#7');
   assert.equal(r.data.title, '读我');
+  assert.equal(r.data.review, false, '没贴要审查标签');
   assert.equal(r.data.file, path.join(s.home, 'logs', 'run-1', 'tickets', '7', 'ticket.md'));
   const md = readFileSync(r.data.file, 'utf8');
   assert.match(md, /^# #7 读我/);

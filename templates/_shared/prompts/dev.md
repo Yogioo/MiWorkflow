@@ -10,6 +10,15 @@
 - 不要 git commit，也不要 git push：审查、验证之后由工作流统一提交（一张工单一笔）并推送
 - 工单不需要任何改动（已经满足，或信息不足无法判断）时，choice 用 no_change，reason 说明原因
 - 需要人补充信息才能继续时，status 用 need_human，reason 写你要问的问题
+- 不要叫审查（缺省）就意味着你是这段代码唯一的把关人：自己补上该有的测试、自己跑通，没跑就说没跑，别假定有人会替你看
+
+什么时候升级让审查 Agent 看（choice 用 done_review）：
+- 改了公共接口、导出的函数或类型签名，或改了别人在调用的方法的行为
+- 改了共享模块 / 工具函数 / 基类（多个地方在用）
+- 改了配置、数据格式、存档 / 协议的字段名或默认值
+- 删掉或改掉了已有的行为（不只是新增）
+- 改的地方跟工单描述不一致，或你在取舍上没把握
+一般补个局部逻辑、改文案、加一个小界面，用 done 就行。
 
 回帖稿（必写）：{{reply}}
 工作流会把它原样贴到工单评论里。读的人是提需求的策划 / 测试和之后接手的开发，他们没看过你的过程，只看这一条。
@@ -36,6 +45,6 @@
 {{local}}
 
 最后只回一段 JSON：{status, choice, reason, data}
-- status 只能是 ok | need_human | failed；choice 只能是 done | no_change
-- reason：一两句话说结论
+- status 只能是 ok | need_human | failed；choice 只能是 done | done_review | no_change
+- reason：一两句话说结论（选 done_review 时顺带说为什么该审）
 - choice=done 时 data 写 {{commitData}}

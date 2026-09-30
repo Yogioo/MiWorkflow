@@ -1,4 +1,6 @@
-// 开发工作流：把就绪工单逐个「认领 → 开发 → 审查 → 验证 → 提交 → 关单」。
+// 开发工作流：把就绪工单逐个「认领 → 开发 →（审查）→ 验证 → 提交 → 关单」。
+// 审查按需：工单贴了 source.mjs 的 LABELS.review（缺省 needs-review）、或 DEV 选 done_review 升级、或 config.mjs 的
+// REVIEW='always' 才起审查 Agent；其余单子 DEV 自测 + VERIFY 就够（TODO G1）。
 // 只通过工单源接口 ticket_ready / ticket_view / ticket_mark 碰工单系统，不知道背后是哪家（入队、标记的规则见各工单源的脚本）。
 // 失败就回滚 + 贴评论 + 标记失败，等人看完再重新入队。
 // Agent 根本没跑完（基础设施故障）不算工单失败：退避重试，还不行就回滚、释放工单（不贴失败）、整轮停下，下轮重做。
@@ -19,7 +21,7 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, AGENT_RETRY_DELAYS } from '../config.mjs';
+import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, REVIEW, AGENT_RETRY_DELAYS } from '../config.mjs';
 import * as source from '../source.mjs';
 
 export const title = '开发：认领工单 → 开发 → 审查 → 验证 → 提交 → 关单';
@@ -154,12 +156,12 @@ async function runTicket(t, ctx) {
   let saved = '';
   const dev = await callAgent(ctx, devPrompt(t, root, reply), {
     ...(DEV ? { agent: DEV } : {}),
-    inputs: { cwd: root, ticket: t.file, reply, choices: ['done', 'no_change'] }
+    inputs: { cwd: root, ticket: t.file, reply, choices: ['done', 'done_review', 'no_change'] }
   }, async () => { saved += await rollback(base, ctx); });
   notes.push({ who: '开发', reply, answer: dev });
   if (dev.infra) return release(t, dev.infra, base, ctx, saved);
   if (dev.status === 'need_human') return fail(t, `Agent 提问：${dev.reason}`, base, ctx, reply);
-  if (dev.status !== 'ok' || !['done', 'no_change'].includes(dev.choice)) {
+  if (dev.status !== 'ok' || !['done', 'done_review', 'no_change'].includes(dev.choice)) {
     return fail(t, `开发失败（${dev.choice}）：${dev.reason}`, base, ctx, reply);
   }
   if (dev.choice === 'no_change') return fail(t, `Agent 判断无需改动：${dev.reason}`, base, ctx, reply);
@@ -170,17 +172,21 @@ async function runTicket(t, ctx) {
   const changed = st.data.changed;
   if (!changed.length) return fail(t, `Agent 报完成，但 git 看不到改动：${dev.reason}`, base, ctx, reply);
 
-  // 3. 审查（有问题直接改）
-  reply = nextReply(t);
-  const rev = await callAgent(ctx, reviewPrompt(t, root, changed, reply), {
-    ...(REVIEWER ? { agent: REVIEWER } : {}),
-    inputs: { cwd: root, ticket: t.file, reply, changed, choices: ['clean', 'refined', 'reject'] }
-  });
-  notes.push({ who: '审查', reply, answer: rev });
-  if (rev.infra) return release(t, rev.infra, base, ctx, saved);
-  if (rev.status === 'need_human') return fail(t, `审查者提问：${rev.reason}`, base, ctx, reply);
-  if (rev.status !== 'ok' || !['clean', 'refined'].includes(rev.choice)) {
-    return fail(t, `审查未通过（${rev.choice}）：${rev.reason}`, base, ctx, reply);
+  // 3. 审查（有问题直接改）：REVIEW='always'、工单贴了「要审查」标签，或 DEV 主动升级（done_review）才起；
+  //    其余单子 DEV 自测 + VERIFY 就够，不起审查 Agent（TODO G1）。
+  const needReview = REVIEW === 'always' || t.review === true || dev.choice === 'done_review';
+  if (needReview) {
+    reply = nextReply(t);
+    const rev = await callAgent(ctx, reviewPrompt(t, root, changed, reply), {
+      ...(REVIEWER ? { agent: REVIEWER } : {}),
+      inputs: { cwd: root, ticket: t.file, reply, changed, choices: ['clean', 'refined', 'reject'] }
+    });
+    notes.push({ who: '审查', reply, answer: rev });
+    if (rev.infra) return release(t, rev.infra, base, ctx, saved);
+    if (rev.status === 'need_human') return fail(t, `审查者提问：${rev.reason}`, base, ctx, reply);
+    if (rev.status !== 'ok' || !['clean', 'refined'].includes(rev.choice)) {
+      return fail(t, `审查未通过（${rev.choice}）：${rev.reason}`, base, ctx, reply);
+    }
   }
 
   // 4. 验证（配了才跑）；不过就把输出交回 DEV 再改，最多 ROUNDS 轮
@@ -376,6 +382,7 @@ async function report(t, ctx, notes, { head, base, sha, subject, round, pushed =
     else if (reason) parts.push(`**${who}**（没写回帖稿，这是它的回话）\n${reason}`);
   }
   const review = notes.find((n) => n.who === '审查')?.answer?.choice;
+  const reviewed = review !== undefined;
   const shown = files.slice(0, 15).map((f) => `- \`${f}\``);
   if (files.length > shown.length) shown.push(`- ……等共 ${files.length} 个`);
   parts.push([
@@ -383,7 +390,7 @@ async function report(t, ctx, notes, { head, base, sha, subject, round, pushed =
     `改动 ${files.length} 个文件${st.data?.stat ? `（${st.data.stat}）` : ''}：`,
     ...shown,
     '',
-    `审查：${review === 'refined' ? '审查者做了修正' : '审查者看过，没有改动'}`,
+    `审查：${!reviewed ? `没审查（REVIEW=${REVIEW}：工单没贴 ${source.LABELS?.review ?? 'needs-review'}，DEV 也没升级）` : review === 'refined' ? '审查者做了修正' : '审查者看过，没有改动'}`,
     `验证：${VERIFY ? `\`${Array.isArray(VERIFY) ? VERIFY.join(' ') : VERIFY}\` 通过${round ? `（验证不过后修了 ${round} 轮）` : ''}` : '没配验证命令，工作流没有跑编译或测试'}`,
     `提交：${short(sha)} ${subject}（${pushed ? '已推送' : '未推送'}）`
   ].join('\n'));

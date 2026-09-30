@@ -131,7 +131,7 @@ test('source.mjs：优先级映射与提交信息', async () => {
   const src = await import(`${pathToFileURL(path.join(TPL, 'source.mjs')).href}?t=${Date.now()}`);
   delete process.env.TAPD_NPC_ROLE;
   assert.deepEqual(['高', '中', '', '低', '紧急', undefined].map(src.priorityOf), [1, 2, 2, 3, 2, 2]);
-  assert.deepEqual(Object.values(src.LABELS), ['ready-for-agent', 'afk-claimed', 'afk-delivered', 'afk-failed']);
+  assert.deepEqual(Object.values(src.LABELS), ['ready-for-agent', 'afk-claimed', 'afk-delivered', 'afk-failed', 'needs-review']);
   const t = { id: '1152360842001004854', ref: 'story 1152360842001004854', title: '做个按钮' };
   assert.deepEqual(src.commitMessage(t, { type: 'fix', summary: '按钮换色' }), { message: 'fix:1004854 按钮换色' }, '7 位短号、没有正文');
   assert.ok(src.COMMIT_TYPES.includes('feat') && src.COMMIT_TYPES.includes('fix'));
@@ -345,8 +345,8 @@ test('ticket_view：快照含描述 + 全部评论（走 OpenAPI），HTML 转 M
     const { out, stderr } = runScript('ticket_view', { id }, { ...tapdEnv(f, api.endpoint), AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'run1' });
     assert.equal(out.status, 'ok');
     const file = path.join(home, 'logs', 'run1', 'tickets', id, 'ticket.md');
-    assert.deepEqual(out.data, { id, ref: `story ${id}`, title: '做个按钮', file });
-    assert.deepEqual(Object.keys(out.data), ['id', 'ref', 'title', 'file'], '出参形状与 GitHub 相同');
+    assert.deepEqual(out.data, { id, ref: `story ${id}`, title: '做个按钮', file, review: false });
+    assert.deepEqual(Object.keys(out.data), ['id', 'ref', 'title', 'file', 'review'], '出参形状与 GitHub 相同');
 
     const md = readFileSync(file, 'utf8');
     assert.match(md, /^# story 1152360842001004201 做个按钮/);

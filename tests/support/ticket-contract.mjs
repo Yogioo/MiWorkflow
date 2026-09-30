@@ -42,18 +42,22 @@ export function defineTicketContract(src) {
     assert.ok(r.data.blocked[0].reason.includes(src.ref(3)), r.data.blocked[0].reason);
   });
 
-  contract('ticket_view：入 { id }，出 { id, ref, title, file }；快照在本次运行日志目录下，带正文与评论', {
-    tickets: [{ key: 7, title: '读我', body: '正文内容' }]
+  contract('ticket_view：入 { id }，出 { id, ref, title, file, review }；快照在本次运行日志目录下，带正文与评论', {
+    tickets: [{ key: 7, title: '读我', body: '正文内容' }, { key: 8, title: '要审', labels: ['needs-review'] }]
   }, (s) => {
     runScript(s, 'ticket_mark', { id: src.id(7), action: 'failed', comment: '上次挂了' });
     const r = runScript(s, 'ticket_view', { id: src.id(7) }, { AGENTFLOW_RUN_ID: 'run-1' });
     assert.equal(r.status, 'ok', r.say);
-    assert.deepEqual(Object.keys(r.data).sort(), ['file', 'id', 'ref', 'title']);
-    assert.deepEqual([r.data.id, r.data.ref, r.data.title], [src.id(7), src.ref(7), '读我']);
+    assert.deepEqual(Object.keys(r.data).sort(), ['file', 'id', 'ref', 'review', 'title']);
+    assert.deepEqual([r.data.id, r.data.ref, r.data.title, r.data.review], [src.id(7), src.ref(7), '读我', false]);
     assert.match(r.data.file, new RegExp(`[\\\\/]logs[\\\\/]run-1[\\\\/]tickets[\\\\/]${src.id(7)}[\\\\/]ticket\\.md$`));
     const md = readFileSync(r.data.file, 'utf8');
     assert.ok(md.includes('读我') && md.includes('正文内容') && md.includes('上次挂了'), md);
     assert.equal(runScript(s, 'ticket_view', {}).status, 'failed', '缺 id');
+
+    const review = runScript(s, 'ticket_view', { id: src.id(8) });
+    assert.equal(review.status, 'ok', review.say);
+    assert.equal(review.data.review, true, '贴了要审查标签就该是 true');
   });
 
   contract('ticket_mark：入 { id, action, comment?, commentFile?, sha? }，出 { did, id, ref }；五种 action 的机器标签一致', {

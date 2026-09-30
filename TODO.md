@@ -13,7 +13,7 @@
 4. ✅ **C3 首个工作流：GitHub 开发**（`templates/github/`，已实现并用假 gh / 假 Agent / 临时 git 仓库测了 10 条路径）
 5. ✅ **讨论单 + 循环运行 + 会话**（spec #6，开发单 #7–#12，由 `github_dev` 自己开发完）
 6. ✅ **F 工单源无关 + TAPD**（见下文 F，2026-09-30 已拍板；✅ F2 已实现（#13–#19），✅ F3 TAPD 开发已实现（#20–#26，真 TAPD 项目实测项见 F6）；F4 搁置）
-7. **G 审查分级**（见下文 G，2026-09-30 已拍板，待实现；汇总审查 G3 搁置）
+7. ✅ **G 审查分级**（见下文 G，2026-09-30 已拍板并实现；汇总审查 G3 搁置）
 8. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
 B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项目专用的（如 Unity 跑测试）。
@@ -400,7 +400,7 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 | 脚本 | 入 | 出 | 说明 |
 |---|---|---|---|
 | `ticket_ready` | `{}` | `{ ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] }` | 就绪 + 依赖都满足 + 已排序（优先级 → 工单号）；`blocked` 给 `--dry-run` 看原因 |
-| `ticket_view` | `{ id }` | `{ id, ref, title, file }` | 写出工单快照，`file` 是它的路径（见下） |
+| `ticket_view` | `{ id }` | `{ id, ref, title, file, review }` | 写出工单快照，`file` 是它的路径（见下）；`review` 是这张单有没有「要审查」标签 |
 | `ticket_mark` | `{ id, action, commentFile?, comment?, sha? }` | — | `claimed` / `done` / `failed` / `unpushed`；`done` 的含义各家自定（GitHub 关单，TAPD 不关单） |
 
 - **工单快照（读）**：`ticket_view` 把正文 + 全部评论转成 **Markdown**，写到 `logs/<runId>/tickets/<id>/ticket.md`，
@@ -558,6 +558,12 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 - TAPD「结束类状态」能否按工作流取到——F3 已按 `workflows/last_steps` / `status_map` 实现、取不到退回 `END_STATUSES`，待真 TAPD 项目实测
 
 ## G. 审查分级：简单单不起审查 Agent（2026-09-30 提出，同日拍板）
+
+✅ **已实现**（2026-09-30）。实测：`node --test` 207 全绿（新增「审查分级」四个场景 × 两家假工单源）。
+实现时的取舍：
+- 审查标签留在工单上不清（依赖/再次入队判定不认它，无害）；`dev` 的完成评论里写清「没审查（REVIEW=auto…）」
+- DEV 的 `choices` 加 `done_review`；`client` 仍只在校验后分支，不抄进 `data`
+- G2 清单全部落地（见下）；SKILL.md 不涉及 dev 模板，未改
 
 **起因**：`dev` 每张单都固定「DEV → REVIEWER → VERIFY」。很多开发单是简单需求，DEV 自测 + `VERIFY` 就够，
 REVIEWER 那次完整的 Agent 调用（还要重读项目）是白花的开销。

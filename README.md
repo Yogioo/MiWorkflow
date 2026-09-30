@@ -102,9 +102,10 @@ issue 约定（机器标签名在 `source.mjs` 的 `LABELS` 里可改；仓库�
 
 - 入队：issue 贴 `ready-for-agent`；带任一机器标签的排除：`afk-claimed`（认领中）、`afk-delivered`（已交付）、`afk-failed`（失败待人看）
 - 优先级：标签 `P0`~`P4`，没有就当 `P2`；同级按 issue 号升序
+- 要审查：地基单、改公共接口 / 共享模块 / 配置默认值这类单贴 `needs-review`，开发完成后叫审查 Agent 看；不贴的单 DEV 自测 + `VERIFY` 就够（见下）
 - 依赖：正文里 `- [ ] #123` 表示被 #123 挡着，勾上、#123 关掉或贴了 `afk-delivered` 就算满足
 
-每个 issue 走：认领（贴 `afk-claimed`）→ Agent 开发 → Agent 审查（有问题直接改）→ 验证（`VERIFY` 配了才跑）→
+每个 issue 走：认领（贴 `afk-claimed`）→ Agent 开发 →（**要审查的单子**）Agent 审查（有问题直接改）→ 验证（`VERIFY` 配了才跑）→
 工作流提交（默认推送，正文带 `Closes #N`）→ 关单 + 贴 `afk-delivered`、摘 `ready-for-agent` / `afk-claimed`。失败就 `git reset --hard` + `clean -fd` 回滚，
 摘 `afk-claimed`、贴 `afk-failed` + 评论完整原因，保留 `ready-for-agent`（人摘掉 `afk-failed` 就重新入队）。
 推送失败不关单、整轮停下，本地提交保留，留给人处理。`PUSH = false`（只本地提交）同款语义：
@@ -113,6 +114,12 @@ issue 约定（机器标签名在 `source.mjs` 的 `LABELS` 里可改；仓库�
 **提交归工作流**：Agent 只改代码，在回话里给一句话 `summary`（`COMMIT_TYPES` 非空时再给 `type`）；审查、验证、`--confirm` 之后由 `dev` 统一提交，
 一张工单一笔，格式按 `source.mjs` 的 `COMMIT_FORMAT` / `COMMIT_BODY`。Agent 不听话自己提交了也会被压成这一笔；
 提交后回读，标题被 git 钩子改了或带 AI 署名（`Co-authored-by` / `Made-with` 等）就判失败回滚。
+
+**审查按需**（`config.mjs` 的 `REVIEW`，缺省 `'auto'`）：工单贴了「要审查」标签（`source.mjs` 的 `LABELS.review`，缺省 `needs-review`）、
+或 DEV 在回话里选 `done_review` 主动升级，才起审查 Agent；都没命中就跳过审查，直接验证提交（`REVIEW = 'always'` 恢复「每张都审」）。
+DEV 只能升级不能降级：提示词列了该升级的情形（改公共接口 / 共享模块 / 配置或数据格式默认值、删改已有行为）。
+拆单 Agent 会给地基单、改公共接口的单贴上 `needs-review`（见 `.workflow/prompts/tickets.md`），人写单时也可以手动贴。
+跳过审查的单子，DEV 自测就是唯一保证——提示词要求它自己补测试、自己跑通，没跑就直说。
 
 **完成评论**：开头一句（提交号、推没推）+ 开发、审查各自的回帖稿（没写就用它回话的 `reason`）+ 工作流落款（改了哪些文件、审查、验证结果、提交标题）。
 
@@ -146,7 +153,7 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
   之后的评论（或再次 `/spec`）都是修改意见，AI 只重写那一段。spec 区域不算「人的内容」，AI 写 spec 不会触发它自己；spec 不贴 `ready-for-agent`
 - 追问的 Agent 由 `source.mjs` 的 `DISCUSS` 指定
 
-改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `VERIFY` / `ROUNDS` / `PUSH`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY`）；
+改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `REVIEW` / `VERIFY` / `ROUNDS` / `PUSH`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY`）；
 开发 / 审查 / 验证修正的提示词在 `.workflow/prompts/dev.md` / `review.md` / `fix.md`（模板文件，升级会覆盖）；
 项目自己的要求（比如回帖稿按什么角度写）写进 `.workflow/prompts/local/dev.md` / `review.md` / `fix.md`，各接到对应 Agent 的提示词里，升级不碰。
 
@@ -174,6 +181,7 @@ miworkflow dev                         # 把就绪需求逐个做完；--issue <
 
 - 只接**需求**，缺陷不处理；入队只看标签：贴 `ready-for-agent`、没贴任何机器标签（`afk-claimed` / `afk-delivered` / `afk-failed`），不要求处理人
 - 优先级：`高` 1 / `中` 2 / 空 2 / `低` 3（`source.mjs` 的 `PRIORITY`），不认识的当 2 并提示；同级按需求 ID 升序
+- 要审查：改公共接口 / 共享模块 / 配置默认值这类需求贴 `needs-review`，开发完成后叫审查 Agent 看（同 GitHub，见上「审查按需」）
 - 依赖：TAPD 原生前后置关系；前置需求贴了 `afk-delivered` 或已到结束类状态（先按项目工作流取，取不到退回 `source.mjs` 的 `END_STATUSES`）才算满足；
   不认识的前置（缺陷、别的项目、已删除、查不到）当挡住，原因写进 `blocked`，由人解开
 - 空壳拒单：描述与评论都空的需求不做，贴 `afk-failed` + 评论请人补充（`--dry-run` 只报不改）

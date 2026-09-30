@@ -754,7 +754,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 | 脚本 | 入 | 出 |
 |---|---|---|
 | `ticket_ready` | `{}` | `{ ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] }`（已排序：优先级 → 工单号） |
-| `ticket_view` | `{ id }` | `{ id, ref, title, file }`：写出**工单快照** |
+| `ticket_view` | `{ id }` | `{ id, ref, title, file, review }`：写出**工单快照**；`review` 是这张单有没有「要审查」标签 |
 | `ticket_mark` | `{ id, action, commentFile?, comment?, sha? }` | `action` = `claimed` / `done` / `failed` / `unpushed` / `released`（Agent 连接失败：摘认领、不贴失败、保留入队，下轮重做）；评论由调用方给整段（`comment` 在前、`commentFile` 在后，原样发），两样都没给才用一句缺省 |
 
 三个脚本失败时，若是**工单系统暂时不可用**（5xx、网络、限流，脚本内已退避重试用完），出参 `data` 带 `transient: true`；`dev` 据此整轮停下、不计入失败、不回滚已推送的代码。其他失败不带。
@@ -765,11 +765,13 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
   再补一段工作流落款（改了哪些文件、审查、验证、提交号），写成同目录的 `comment.md` 交给 `ticket_mark` 的 `commentFile`。
 - **提交**：Agent 不提交，只在回话 `data` 里给 `type`（从 `source.mjs` 的 `COMMIT_TYPES` 选）和 `summary`；审查、验证、`--confirm` 之后由 `dev` 统一提交，
   一张工单一笔（`git_commit` 收 `baseSha`，Agent 自己做的提交先 `reset --soft` 压进来）；提交后回读，标题被钩子改了或带 AI 署名（`Co-authored-by` / `Made-with` 等）判失败回滚。
+- **审查按需**（`config.mjs` 的 `REVIEW`，缺省 `'auto'`）：工单贴了「要审查」标签（`source.mjs` 的 `LABELS.review`）、或 DEV 回话选 `done_review` 主动升级，才起审查 Agent；
+  否则 DEV 完成后直接进验证 / 提交。`REVIEW = 'always'` 恢复「每张都审」。DEV 只能升级不能降级，`prompts/dev.md` 列了该升级的情形。
 - **机器标签**（名字在各工单源的 `source.mjs`，可改）：入队 `ready-for-agent`；`afk-claimed`（认领中）/ `afk-delivered`（已交付）/ `afk-failed`（失败）。依赖满足 = 前置单贴了 `afk-delivered` 或已关单（TAPD：已到结束类状态）。
-- 每个工单源带 `source.mjs`：这家的常量 + `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY` + `commitMessage(ticket, { type, summary })`；共用的 `config.mjs` 只留 `DEV / REVIEWER / VERIFY / ROUNDS / PUSH`。
+- 每个工单源带 `source.mjs`：这家的常量 + `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY` + `commitMessage(ticket, { type, summary })`；共用的 `config.mjs` 只留 `DEV / REVIEWER / REVIEW / VERIFY / ROUNDS / PUSH`。
 
 已实现的工单源：
-`templates/github/` = GitHub（`ticket_*` 脚本、`source.mjs`、讨论流程 `github_discuss` 与 `gh_*` 脚本；配合 `dev`：认领 issue → 开发 → 审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`，见 TODO C3、F2）。
+`templates/github/` = GitHub（`ticket_*` 脚本、`source.mjs`、讨论流程 `github_discuss` 与 `gh_*` 脚本；配合 `dev`：认领 issue → 开发 →（要审查的单子）审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`，见 TODO C3、F2）。
 回帖稿带图时用 `gh issue comment --attach` 上传，要 `gh` ≥ 2.99.0；只在确实有图时查版本，不够就把图片换成「图片未上传」占位、`say` 提示升级，评论照发。
 
 `templates/tapd/` = TAPD（`ticket_*` 脚本、`scripts/_tapd.mjs`、`source.mjs`；只有开发流程，讨论流程搁置，TODO F3、F4）。三个脚本的 TAPD 实现：
@@ -834,7 +836,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 13. ✅ v1.7 零配置使用：全局命令、原语与 `args` 传参、往上找 `.workflow/`、`init`（选模板）/ `new` / `view`、网页运行按钮、`SKILL.md`（§3、§5、§13.6、§15）。
 14. ✅ v1.7 运行期 Agent 适配器：`agents/agent_cli.mjs`（pi / codex / cursor）、`opts.agent`、`AGENTFLOW_AGENT`（§10.1）。
 15. ✅ 首个工作流：GitHub 开发，作为 `init` 可选的模板 `templates/github/`（TODO C3，已实现）。
-    人是给 issue 贴 `ready-for-agent`；任务 `dev` 逐个「认领 → 开发 → 审查 → 验证 → 提交 → 关单」，
+    人是给 issue 贴 `ready-for-agent`；任务 `dev` 逐个「认领 → 开发 →（要审查的单子）审查 → 验证 → 提交 → 关单」，
     失败回滚 + 贴评论 + `afk-failed`。测试留内核仓库（假 gh / 假 Agent / 临时 git 仓库）。
     回滚不销毁提交：`base..HEAD` 的提交先备份成 `refs/afk-backup/*` 再回滚，ref 写进失败评论（TODO B7）。
 16. ✅ 工单源接口（TODO F2）：模板拆成 `_shared` + 工单源、`init` 组合复制；`github_dev` → `dev`；
