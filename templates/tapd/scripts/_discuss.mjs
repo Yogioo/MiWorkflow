@@ -86,10 +86,3 @@ export async function predecessorsOf(ws, id) {
   const rows = (Array.isArray(r.data) ? r.data : []).map((x) => x?.WorkitemTimeRelation).filter(Boolean);
   return rows.filter((x) => String(x.dst_workitem_id ?? '').trim() === String(id)).map((x) => String(x.workitem_id ?? '').trim());
 }
-
-// 子需求（开发单挂在讨论单下）
-export function childrenOf(parentId, ws) {
-  const r = tapdJson(['story', 'list', `parent_id=${parentId}`, 'limit=200', ...wsArg(ws)]);
-  return (Array.isArray(r.data) ? r.data : []).map((x) => x?.Story).filter((s) => s && s.id != null)
-    .map((s) => ({ id: String(s.id).trim(), title: s.name || String(s.id), labels: labelsOf(s) }));
-}

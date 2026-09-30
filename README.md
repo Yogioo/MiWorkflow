@@ -160,7 +160,7 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
 - **spec 发成一条评论**，末尾标记带 `kind=spec`；当前 spec 是最新那条 `kind=spec` 评论，不写需求描述——`story update description=` 不幂等，每写一次外层多包一层 `<p>`
 - **AI 记账标记是评论末尾一行纯文本** `[miworkflow:discuss hash=… seen=… …]`，人看得见；TAPD 会把评论里的 HTML 注释整个剥掉，GitHub 那套用不了
 - **开发单建成讨论单的子需求**（`story add parent_id=`），贴 `ready-for-agent`（要审查的再贴 `needs-review`），依赖落成 TAPD 原生的前后置关系（前置的结束 → 后置的开始）；
-  优先级 `P0`/`P1` 都落成「高」、`P2` 落成「中」、`P3`/`P4` 落成「低」（TAPD 只有高 / 中 / 低三档，同档内不再细分）。建完回查子需求、标签与依赖，对不上就不改阶段、交人处理
+  优先级 `P0`/`P1` 都落成「高」、`P2` 落成「中」、`P3`/`P4` 落成「低」（TAPD 只有高 / 中 / 低三档，同档内不再细分）。建完逐张回查这次建的子需求（父需求、标签与依赖；讨论单下原有的子需求不管），对不上就不改阶段、交人处理
 - **TAPD 没有「关单」**（需求状态由人验收后自己流转），讨论单靠阶段标签 `discuss:ticketed` 或摘掉 `agent-discuss` 退出队列
 - **阶段标签不用预建**：`discuss:grilling` / `discuss:spec` / `discuss:ticketed` 第一次写入时 TAPD 隐式建出来；多个标签用 `|` 分隔写入，写完回读校验
 

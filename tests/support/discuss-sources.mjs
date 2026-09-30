@@ -1,5 +1,6 @@
 // 讨论流程的两家假工单源，接成同一套接口：场景只写一遍（tests/support/discuss-scenarios.mjs），对 GitHub、TAPD 各跑一次。
-// 讨论单写成 { key, labels?, body?, spec? }：key 是场景里的小编号，各家换成自己的工单号；spec 给了就预置一份当前 spec。
+// 讨论单写成 { key, labels?, body?, spec?, parent? }：key 是场景里的小编号，各家换成自己的工单号；spec 给了就预置一份当前 spec；
+// parent 给了就是挂在那张讨论单下的已有子需求（GitHub 写正文 `## Parent`，TAPD 写 parent_id）。
 // 读法按源各自实现，场景只认：
 //   comments   讨论评论的原文（含标记）；TAPD 的 kind=spec 评论不算（它是 spec 的存放处）
 //   original   人写的原文；spec 当前 spec 或 null
@@ -20,10 +21,13 @@ const github = {
   ref: (key) => `#${key}`,
   markRe: (fields = MARK_FIELDS) => new RegExp(`<!-- miworkflow:discuss hash=[0-9a-f]+ seen=\\d+${fields} -->`),
   async open({ issues = [] } = {}) {
-    const list = issues.map((t) => issue(t.key, {
-      labels: t.labels ?? [],
-      body: t.spec === undefined ? t.body ?? `做 ${t.key}` : `${t.body ?? `做 ${t.key}`}\n\n${SPEC_BEGIN}\n${t.spec}\n<!-- miworkflow:spec:end -->`
-    }));
+    const list = issues.map((t) => {
+      const text = `${t.parent ? `## Parent\n\n#${t.parent}\n\n` : ''}${t.body ?? `做 ${t.key}`}`;
+      return issue(t.key, {
+        labels: t.labels ?? [],
+        body: t.spec === undefined ? text : `${text}\n\n${SPEC_BEGIN}\n${t.spec}\n<!-- miworkflow:spec:end -->`
+      });
+    });
     return { ...setup({ source: 'github', issues: list }), close: async () => {} };
   },
   thinkStep: (text) => ({ ghComment: text }),
@@ -65,8 +69,9 @@ const tapd = {
     const s = setup({ source: 'tapd' });
     s.tapdFile = path.join(s.base, 'tapd-state.json');
     writeTapdState(s.tapdFile, {
-      stories: issues.map((t) => story(tapdId(t.key), {
-        name: `issue ${t.key}`, label: (t.labels ?? []).join('|'), description: t.body ?? `做 ${t.key}`
+      stories: issues.map((t) => ({
+        ...story(tapdId(t.key), { name: `issue ${t.key}`, label: (t.labels ?? []).join('|'), description: t.body ?? `做 ${t.key}` }),
+        ...(t.parent ? { parent_id: tapdId(t.parent) } : {})
       })),
       comments: issues.filter((t) => t.spec !== undefined).map((t, i) => ({
         id: String(i + 1), entry_type: 'stories', entry_id: tapdId(t.key), author: 'bot-npc',

@@ -9,14 +9,14 @@ import { normalizeTickets, orderTickets, findCycle } from './_tickets.mjs';
 
 const READY = 'ready-for-agent';
 const REVIEW = 'needs-review';
-const LIST_LIMIT = 1000;
 
-// `## Parent` 标题下第一行非空内容里的 #N，或 `Parent: #N`
+// `## Parent` 标题下第一行非空内容里的 #N，或 `Parent: #N` → { number, taskList }；taskList = 写成了 `- [ ] #N`
 function parentOf(body) {
   const text = String(body ?? '');
-  const m = /^#{1,6}\s*Parent\s*\r?\n(?:\s*\r?\n)*\s*(?:-\s+\[[ xX]\]\s+)?#(\d+)\b/im.exec(text)
-    ?? /^\s*Parent\s*[:：]\s*#(\d+)\b/im.exec(text);
-  return m ? Number(m[1]) : null;
+  const m = /^#{1,6}\s*Parent\s*\r?\n(?:\s*\r?\n)*\s*(-\s+\[[ xX]\]\s+)?#(\d+)\b/im.exec(text);
+  if (m) return { number: Number(m[2]), taskList: Boolean(m[1]) };
+  const p = /^\s*Parent\s*[:：]\s*#(\d+)\b/im.exec(text);
+  return p ? { number: Number(p[1]), taskList: false } : null;
 }
 
 await main(async () => {
@@ -48,25 +48,33 @@ await main(async () => {
     made.set(t.key, Number(m[1]));
   }
 
-  const list = runGh(['issue', 'list', '--state', 'open', '--limit', String(LIST_LIMIT), '--json', 'number,title,body,labels', ...repoArg]);
-  const parsed = JSON.parse(list);
-  if (!Array.isArray(parsed)) throw new Error('gh issue list 返回的不是数组');
-  const found = parsed
-    .map((i) => ({ number: Number(i.number), title: i.title ?? '', body: i.body ?? '', labels: i.labels ?? [] }))
-    .filter((i) => i.number !== parent && parentOf(i.body) === parent)
-    .sort((a, b) => a.number - b.number);
-
+  // 回查只看这次建的那几张（讨论单下原有的子需求不归这次管），逐张按单号读回系统实际状态
   const check = [];
-  if (!found.length) check.push(`没找到 Parent 指向 ${refOf(parent)} 的打开的开发单`);
+  const found = [];
+  for (const t of ordered) {
+    const number = made.get(t.key);
+    try {
+      const i = JSON.parse(runGh(['issue', 'view', String(number), '--json', 'number,title,body,labels', ...repoArg]));
+      found.push({ key: t.key, review: t.review, number, title: i.title ?? '', body: i.body ?? '', labels: i.labels ?? [] });
+    } catch (err) {
+      check.push(`${refOf(number)} 建完读不到：${String(err?.message ?? err).split('\n')[0]}`);
+    }
+  }
+  const batch = new Set(made.values());
   const deps = new Map();
   for (const t of found) {
+    const p = parentOf(t.body);
+    if (!p || p.number !== parent) check.push(`${refOf(t.number)} 的 Parent 没指向讨论单 ${refOf(parent)}`);
+    else if (p.taskList) check.push(`${refOf(t.number)} 的 Parent 写成了任务列表，要写成普通一行 ${refOf(parent)}`);
     const refs = parseTaskList(t.body).map((r) => r.number);
-    deps.set(t.number, refs.filter((n) => found.some((x) => x.number === n)));
+    deps.set(t.number, refs.filter((n) => batch.has(n)));
     if (!hasLabel(t, READY)) check.push(`${refOf(t.number)} 没贴 ${READY}`);
+    if (t.review && !hasLabel(t, REVIEW)) check.push(`${refOf(t.number)} 要审查却没贴 ${REVIEW}`);
     const ps = t.labels.map(labelName).filter((l) => /^P[0-4]$/i.test(l));
     if (ps.length !== 1) check.push(`${refOf(t.number)} 优先级标签要恰好一个 P0~P4，现在是 ${ps.length ? ps.join('、') : '没有'}`);
     if (refs.includes(parent)) check.push(`${refOf(t.number)} 的任务列表引用了讨论单 ${refOf(parent)}，会被它挡住`);
     if (refs.includes(t.number)) check.push(`${refOf(t.number)} 依赖了自己`);
+    for (const n of refs.filter((n) => n !== parent && !batch.has(n))) check.push(`${refOf(t.number)} 依赖了不在这批里的工单 ${refOf(n)}`);
   }
   const cycle = findCycle(deps);
   if (cycle) check.push(`开发单互相依赖成环：${cycle.map((n) => refOf(n)).join(' → ')}`);

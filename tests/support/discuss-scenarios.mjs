@@ -287,6 +287,27 @@ export function defineDiscussScenarios(src) {
     assert.equal(src.devTickets(s, 1).length, 2, '改写 spec 不动已建的开发单');
   });
 
+  scenario('/tickets 讨论单下已有别的子需求（没贴 ready-for-agent）→ 回查只看这次建的，仍改 ticketed，已有的一个字不动', {
+    issues: [specIssue(), { key: 2, parent: 1, labels: [], body: '早就有的子需求' }]
+  }, (s) => {
+    const old = () => ({
+      ticket: src.devTickets(s, 1).find((t) => t.key === 2), comments: bodies(s, 2), blockedBy: src.blockedBy(s, 2)
+    });
+    const before = old();
+    assert.ok(before.ticket, '预置的子需求挂在讨论单下');
+
+    reply(s, 1, '/tickets');
+    plan(s, [tickets([dev('a', '做甲'), dev('b', '做乙', { blockedBy: ['a'] })])]);
+    run(s);
+
+    assert.deepEqual(src.labels(s, 1), ['agent-discuss', 'discuss:ticketed']);
+    assert.match(bodies(s, 1).at(-1), new RegExp(`已建开发单 ${src.ref(3)}、${src.ref(4)}`));
+    assert.doesNotMatch(bodies(s, 1).at(-1), new RegExp(src.ref(2)));
+    assert.deepEqual(src.devTickets(s, 1).map((t) => t.key), [2, 3, 4]);
+    assert.deepEqual(src.blockedBy(s, 4), [3]);
+    assert.deepEqual(old(), before, '已有的子需求一个字都不动');
+  });
+
   scenario('/tickets 结构有问题（依赖指向不认识的 key、成环）→ 一张不建、带标记评论说明、阶段不变、不自动重试', { issues: [specIssue()] }, (s) => {
     reply(s, 1, '/tickets');
     plan(s, [tickets([
