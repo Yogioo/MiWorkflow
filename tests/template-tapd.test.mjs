@@ -2,7 +2,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -320,12 +320,112 @@ test('ticket_view：每单最多 30 张图，超出的写明还有 N 张未下�
   }
 });
 
-test('占位的 ticket_* 脚本报 failed', () => {
-  for (const name of ['ticket_mark']) {
-    const r = spawnSync(process.execPath, [path.join(HOME, 'scripts', `${name}.mjs`)], { input: '{}', encoding: 'utf8' });
-    assert.equal(r.status, 0, r.stderr);
-    const out = JSON.parse(r.stdout);
-    assert.equal(out.status, 'failed', name);
-    assert.match(out.say, /还没实现/);
+const SID = '1152360842001004500';
+const patchState = (f, patch) => writeFileSync(f, JSON.stringify({ ...readTapdState(f), ...patch }, null, 2));
+
+async function withMark(label, fn, patch) {
+  const f = stateFile({ stories: [story(SID, { label, status: 'doing', owner: 'alice' })] });
+  if (patch) patchState(f, patch);
+  const api = await startFakeOpenApi(f);
+  try {
+    const mark = (input, env = {}) => runScript('ticket_mark', { id: SID, ...input }, { ...tapdEnv(f, api.endpoint), TAPD_NPC_ROLE: 'bot-npc', ...env });
+    await fn(mark, f);
+  } finally {
+    await api.close();
   }
+}
+
+test('ticket_mark：四种 action 的标签变化，| 分隔；done 不改状态与处理人；出参形状同 GitHub', async () => {
+  const cases = [
+    ['claimed', 'ready-for-agent', 'ready-for-agent|afk-claimed', null],
+    ['done', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-delivered', '提交：abc123'],
+    ['failed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-failed', 'afk failed：测试没过'],
+    ['unpushed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-claimed', '本地提交（未推送）：abc123']
+  ];
+  for (const [action, from, to, comment] of cases) {
+    await withMark(from, async (mark, f) => {
+      const { out } = mark({ action, sha: 'abc123', comment: '测试没过' });
+      assert.equal(out.status, 'ok', `${action}：${out.say}`);
+      assert.deepEqual(Object.keys(out.data).sort(), ['did', 'id', 'ref']);
+      assert.equal(out.data.id, SID);
+      assert.equal(out.data.ref, `story ${SID}`);
+      const st = readTapdState(f);
+      assert.equal(st.stories[0].label, to, action);
+      assert.equal(st.stories[0].status, 'doing', `${action} 不改状态`);
+      assert.equal(st.stories[0].owner, 'alice', `${action} 不改处理人`);
+      const updates = st.calls.filter((c) => c[0] === 'story' && c[1] === 'update');
+      assert.ok(updates.every((c) => c[3].startsWith('label=') && !c[3].includes(',')), action);
+      assert.equal(st.comments.length, comment ? 1 : 0, action);
+      if (comment) {
+        assert.equal(st.comments[0].description, comment);
+        assert.equal(st.comments[0].author, 'bot-npc');
+      }
+    });
+  }
+});
+
+test('ticket_mark：回读不一致判失败；缺评论人时标签未被改动；干跑不改 TAPD', async () => {
+  await withMark('ready-for-agent', (mark) => {
+    const { out } = mark({ action: 'claimed' });
+    assert.equal(out.status, 'failed');
+    assert.match(out.say, /回读不一致/);
+  }, { ignoreUpdate: true });
+
+  await withMark('ready-for-agent|afk-claimed', (mark, f) => {
+    const { out } = mark({ action: 'done', sha: 'abc' }, { TAPD_NPC_ROLE: '' });
+    assert.equal(out.status, 'failed');
+    assert.match(out.say, /缺评论人/);
+    const st = readTapdState(f);
+    assert.equal(st.stories[0].label, 'ready-for-agent|afk-claimed');
+    assert.equal(st.calls.length, 0, '动标签之前就报错');
+  });
+
+  await withMark('ready-for-agent|afk-claimed', (mark, f) => {
+    const { out } = mark({ action: 'done', sha: 'abc', dryRun: true });
+    assert.equal(out.status, 'ok');
+    assert.match(out.say, /干跑/);
+    assert.ok(out.data.did.some((d) => d.includes('label=ready-for-agent|afk-delivered')));
+    const st = readTapdState(f);
+    assert.equal(st.stories[0].label, 'ready-for-agent|afk-claimed');
+    assert.equal(st.comments.length, 0);
+  });
+});
+
+test('ticket_mark：回帖稿传图替换引用、保留 alt；不支持的格式降级占位；多行无字面量 \\n；回读走 OpenAPI', async () => {
+  const dir = path.join(TMP, 'reply');
+  mkdirSync(path.join(dir, 'images'), { recursive: true });
+  writeFileSync(path.join(dir, 'images', 'a.png'), PNG);
+  writeFileSync(path.join(dir, 'images', 'b.webp'), JPG);
+  const reply = path.join(dir, 'reply-1.md');
+  writeFileSync(reply, '## 为什么失败\n\n- 第一行\n- 第二行\n\n![红色 截图](images/a.png)\n\n![](images/b.webp)\n');
+
+  await withMark('ready-for-agent|afk-claimed', (mark, f) => {
+    const { out, stderr } = mark({ action: 'failed', comment: '做不成', commentFile: reply });
+    assert.equal(out.status, 'ok', out.say);
+    assert.match(out.say, /未上传/);
+    assert.match(stderr, /b\.webp/);
+    const st = readTapdState(f);
+    assert.equal(st.uploads.length, 1);
+    assert.equal(path.resolve(st.uploads[0].file), path.join(dir, 'images', 'a.png'));
+    const c = st.comments[0].description;
+    assert.ok(c.startsWith('afk failed：做不成\n\n## 为什么失败\n\n- 第一行\n- 第二行'), c);
+    assert.ok(!c.includes('\\n'));
+    assert.match(c, /!\[红色 截图\]\(\/tfl\/pictures\/1\.png\)/);
+    assert.match(c, /（图片未上传：`images\/b\.webp`）/);
+    assert.equal(st.stories[0].label, 'ready-for-agent|afk-failed');
+    assert.ok(!st.calls.some((x) => x[0] === 'comment' && x[1] === 'list'), '回读不用 tapd-cli comment list');
+    assert.ok(openApiLog(f).some((l) => l.url.startsWith('/comments')));
+  });
+
+  await withMark('ready-for-agent|afk-claimed', (mark) => {
+    const { out } = mark({ action: 'failed', comment: '做不成', commentFile: reply });
+    assert.equal(out.status, 'failed');
+    assert.match(out.say, /字面量/);
+  }, { escapeNewlines: true });
+
+  await withMark('ready-for-agent|afk-claimed', (mark, f) => {
+    const { out } = mark({ action: 'failed', comment: '只有一句', commentFile: path.join(dir, 'none.md') });
+    assert.equal(out.status, 'ok');
+    assert.equal(readTapdState(f).comments[0].description, 'afk failed：只有一句');
+  });
 });

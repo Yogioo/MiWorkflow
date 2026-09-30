@@ -1,7 +1,8 @@
 // 假的 tapd-cli：以 FAKE_TAPD_STATE 里的 JSON 为后端，经 MIWORKFLOW_TAPD 注入（node 本文件 <参数…>）。
 // 状态：{ stories: [{ id, name, label, priority, description, status, owner, workspace_id }],
 //         comments: [{ id, entry_type, entry_id, description, author, created }],
-//         fail?: { times, message }, calls: [argv…] }
+//         fail?: { times, message }, calls: [argv…], uploads: [{ file, size }] }
+// 故障开关：ignoreUpdate（story update 不落库，测回读校验）、escapeNewlines（comment add 把换行存成字面量 \n）
 // 像真 tapd-cli 一样：连字符写法的参数静默丢掉；comment list 剥 HTML；comment add 在 JSON 后多一行。
 import { readFileSync, writeFileSync } from 'node:fs';
 
@@ -42,14 +43,21 @@ if (entity === 'story' && action === 'list') {
 } else if (entity === 'story' && action === 'update') {
   const s = state.stories.find((x) => String(x.id) === params.id);
   if (!s) die(`story not found: ${params.id}`);
-  for (const [k, v] of Object.entries(params)) if (k !== 'id') s[k] = v;
+  if (!state.ignoreUpdate) for (const [k, v] of Object.entries(params)) if (k !== 'id') s[k] = v;
   save(); out({ status: 1, data: { Story: s }, info: 'success' });
+} else if (entity === 'attachment' && action === 'upload-image') {
+  // 存 state.uploads，给出 /tfl/pictures/<n>.<扩展名>；文件不在就报错
+  let size;
+  try { size = readFileSync(params.file).length; } catch { die(`读不到 ${params.file}`); }
+  state.uploads = (state.uploads ?? []).concat([{ file: params.file, size }]);
+  const src = `/tfl/pictures/${state.uploads.length}${params.file.slice(params.file.lastIndexOf('.'))}`;
+  save(); out({ status: 1, data: { image_src: src, html_code: `<img src="${src}"/>` }, info: 'success' });
 } else if (entity === 'comment' && action === 'add') {
   const c = {
     id: String(state.comments.length + 1),
     entry_type: params.entry_type ?? '',
     entry_id: params.entry_id ?? '',
-    description: params.description ?? '',
+    description: state.escapeNewlines ? String(params.description ?? '').replace(/\n/g, '\\n') : params.description ?? '',
     author: params.author ?? process.env.TAPD_NPC_ROLE ?? '',
     created: `2026-01-01 00:00:${String(state.comments.length).padStart(2, '0')}`
   };
