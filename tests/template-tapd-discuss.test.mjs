@@ -1,6 +1,6 @@
 // TAPD 讨论流程的脚本契约测试：discuss_list / discuss_view / discuss_post / tickets_create。
 // 直接喂 stdin JSON 跑脚本（同 template-tapd.test.mjs 的做法），假 tapd-cli + 假 OpenAPI，不碰真网络。
-// 端到端（同一套场景 × 两家工单源）见 TODO F4 Step 3。
+// 端到端（同一套场景 × 两家工单源）见 tests/discuss-tapd.test.mjs。
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
