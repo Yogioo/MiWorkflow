@@ -28,7 +28,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && url.pathname === '/comments') {
     const rows = (state.comments ?? [])
       .filter((c) => (!q.id || String(c.id) === q.id) && (!q.entry_type || c.entry_type === q.entry_type) && (!q.entry_id || c.entry_id === q.entry_id))
-      .sort((a, b) => String(a.created).localeCompare(String(b.created)));
+      .sort((a, b) => String(a.created).localeCompare(String(b.created)) * (q.order === 'created desc' ? -1 : 1));
     const limit = Number(q.limit ?? 30);
     const page = Number(q.page ?? 1);
     return send(res, 200, { status: 1, data: rows.slice((page - 1) * limit, page * limit).map((c) => ({ Comment: c })), info: 'success' });

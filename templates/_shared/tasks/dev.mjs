@@ -8,14 +8,19 @@
 //   miworkflow dev --max 3            最多做 3 个
 //   miworkflow dev --max-failures 1   连续失败 1 次就停（默认 3）
 //   miworkflow dev --issue 42         只做工单 42（不看入队和依赖，人点名就跑）
-//   miworkflow dev --confirm          每次发布（推送 + 关单）前 human 确认
+//   miworkflow dev --confirm          每次提交（+ 推送 + 标记完成）前 human 确认
 //   miworkflow dev --dry-run          只报会做哪些工单、哪些被挡住，不改工单、不改 git
-import { readFileSync, rmSync } from 'node:fs';
+//
+// 提交权在工作流：Agent 只改代码、在回话 data 里给 type / summary，审查、验证（和 --confirm）之后由这里统一提交，
+// 一张工单一笔，提交信息按工单源的 commitMessage 拼（Agent 自己提交了会被 git_commit 压成这一笔）。
+// 工单评论：每次调 Agent 都要它写回帖稿；完成 / 未推送时把各份回帖稿（没写就用它回话里的 reason）
+// 拼起来，再由工作流补一段落款（改了哪些文件、审查、验证、提交号），整段交给 ticket_mark。
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, AGENT_RETRY_DELAYS } from '../config.mjs';
-import { commitMessage } from '../source.mjs';
+import * as source from '../source.mjs';
 
 export const title = '开发：认领工单 → 开发 → 审查 → 验证 → 提交 → 关单';
 
@@ -140,6 +145,8 @@ async function runTicket(t, ctx) {
   }
 
   const base = (await script('git_state', { cwd: root })).data.sha;
+  // 每次调 Agent 的回帖稿与回话，完成时拼进评论
+  const notes = [];
 
   // 1. 开发（每次调 Agent 都分配一份新的回帖稿；失败时它写了就跟着评论发回工单）
   let reply = nextReply(t);
@@ -149,6 +156,7 @@ async function runTicket(t, ctx) {
     ...(DEV ? { agent: DEV } : {}),
     inputs: { cwd: root, ticket: t.file, reply, choices: ['done', 'no_change'] }
   }, async () => { saved += await rollback(base, ctx); });
+  notes.push({ who: '开发', reply, answer: dev });
   if (dev.infra) return release(t, dev.infra, base, ctx, saved);
   if (dev.status === 'need_human') return fail(t, `Agent 提问：${dev.reason}`, base, ctx, reply);
   if (dev.status !== 'ok' || !['done', 'no_change'].includes(dev.choice)) {
@@ -168,6 +176,7 @@ async function runTicket(t, ctx) {
     ...(REVIEWER ? { agent: REVIEWER } : {}),
     inputs: { cwd: root, ticket: t.file, reply, changed, choices: ['clean', 'refined', 'reject'] }
   });
+  notes.push({ who: '审查', reply, answer: rev });
   if (rev.infra) return release(t, rev.infra, base, ctx, saved);
   if (rev.status === 'need_human') return fail(t, `审查者提问：${rev.reason}`, base, ctx, reply);
   if (rev.status !== 'ok' || !['clean', 'refined'].includes(rev.choice)) {
@@ -175,8 +184,8 @@ async function runTicket(t, ctx) {
   }
 
   // 4. 验证（配了才跑）；不过就把输出交回 DEV 再改，最多 ROUNDS 轮
+  let round = 0;
   if (VERIFY) {
-    let round = 0;
     for (;;) {
       const v = await script('run_cmd', { cmd: VERIFY, cwd: root }, { timeoutMs: 1_800_000 });
       if (v.status === 'ok') break;
@@ -189,6 +198,7 @@ async function runTicket(t, ctx) {
         ...(DEV ? { agent: DEV } : {}),
         inputs: { cwd: root, ticket: t.file, reply, verify: VERIFY, output: v.data?.tail, choices: ['fixed', 'give_up'] }
       });
+      notes.push({ who: '验证后修正', reply, answer: fix });
       if (fix.infra) return release(t, fix.infra, base, ctx, saved);
       if (fix.status !== 'ok' || fix.choice !== 'fixed') {
         return fail(t, `验证失败后放弃：${fix.reason}`, base, ctx, reply);
@@ -196,32 +206,42 @@ async function runTicket(t, ctx) {
     }
   }
 
-  // 5. 带 --confirm 才找人点头；不带就无人值守。
-  // 注意：提交是本地的（Agent 已经提交过，或下面会补），这道门卡的是「发布」——推送 + 关单。
+  // 5. 带 --confirm 才找人点头；不带就无人值守。门在提交之前：拒绝就回滚，什么都没留下。
   if (args.confirm) {
-    const h = await human(`${t.ref} 改动就绪（提交已在本地），推送并关单？`);
+    const h = await human(`${t.ref} 改动就绪（已审查${VERIFY ? '、已验证' : ''}），提交${PUSH ? '并推送' : ''}、标记完成？`);
     if (h.status !== 'ok') return fail(t, '人工拒绝提交', base, ctx);
   }
 
-  // 6. 提交 + 推送：Agent 一般已经自己提交了（提示词要求的），这里兜底；已提交就用当前 HEAD 走推送。
-  const msg = commitMessage(t, 'dev');
+  // 6. 提交 + 推送：一张工单一笔（Agent 自己做的提交压进来），提交信息按工单源格式拼
+  const msg = source.commitMessage(t, commitInfo(t, notes));
   const c = await script('git_commit', {
     message: msg.message,
     ...(msg.body ? { body: msg.body } : {}),
+    baseSha: base,
     push: PUSH,
     cwd: root
   });
   if (c.status !== 'ok') {
     // 推送失败：本地提交保留，不关单、保留 afk-claimed、整轮停下
-    if (c.data?.committed) return notPublished('push_failed', t, c.data.sha, ctx);
+    if (c.data?.committed) {
+      const file = await report(t, ctx, notes, { base, sha: c.data.sha, subject: msg.message, round,
+        head: `已本地提交 ${short(c.data.sha)}，但推送失败，工单保持打开，等人处理：${firstLine(c.error)}` });
+      return notPublished('push_failed', t, c.data.sha, ctx, file);
+    }
     return fail(t, `提交失败：${c.error}`, base, ctx);
   }
 
   // 提交成功但没推送（PUSH=false）：跟推送失败同款语义——没发布就不算做完
-  if (c.data.pushed === false) return notPublished('unpushed', t, c.data.sha, ctx);
+  if (c.data.pushed === false) {
+    const file = await report(t, ctx, notes, { base, sha: c.data.sha, subject: msg.message, round,
+      head: `已本地提交 ${short(c.data.sha)}，没有推送（PUSH=false），工单保持打开，等人处理。` });
+    return notPublished('unpushed', t, c.data.sha, ctx, file);
+  }
 
-  // 7. 关单
-  const marked = await script('ticket_mark', { id: t.id, action: 'done', sha: c.data.sha });
+  // 7. 标记完成（评论：回帖稿 + 落款）
+  const file = await report(t, ctx, notes, { base, sha: c.data.sha, subject: msg.message, round, pushed: true,
+    head: `已完成，提交 ${short(c.data.sha)} 已推送。` });
+  const marked = await script('ticket_mark', { id: t.id, action: 'done', sha: c.data.sha, commentFile: file });
   if (marked.status !== 'ok') {
     // 已经提交推送出去了，回滚反而更糟；留着让人看
     console.error(`${t.ref} 已提交但关单失败：${marked.error}`);
@@ -232,14 +252,14 @@ async function runTicket(t, ctx) {
     return 'failed';
   }
 
-  console.log(`✔ ${t.ref} ${t.title}（${c.data.sha.slice(0, 7)}）`);
+  console.log(`✔ ${t.ref} ${t.title}（${short(c.data.sha)}）`);
   return 'done';
 }
 
 // 提交成功但没发布（PUSH=false 或推送失败）：评论注明未推送、保留 afk-claimed、不关单，整轮停下留给人处理
-async function notPublished(outcome, t, sha, ctx) {
-  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'unpushed', sha }), t, '记录未推送');
-  console.error(`✖ ${t.ref} 本地提交（未推送）：${String(sha ?? '').slice(0, 7)}，工单保持打开`);
+async function notPublished(outcome, t, sha, ctx, commentFile) {
+  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'unpushed', sha, commentFile }), t, '记录未推送');
+  console.error(`✖ ${t.ref} 本地提交（未推送）：${short(sha)}，工单保持打开`);
   return outcome;
 }
 
@@ -249,7 +269,7 @@ async function notPublished(outcome, t, sha, ctx) {
 async function fail(t, reason, base, ctx, reply) {
   console.error(`✖ ${t.ref} ${reason}`);
   const note = await rollback(base, ctx);
-  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'failed', comment: `${reason}${note}`, ...(reply ? { commentFile: reply } : {}) }), t, '标记失败');
+  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'failed', comment: `afk failed：${reason}${note}`, ...(reply ? { commentFile: reply } : {}) }), t, '标记失败');
   return 'failed';
 }
 
@@ -264,7 +284,7 @@ function markQuietly(r, t, what) {
 async function release(t, reason, base, ctx, saved = '') {
   console.error(`✖ ${t.ref} Agent 连接失败：${reason}`);
   const note = saved + await rollback(base, ctx);
-  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'released', comment: `${reason}${note}` }), t, '释放');
+  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'released', comment: `Agent 连接失败，已回滚并释放，下轮重做：${reason}${note}` }), t, '释放');
   return 'infra_failed';
 }
 
@@ -315,26 +335,98 @@ function nextReply(t) {
 }
 
 const lastLines = (text, n = 5) => String(text ?? '').split('\n').filter(Boolean).slice(-n).join(' / ');
+const short = (sha) => String(sha ?? '').slice(0, 7);
 
-// ── 提示词：正文在 prompts/dev|review|fix.md，{{名字}} 占位；提交信息由工单源的 commitMessage 给 ──
+// ── 提交信息：Agent 回话 data 里的 type / summary，后面的（审查、修正）覆盖前面的 ──
+const commitTypes = () => (Array.isArray(source.COMMIT_TYPES) ? source.COMMIT_TYPES : []);
+
+function commitInfo(t, notes) {
+  const types = commitTypes();
+  let type = '';
+  let summary = '';
+  for (const { answer } of notes) {
+    const d = answer?.data && typeof answer.data === 'object' ? answer.data : {};
+    if (typeof d.type === 'string' && d.type.trim()) type = d.type.trim().toLowerCase();
+    if (typeof d.summary === 'string' && d.summary.trim()) summary = d.summary;
+  }
+  if (!types.includes(type)) type = types[0] ?? '';
+  return { type, summary: cleanSummary(summary, t, types) || cleanSummary(t.title, t, types) || t.ref };
+}
+
+// 一行、去掉 Agent 自己加的类型前缀和工单号、去掉句末标点，最长 72 字
+function cleanSummary(text, t, types) {
+  let s = String(text ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+  if (types.length) s = s.replace(new RegExp(`^(?:${types.join('|')})\\s*[:：]\\s*`, 'i'), '');
+  for (const id of new Set([String(t.id), String(t.id).slice(-7), t.ref])) {
+    if (id) s = s.split(id).join('');
+  }
+  return s.replace(/^[\s:：#-]+/, '').replace(/[\s。.！!]+$/, '').slice(0, 72).trim();
+}
+
+// ── 完成 / 未推送的评论：开头一句 + 各份回帖稿（没写就用回话 reason）+ 工作流落款 ──
+// 写成工单快照同目录的 comment.md（回帖稿里的相对图片路径照样能解析），交给 ticket_mark 的 commentFile
+async function report(t, ctx, notes, { head, base, sha, subject, round, pushed = false }) {
+  const st = await ctx.script('git_state', { cwd: ctx.root, baseSha: base });
+  const files = st.data?.changed ?? [];
+  const parts = [head];
+  for (const { who, reply, answer } of notes) {
+    const draft = readDraft(reply);
+    const reason = String(answer?.reason ?? '').trim();
+    if (draft) parts.push(`**${who}**\n${draft}`);
+    else if (reason) parts.push(`**${who}**（没写回帖稿，这是它的回话）\n${reason}`);
+  }
+  const review = notes.find((n) => n.who === '审查')?.answer?.choice;
+  const shown = files.slice(0, 15).map((f) => `- \`${f}\``);
+  if (files.length > shown.length) shown.push(`- ……等共 ${files.length} 个`);
+  parts.push([
+    '---',
+    `改动 ${files.length} 个文件${st.data?.stat ? `（${st.data.stat}）` : ''}：`,
+    ...shown,
+    '',
+    `审查：${review === 'refined' ? '审查者做了修正' : '审查者看过，没有改动'}`,
+    `验证：${VERIFY ? `\`${Array.isArray(VERIFY) ? VERIFY.join(' ') : VERIFY}\` 通过${round ? `（验证不过后修了 ${round} 轮）` : ''}` : '没配验证命令，工作流没有跑编译或测试'}`,
+    `提交：${short(sha)} ${subject}（${pushed ? '已推送' : '未推送'}）`
+  ].join('\n'));
+  const file = path.join(path.dirname(t.file), 'comment.md');
+  writeFileSync(file, `${parts.join('\n\n')}\n`);
+  return file;
+}
+
+function readDraft(file) {
+  try { return readFileSync(file, 'utf8').trim(); } catch { return ''; }
+}
+
+// ── 提示词：正文在 prompts/dev|review|fix.md，{{名字}} 占位 ──
 const PROMPTS = {
   dev: fileURLToPath(new URL('../prompts/dev.md', import.meta.url)),
   review: fileURLToPath(new URL('../prompts/review.md', import.meta.url)),
   fix: fileURLToPath(new URL('../prompts/fix.md', import.meta.url))
 };
 
-// 一趟替换：填进去的值（快照路径、验证输出）里就算有 {{…}} 也不会再被替换
+// 项目自己的补充要求：prompts/local/<dev|review|fix>.md，各接到对应提示词的 {{local}} 处；不在模板里，init --upgrade 不碰
+const localPrompt = (kind) => {
+  let text = '';
+  try { text = readFileSync(fileURLToPath(new URL(`../prompts/local/${kind}.md`, import.meta.url)), 'utf8').trim(); } catch { /* 没有就不加 */ }
+  return text ? `\n项目补充要求（与上面冲突时以这里为准）：\n${text}\n` : '';
+};
+
+// 一趟替换：填进去的值（快照路径、验证输出、项目补充要求）里就算有 {{…}} 也不会再被替换
 function render(kind, vars) {
-  return readFileSync(PROMPTS[kind], 'utf8').replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
+  const all = { ...vars, local: localPrompt(kind) };
+  return readFileSync(PROMPTS[kind], 'utf8').replace(/\{\{(\w+)\}\}/g, (m, k) => (k in all ? String(all[k]) : m));
 }
 
-function commitText(t, kind) {
-  const c = commitMessage(t, kind);
-  return c.body ? `\`${c.message}\`，正文写一行 \`${c.body}\`` : `\`${c.message}\``;
+// 回话 data 里要给的提交信息：工单源没有类型表就只要 summary
+function commitData() {
+  const types = commitTypes();
+  const summary = 'summary 是写进提交标题的一句话：中文、30 字以内、不带句号、不写工单号（例：背包改为按品质排序）';
+  return types.length
+    ? `\`{"type": "…", "summary": "…"}\`——type 从 ${types.join(' / ')} 里选一个；${summary}`
+    : `\`{"summary": "…"}\`——${summary}`;
 }
 
 function devPrompt(t, root, reply) {
-  return render('dev', { cwd: root, ticket: t.file, reply, commit: commitText(t, 'dev') });
+  return render('dev', { cwd: root, ticket: t.file, reply, commitData: commitData() });
 }
 
 function reviewPrompt(t, root, changed, reply) {
@@ -343,7 +435,7 @@ function reviewPrompt(t, root, changed, reply) {
     reply,
     changed: changed.map((f) => `- ${f}`).join('\n'),
     ticket: t.file,
-    commit: commitText(t, 'review')
+    commitData: commitData()
   });
 }
 
@@ -353,7 +445,6 @@ function fixPrompt(t, root, verify, output, reply) {
     reply,
     verify: Array.isArray(verify) ? verify.join(' ') : verify,
     output: String(output ?? '').split('\n').slice(-60).join('\n'),
-    ticket: t.file,
-    commit: commitText(t, 'fix')
+    ticket: t.file
   });
 }

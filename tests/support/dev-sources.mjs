@@ -12,6 +12,8 @@ const github = {
   id: (key) => String(key),
   ref: (key) => `#${key}`,
   commitPrefix: (key) => `#${key} `,
+  // GitHub 缺省不分类型（COMMIT_TYPES 空），Agent 给了也不用
+  commitSubject: (key, type, summary) => `#${key} ${summary}`,
   async open({ tickets = [], ...opts } = {}) {
     const issues = tickets.map((t) => issue(t.key, {
       title: t.title,
@@ -41,7 +43,8 @@ const tapd = {
   name: 'tapd',
   id: tapdId,
   ref: (key) => `story ${tapdId(key)}`,
-  commitPrefix: (key) => `--story=${tapdId(key)} `,
+  commitPrefix: (key) => `feat:${tapdId(key).slice(-7)} `,
+  commitSubject: (key, type = 'feat', summary) => `${type}:${tapdId(key).slice(-7)} ${summary}`,
   async open({ tickets = [], ...opts } = {}) {
     const s = setup({ source: 'tapd', ...opts });
     s.tapdFile = path.join(s.base, 'tapd-state.json');

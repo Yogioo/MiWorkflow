@@ -87,6 +87,7 @@ MiWorkflow/
 | `miworkflow --version` / `miworkflow -v` | 打印内核 `package.json` 的 `version`（不写死）到 stdout，退出 0 |
 | `miworkflow --help` / `miworkflow -h` | 打印用法（USAGE）到 stdout，退出 0；不带任何参数时 USAGE 打到 stderr、退出 1 |
 | `miworkflow init [--template <名字>]` | 建 `.workflow/`：`tasks/`、`scripts/`、`.gitignore`、`AGENTS.md`，并往项目根的 `AGENTS.md` 追加一段 AI 入口（没有就建、有就追加、已含就不动）。建在 git 仓库根，不在仓库里就建在当前目录。终端里有模板可选时让人选（**空白** = 只建目录，或 `templates/` 下的某个工单源；选了就先复制共用的 `templates/_shared/` 再复制它，§15）；非终端缺省空白。已存在 `.workflow/` 时只补缺的文件，**已有的文件一个不覆盖**，跳过的列出来 |
+| `miworkflow init --upgrade [--template <名字>]` | 把模板新版铺回已有的 `.workflow/`（§15）：模板里的文件覆盖、缺的补上；`config.mjs` / `source.mjs` 以模板新版为底、保留项目里一行写完的 `export const`；项目自己的文件、`AGENTS.md`、`.gitignore` 不碰；改动过的旧文件备份到 `logs/upgrade-<时间>/`。不给 `--template` 就认 `.workflow/` 里文件齐全的那个模板 |
 | `miworkflow new <name>` | 建 `tasks/<name>.mjs` 骨架（`title` + 传参的 `default`），不覆盖已有；没有 `.workflow/` 就报错，提示先 `init` |
 | `miworkflow <task> [--key value]` | 跑任务 |
 | `miworkflow <task> --every <间隔> [--key value]` | 常驻循环跑：间隔 `30s` / `5m` / `1h`，必须显式给值，缺值或格式不对报错退出、不起 run。外层循环不是 run（不写日志、不拿锁）；每一轮起一个子进程当全新的 run（新 runId，不继承 `AGENTFLOW_RUN_ID`），其余参数原样传；间隔从上一轮结束算，不会自己重叠；某轮非 0 退出只在终端记下退出码，循环继续；另一个终端在跑同一任务时由按任务锁挡住，该轮跳过。Ctrl+C 不特殊处理，连同正在跑的 run 一起结束。纯 Node，三平台一致；一个命令一个任务，多个任务开多个终端；viewer 的「运行」不提供 |
@@ -741,7 +742,11 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 正式内容在业务仓库的 HOME 里由使用中沉淀。
 
 **模板**：`templates/<名字>/` 是一份完整的 HOME 片段（`tasks/`、`scripts/`、配置常量），**只在 `init` 时复制**，
-不默认加载 —— 跟 §16「不内置具体任务 / 脚本」不冲突。复制过去就归项目所有，在项目里各自演进，**不回头同步**。
+不默认加载 —— 跟 §16「不内置具体任务 / 脚本」不冲突。模板的 bug 与契约只在内核仓库里改、带测试；
+已经 `init` 过的项目用 `miworkflow init --upgrade` 跟上（2026-09-30 起；此前是「复制过去各自演进、不回头同步」，
+结果同一个 bug 要在两处各修一遍）。归项目的只有配置：`config.mjs`、`source.mjs` 里一行写完的 `export const`
+（升级时原样保留）、`prompts/local/<dev|review|fix>.md`（项目对各 Agent 的补充要求，接到对应提示词的 `{{local}}` 处），
+以及项目自己加的任务 / 脚本；想改模板行为就把它做成一行常量或补充要求，别直接改模板文件，下次升级会被覆盖（有备份）。
 模板的测试留在内核仓库的 `tests/template-*.test.mjs`（假外部命令 / 假 Agent / 临时 git 仓库），保证复制出去的那一刻是好的。`init` 按组合复制：先复制共用模板 `templates/_shared/`（开发任务 `dev`、开发提示词 `prompts/dev|review|fix.md`、git 脚本、`run_cmd`、`config.mjs`），再复制所选工单源；以 `_` 开头的目录不出现在模板菜单与 `--template` 里。
 
 工单源的约定就是三个脚本名 + 输入输出（不做抽象层，TODO F2）；`dev` 只调它们，不知道背后是哪家。工单号一律字符串，日志 / 评论 / 提问里用工单引用 `ref`：
@@ -750,14 +755,18 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 |---|---|---|
 | `ticket_ready` | `{}` | `{ ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] }`（已排序：优先级 → 工单号） |
 | `ticket_view` | `{ id }` | `{ id, ref, title, file }`：写出**工单快照** |
-| `ticket_mark` | `{ id, action, commentFile?, comment?, sha? }` | `action` = `claimed` / `done` / `failed` / `unpushed` / `released`（Agent 连接失败：摘认领、不贴失败、保留入队，下轮重做） |
+| `ticket_mark` | `{ id, action, commentFile?, comment?, sha? }` | `action` = `claimed` / `done` / `failed` / `unpushed` / `released`（Agent 连接失败：摘认领、不贴失败、保留入队，下轮重做）；评论由调用方给整段（`comment` 在前、`commentFile` 在后，原样发），两样都没给才用一句缺省 |
 
 三个脚本失败时，若是**工单系统暂时不可用**（5xx、网络、限流，脚本内已退避重试用完），出参 `data` 带 `transient: true`；`dev` 据此整轮停下、不计入失败、不回滚已推送的代码。其他失败不带。
 
 - **工单快照**（读）：正文 + 全部评论转成 Markdown，写到 `logs/<runId>/tickets/<id>/ticket.md`，图片下到同目录 `images/`、相对路径引用；Agent 的 `inputs` 只给路径，自己读。
-- **回帖稿**（写）：`dev` 每次调 Agent 前分配 `logs/<runId>/tickets/<id>/reply-<n>.md`；Agent 有话对人说就写进去（图片放同目录、相对路径），`ticket_mark` 收 `commentFile` 传图发评论；没写就退回一句话的 `comment`。
+- **回帖稿**（写）：`dev` 每次调 Agent 前分配 `logs/<runId>/tickets/<id>/reply-<n>.md`，提示词要求**必写**（写给没看过过程的人：做了什么、关键取舍、怎么验证的、遗留风险；图片放同目录、相对路径）。
+  失败时 `afk failed：<完整原因>` + 那次的回帖稿；完成 / 未推送时 `dev` 把各份回帖稿（没写就用 Agent 回话的 `reason`）拼起来，
+  再补一段工作流落款（改了哪些文件、审查、验证、提交号），写成同目录的 `comment.md` 交给 `ticket_mark` 的 `commentFile`。
+- **提交**：Agent 不提交，只在回话 `data` 里给 `type`（从 `source.mjs` 的 `COMMIT_TYPES` 选）和 `summary`；审查、验证、`--confirm` 之后由 `dev` 统一提交，
+  一张工单一笔（`git_commit` 收 `baseSha`，Agent 自己做的提交先 `reset --soft` 压进来）；提交后回读，标题被钩子改了或带 AI 署名（`Co-authored-by` / `Made-with` 等）判失败回滚。
 - **机器标签**（名字在各工单源的 `source.mjs`，可改）：入队 `ready-for-agent`；`afk-claimed`（认领中）/ `afk-delivered`（已交付）/ `afk-failed`（失败）。依赖满足 = 前置单贴了 `afk-delivered` 或已关单（TAPD：已到结束类状态）。
-- 每个工单源带 `source.mjs`：这家的常量 + `commitMessage(ticket, kind)`；共用的 `config.mjs` 只留 `DEV / REVIEWER / VERIFY / ROUNDS / PUSH`。
+- 每个工单源带 `source.mjs`：这家的常量 + `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY` + `commitMessage(ticket, { type, summary })`；共用的 `config.mjs` 只留 `DEV / REVIEWER / VERIFY / ROUNDS / PUSH`。
 
 已实现的工单源：
 `templates/github/` = GitHub（`ticket_*` 脚本、`source.mjs`、讨论流程 `github_discuss` 与 `gh_*` 脚本；配合 `dev`：认领 issue → 开发 → 审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`，见 TODO C3、F2）。
@@ -772,9 +781,10 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
   （结束类状态先按工作流 `workflows/last_steps` 取，取不到退回 `source.mjs` 的 `END_STATUSES`），不认识的前置当挡住。
 - `ticket_view`：描述与评论 HTML 转完整 Markdown，图片经 `attachment get-image` 下载、按魔数定扩展名。
 - `ticket_mark`：标签多值用 `|` 分隔，写完回读校验；评论要评论人（`COMMENTER` / `TAPD_NPC_ROLE`），缺了在改标签之前报错；
-  回帖稿的图逐张 `upload-image` 换成 TAPD 图片地址再 `comment add`，发完经 OpenAPI 回读。`done` **不关单**：只贴 `afk-delivered`，状态由人验收后流转。
-- `source.mjs`：`WORKSPACE_ID`、`COMMENTER`、`LABELS`、`END_STATUSES`、`PRIORITY`；`ref` 为 `story <需求ID>`；`commitMessage` 先按
-  `--story=<需求ID> --user=<评论人> <标题>`（源码关联写法待真项目实测）。
+  回帖稿的图逐张 `upload-image` 换成 TAPD 图片地址再 `comment add`，发完经 OpenAPI 回读（`tapd-cli comment add` 出 `{ ok, id }`；
+  `id` 为空时按创建时间倒序找评论人最新的一条）。`done` **不关单**：只贴 `afk-delivered`，状态由人验收后流转。
+- `source.mjs`：`WORKSPACE_ID`、`COMMENTER`、`LABELS`、`END_STATUSES`、`PRIORITY`；`ref` 为 `story <需求ID>`；
+  提交信息缺省 `{type}:{short} {summary}`（`short` = 需求 ID 后 7 位，即 TAPD 界面上的短号），要源码关联可改成 `--story={short} {summary}`。
 
 ---
 

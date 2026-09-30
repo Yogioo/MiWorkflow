@@ -94,7 +94,8 @@ miworkflow init --template github      # 复制模板（已有文件一个不覆
 miworkflow dev                         # 把就绪 issue 逐个做完
 miworkflow dev --issue 42              # 只做 #42（不看标签和依赖，人点名就跑）
 miworkflow dev --max 3                 # 最多 3 个；--max-failures 1 连续失败就停
-miworkflow dev --confirm               # 每次发布（推送 + 关单）前 human 确认；--dry-run 只报会做什么
+miworkflow dev --confirm               # 每次提交（+ 推送 + 关单）前 human 确认；--dry-run 只报会做什么
+miworkflow init --upgrade              # 内核模板更新后跟上（项目配置保留，旧文件有备份）
 ```
 
 issue 约定（机器标签名在 `source.mjs` 的 `LABELS` 里可改；仓库里没有时脚本第一次贴会先建）：
@@ -104,10 +105,16 @@ issue 约定（机器标签名在 `source.mjs` 的 `LABELS` 里可改；仓库�
 - 依赖：正文里 `- [ ] #123` 表示被 #123 挡着，勾上、#123 关掉或贴了 `afk-delivered` 就算满足
 
 每个 issue 走：认领（贴 `afk-claimed`）→ Agent 开发 → Agent 审查（有问题直接改）→ 验证（`VERIFY` 配了才跑）→
-提交（默认推送，正文带 `Closes #N`）→ 关单 + 贴 `afk-delivered`、摘 `ready-for-agent` / `afk-claimed`。失败就 `git reset --hard` + `clean -fd` 回滚，
-摘 `afk-claimed`、贴 `afk-failed` + 评论原因，保留 `ready-for-agent`（人摘掉 `afk-failed` 就重新入队）。
+工作流提交（默认推送，正文带 `Closes #N`）→ 关单 + 贴 `afk-delivered`、摘 `ready-for-agent` / `afk-claimed`。失败就 `git reset --hard` + `clean -fd` 回滚，
+摘 `afk-claimed`、贴 `afk-failed` + 评论完整原因，保留 `ready-for-agent`（人摘掉 `afk-failed` 就重新入队）。
 推送失败不关单、整轮停下，本地提交保留，留给人处理。`PUSH = false`（只本地提交）同款语义：
-没发布就不算做完——评论注明「本地提交（未推送）：<sha>」、不关单、保留 `afk-claimed`、整轮停下。
+没发布就不算做完——评论注明本地提交未推送、不关单、保留 `afk-claimed`、整轮停下。
+
+**提交归工作流**：Agent 只改代码，在回话里给一句话 `summary`（`COMMIT_TYPES` 非空时再给 `type`）；审查、验证、`--confirm` 之后由 `dev` 统一提交，
+一张工单一笔，格式按 `source.mjs` 的 `COMMIT_FORMAT` / `COMMIT_BODY`。Agent 不听话自己提交了也会被压成这一笔；
+提交后回读，标题被 git 钩子改了或带 AI 署名（`Co-authored-by` / `Made-with` 等）就判失败回滚。
+
+**完成评论**：开头一句（提交号、推没推）+ 开发、审查各自的回帖稿（没写就用它回话的 `reason`）+ 工作流落款（改了哪些文件、审查、验证结果、提交标题）。
 
 失败分两类：
 
@@ -124,7 +131,7 @@ issue 约定（机器标签名在 `source.mjs` 的 `LABELS` 里可改；仓库�
 
 Agent 不直接碰 GitHub：认领 / 读单 / 标记全由 `.workflow/scripts/` 里的 `ticket_ready` / `ticket_view` / `ticket_mark` 做。
 读单读的是**工单快照**（正文 + 全部评论转成的 Markdown，图片下到旁边，在 `.workflow/logs/<runId>/tickets/<id>/`）；
-Agent 要对人说的话（提问、不改的理由、失败原因）写进**回帖稿**（同目录的 `reply-<n>.md`，可带图），由脚本发成评论。
+Agent 每次都要写**回帖稿**（同目录的 `reply-<n>.md`，可带图）：做了什么、关键取舍、怎么验证的、遗留风险，提问和失败原因也写这里，由脚本发成评论。
 回帖稿带图时靠 `gh issue comment --attach` 上传，要 `gh` ≥ 2.99.0；版本不够只是图不上传（评论里留占位并提示升级），评论照发。
 
 ### 讨论单：先把需求问清楚
@@ -139,9 +146,12 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
   之后的评论（或再次 `/spec`）都是修改意见，AI 只重写那一段。spec 区域不算「人的内容」，AI 写 spec 不会触发它自己；spec 不贴 `ready-for-agent`
 - 追问的 Agent 由 `source.mjs` 的 `DISCUSS` 指定
 
-改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `VERIFY` / `ROUNDS` / `PUSH`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `commitMessage`）；
-开发 / 审查 / 验证修正的提示词在 `.workflow/prompts/dev.md` / `review.md` / `fix.md`；
-模板复制出去后归项目所有，各自演进，不回头同步内核。
+改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `VERIFY` / `ROUNDS` / `PUSH`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY`）；
+开发 / 审查 / 验证修正的提示词在 `.workflow/prompts/dev.md` / `review.md` / `fix.md`（模板文件，升级会覆盖）；
+项目自己的要求（比如回帖稿按什么角度写）写进 `.workflow/prompts/local/dev.md` / `review.md` / `fix.md`，各接到对应 Agent 的提示词里，升级不碰。
+
+模板更新后，已经 init 过的项目跑 `miworkflow init --upgrade` 跟上：模板文件覆盖，`config.mjs` / `source.mjs` 里一行写完的 `export const` 保留项目的值，
+项目自己加的任务不碰，改动过的旧文件备份到 `.workflow/logs/upgrade-<时间>/`。所以项目要定制的东西尽量写成这两个文件里的一行常量，别直接改模板文件。
 
 ## 开箱即用：TAPD 开发
 
@@ -167,7 +177,8 @@ miworkflow dev                         # 把就绪需求逐个做完；--issue <
 - 依赖：TAPD 原生前后置关系；前置需求贴了 `afk-delivered` 或已到结束类状态（先按项目工作流取，取不到退回 `source.mjs` 的 `END_STATUSES`）才算满足；
   不认识的前置（缺陷、别的项目、已删除、查不到）当挡住，原因写进 `blocked`，由人解开
 - 空壳拒单：描述与评论都空的需求不做，贴 `afk-failed` + 评论请人补充（`--dry-run` 只报不改）
-- 工单引用写成 `story <需求ID>`；提交信息按 `source.mjs` 的 `commitMessage`（先用 `--story=<需求ID> --user=<评论人> <标题>`，源码关联写法待实测）
+- 工单引用写成 `story <需求ID>`；提交信息按 `source.mjs` 的 `COMMIT_FORMAT`，缺省 `{type}:{short} {summary}`（如 `feat:1004854 背包按品质排序`，
+  `short` 是需求 ID 后 7 位即界面上的短号），类型表 `COMMIT_TYPES`；要 TAPD 源码关联可改成 `--story={short} {summary}`
 
 **完成不关单**：做完贴 `afk-delivered`、摘 `afk-claimed`、发评论（`ready-for-agent` 留着，有机器标签就不再入队），需求状态不动——人验收后自己在 TAPD 里流转状态。
 失败、未推送的处理与 GitHub 相同（失败保留 `ready-for-agent`、贴 `afk-failed`；未推送保留 `afk-claimed`、评论注明本地提交）；

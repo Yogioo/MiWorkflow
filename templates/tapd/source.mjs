@@ -1,6 +1,7 @@
 // TAPD 工单源的常量。init 复制进 .workflow/ 后归项目所有，直接改这里。
 // 共用常量（DEV / REVIEWER / VERIFY / ROUNDS / PUSH）在 config.mjs。
-// 每个工单源的 source.mjs 都要导出 commitMessage(ticket, kind)，开发任务靠它拼提交信息。
+// 每个工单源的 source.mjs 都要导出 COMMIT_TYPES 与 commitMessage(ticket, { type, summary })，开发任务靠它拼提交信息。
+// miworkflow init --upgrade 会保留这里「一行写完的 export const」，所以项目要改的值都写成一行。
 
 // TAPD 项目 ID（URL 里 tapd.cn/<这串数字>/…）。
 export const WORKSPACE_ID = '';
@@ -35,15 +36,16 @@ export const TAPD_RETRY_DELAYS = [5_000, 20_000, 60_000];
 // 且不像 GitHub 的 #N 那样一看就知道是哪家，所以带上类型前缀 `story <需求ID>`。
 export const refOf = (id) => `story ${id}`;
 
-// 提交信息：kind 为 dev（开发 / 工作流兜底提交）、review（审查修正）、fix（验证不过修正）。
-// 出 { message, body? }；<一句话> 原样交给 Agent 自己填。
-// TAPD 源码关联写法待实测：先按 `--story=<需求ID> --user=<评论人> <标题>`。
-const storyPrefix = (ticket) =>
-  [`--story=${ticket.id}`, COMMENTER ? `--user=${COMMENTER}` : ''].filter(Boolean).join(' ');
+// 提交：Agent 不提交，工作流在审查、验证之后统一提交，一张工单一笔（Agent 自己提交了也会被压成这一笔）。
+// Agent 在回话 data 里给 type（从 COMMIT_TYPES 里选）和 summary（一句话）；给错或没给，type 取第一个、summary 取工单标题。
+// COMMIT_FORMAT / COMMIT_BODY 的占位：{type}、{short}（TAPD 界面上的 7 位短号）、{id}（完整需求 ID）、{summary}、{title}。
+// 要 TAPD 源码关联识别，可写成 '--story={short} {summary}'。COMMIT_BODY 空 = 不写正文。
+export const COMMIT_TYPES = ['feat', 'fix', 'refactor', 'perf', 'style', 'docs', 'test', 'chore'];
+export const COMMIT_FORMAT = '{type}:{short} {summary}';
+export const COMMIT_BODY = '';
 
-export function commitMessage(ticket, kind) {
-  if (kind === 'dev') return { message: `${storyPrefix(ticket)} ${ticket.title}` };
-  if (kind === 'review') return { message: `${storyPrefix(ticket)} 审查修正：<一句话>` };
-  if (kind === 'fix') return { message: `${storyPrefix(ticket)} 验证不过修正：<一句话>` };
-  throw new Error(`commitMessage 不认 kind：${kind}`);
+export function commitMessage(ticket, { type = '', summary = '' } = {}) {
+  const vars = { type, short: String(ticket.id).slice(-7), id: ticket.id, summary, title: ticket.title };
+  const fill = (tpl) => tpl.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
+  return { message: fill(COMMIT_FORMAT), ...(COMMIT_BODY ? { body: fill(COMMIT_BODY) } : {}) };
 }

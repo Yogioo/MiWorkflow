@@ -4,8 +4,9 @@
 // released（Agent 连接失败）撤 claimed、不贴 failed、保留 ready，下轮自动重做。
 // 标签多值用 | 分隔（写逗号不报错，TAPD 会把整串建成一个新标签），每次写完经 `story list` 回读，不对就判失败。
 // 要发评论却缺评论人时，在动标签之前就报错。
-// 入：{ id, action, commentFile?, comment?, sha?, dryRun? }；commentFile 是回帖稿（跟在那句话后面发，
-// 其中引用的本地图片逐张 `attachment upload-image`，引用换成线上地址，见文件末尾）；没有回帖稿时只发 comment 那句话
+// 评论正文由调用方给整段：comment 在前、commentFile（回帖稿）在后，原样发；两样都没给才用 DEFAULT_COMMENT 的一句话。
+// 回帖稿里引用的本地图片逐张 `attachment upload-image`，引用换成线上地址（见文件末尾）。claimed 不发评论。
+// 入：{ id, action, commentFile?, comment?, sha?, dryRun? }
 // 出：{ status, say, data: { id, ref, did: string[] } }，id 为字符串
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -20,6 +21,13 @@ const isLocal = (p) => !/^(?:[a-z][a-z0-9+.-]*:|\/\/|\/|#)/i.test(p);
 const labelsOf = (s) => String(s?.label ?? '').split('|').map((l) => l.trim()).filter(Boolean);
 const altOf = (tag) => (/\balt\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1] ?? '').replace(/[[\]]/g, '');
 
+const DEFAULT_COMMENT = {
+  done: (a) => `提交：${a.sha || '(未记录)'}`,
+  unpushed: (a) => `本地提交（未推送）：${a.sha || '(未记录)'}`,
+  failed: () => 'afk failed',
+  released: () => 'Agent 连接失败，已回滚并释放，下轮重做'
+};
+
 await main(async () => {
   const args = await readStdin();
   const { action } = args;
@@ -29,26 +37,25 @@ await main(async () => {
 
   let add = [];
   let remove = [];
-  let head = null;
   if (action === 'claimed') {
     add = [LABELS.claimed];
   } else if (action === 'done') {
     add = [LABELS.delivered];
     remove = [LABELS.claimed];
-    head = `提交：${args.sha || '(未记录)'}`;
   } else if (action === 'unpushed') {
-    head = `本地提交（未推送）：${args.sha || '(未记录)'}`;
+    // 只评论、保留 claimed
   } else if (action === 'failed') {
     add = [LABELS.failed];
     remove = [LABELS.claimed];
-    head = `afk failed：${String(args.comment ?? '').slice(0, 900)}`;
   } else if (action === 'released') {
     remove = [LABELS.claimed];
-    head = `Agent 连接失败，已回滚并释放，下轮重做：${String(args.comment ?? '').slice(0, 900)}`;
   } else {
     throw new Error(`不认识的 action：${action}（claimed / done / unpushed / failed / released）`);
   }
-  if (head !== null && !COMMENTER && !args.dryRun) {
+  const posts = action !== 'claimed';
+  const reply = posts && args.commentFile ? readReply(args.commentFile) : null;
+  const head = posts ? String(args.comment ?? '').trim() || (reply ? '' : DEFAULT_COMMENT[action](args)) : null;
+  if (posts && !COMMENTER && !args.dryRun) {
     throw new Error('缺评论人：设 TAPD_NPC_ROLE 或 source.mjs 的 COMMENTER（在改标签之前报错，工单未被改动）');
   }
 
@@ -58,12 +65,11 @@ await main(async () => {
   const current = labelsOf(before);
   const want = [...current.filter((l) => !remove.includes(l)), ...add.filter((l) => !current.includes(l))];
   const changed = want.join('|') !== current.join('|');
-  const reply = head !== null && args.commentFile ? readReply(args.commentFile) : null;
 
   const did = [];
   if (changed) did.push(`story update id=${id} label=${want.join('|')}`);
   if (reply) for (const p of reply.refs) did.push(`attachment upload-image ${p}`);
-  if (head !== null) did.push(`comment add entry_id=${id}（${reply ? '一句话 + 回帖稿' : '一句话'}）`);
+  if (posts) did.push(`comment add entry_id=${id}（${[head && '一段话', reply && '回帖稿'].filter(Boolean).join(' + ')}）`);
 
   if (args.dryRun) {
     emit({ status: 'ok', say: `干跑：会执行 ${did.length} 步（${action} ${ref}）`, data: { id, ref, did } });
@@ -79,17 +85,18 @@ await main(async () => {
   }
 
   let warn = '';
-  if (head !== null) {
-    let body = head;
+  if (posts) {
+    let text = '';
     let uploaded = 0;
     if (reply) {
       const up = uploadImages(reply, wsArg);
-      body = `${head}\n\n${up.text}`;
+      text = up.text;
       uploaded = up.uploaded;
       if (up.dropped.length) warn = `回帖稿有 ${up.dropped.length} 张图片未上传：${up.dropped.join('、')}`;
     }
+    const body = hardBreaks([head, text.trim()].filter(Boolean).join('\n\n'));
     const r = tapdJson(['comment', 'add', 'entry_type=stories', `entry_id=${id}`, `description=${body}`, `author=${COMMENTER}`, ...wsArg]);
-    await verifyComment(workspace, id, String(r.data?.Comment?.id ?? ''), body, uploaded);
+    await verifyComment(workspace, id, String(r.id ?? r.data?.Comment?.id ?? ''), body, uploaded);
   }
 
   const label = { claimed: '认领', done: '标记完成（不关单）', unpushed: '记录未推送', failed: '标记失败', released: '释放（下轮重做）' }[action];
@@ -104,19 +111,35 @@ function readStory(id) {
 }
 
 // 发完经 OpenAPI 回读（`tapd-cli comment list` 会剥 HTML，数不了图）：评论在、没有字面量 \n、图片数量对得上。
-// 按评论 id 查：/comments 默认只给一页，老单评论多时新评论不在第一页
+// 按评论 id 查：/comments 默认只给一页，老单评论多时新评论不在第一页。
+// tapd-cli 出的 id 取自接口的 data.Comment.id，接口没给时是 null（2026-09-30 实遇：评论其实发成功了）：
+// 那就按创建时间倒序取这张单上评论人最新的一条
 async function verifyComment(workspace, id, commentId, body, uploaded) {
-  if (!commentId) throw new Error(`${refOf(id)} comment add 没回评论 id，无法回读`);
-  const r = await openApi('/comments', { query: { workspace_id: workspace || undefined, id: commentId, entry_type: 'stories', entry_id: id } });
+  const base = { workspace_id: workspace || undefined, entry_type: 'stories', entry_id: id };
+  const r = await openApi('/comments', { query: commentId ? { ...base, id: commentId } : { ...base, order: 'created desc', limit: 10 } });
   const rows = (Array.isArray(r.data) ? r.data : []).map((x) => x?.Comment).filter(Boolean);
-  const c = rows.find((x) => String(x.id) === commentId);
-  if (!c) throw new Error(`${refOf(id)} 评论发出后回读不到（评论 ${commentId}）`);
+  const c = commentId ? rows.find((x) => String(x.id) === commentId) : rows.find((x) => x.author === COMMENTER);
+  if (!c) throw new Error(`${refOf(id)} 评论发出后回读不到（${commentId ? `评论 ${commentId}` : `comment add 没回评论 id，也没找到 ${COMMENTER} 的新评论`}）`);
   const text = String(c.description ?? '');
   if (text.includes('\\n') && !body.includes('\\n')) throw new Error(`${refOf(id)} 评论回读出现字面量 \\n（换行被转义了）`);
   const count = (s) => [...s.matchAll(/<img\b|!\[[^\]]*\]\(/gi)].length;
   const images = count(text);
   const expected = count(body);
   if (images !== expected) throw new Error(`${refOf(id)} 评论回读图片 ${images} 张，应为 ${expected} 张（上传 ${uploaded} 张）`);
+}
+
+// tapd-cli 转 HTML 时单个换行并进同一段（2026-09-30 实遇：四行说明挤成一坨）：
+// 下一行还是普通文字时行末补两个空格变成 <br>；代码块里、表格行、下一行是列表 / 引用 / 标题 / 表格 / 代码块时不动
+function hardBreaks(text) {
+  const BLOCK_START = /^\s*(?:[-*+]\s|\d+[.)]\s|>|#{1,6}\s|\||```|~~~)/;
+  let fence = false;
+  const lines = text.split('\n');
+  return lines.map((line, i) => {
+    if (/^\s*(?:```|~~~)/.test(line)) { fence = !fence; return line; }
+    const next = lines[i + 1];
+    if (fence || !line.trim() || !next?.trim() || /^\s*\|/.test(line) || BLOCK_START.test(next)) return line;
+    return `${line.replace(/\s+$/, '')}  `;
+  }).join('\n');
 }
 
 // 回帖稿：Agent 写的 Markdown，图片放同目录、用相对路径引用。没写（文件不在或是空的）就返回 null，退回一句话评论。

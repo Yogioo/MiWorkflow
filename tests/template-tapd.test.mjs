@@ -28,7 +28,8 @@ test('runTapd：MIWORKFLOW_TAPD 生效，参数不经 shell 原样传过去', ()
   useEnv(tapdEnv(f));
   const weird = 'description=a & echo pwned | more "q" %PATH% $HOME `x`\n第二行';
   const r = tapdJson(['comment', 'add', 'entry_type=stories', 'entry_id=7', weird]);
-  assert.equal(r.data.Comment.description, weird.slice('description='.length));
+  assert.equal(r.ok, true);
+  assert.equal(readTapdState(f).comments[0].description, weird.slice('description='.length));
   assert.deepEqual(readTapdState(f).calls, [['comment', 'add', 'entry_type=stories', 'entry_id=7', weird]]);
 });
 
@@ -37,7 +38,7 @@ test('tapdJson：comment add 的 JSON 后面多一行也能解析', () => {
   useEnv(tapdEnv(f));
   const raw = runTapd(['comment', 'add', 'entry_type=stories', 'entry_id=1', 'description=hi']);
   assert.match(raw, /已写入/);
-  assert.equal(tapdJson(['comment', 'add', 'entry_type=stories', 'entry_id=1', 'description=hi']).status, 1);
+  assert.deepEqual(tapdJson(['comment', 'add', 'entry_type=stories', 'entry_id=1', 'description=hi']), { ok: true, id: '2' });
 });
 
 test('firstJson：只取第一段，字符串里的括号不算', () => {
@@ -131,11 +132,10 @@ test('source.mjs：优先级映射与提交信息', async () => {
   delete process.env.TAPD_NPC_ROLE;
   assert.deepEqual(['高', '中', '', '低', '紧急', undefined].map(src.priorityOf), [1, 2, 2, 3, 2, 2]);
   assert.deepEqual(Object.values(src.LABELS), ['ready-for-agent', 'afk-claimed', 'afk-delivered', 'afk-failed']);
-  const t = { id: '1001', ref: '1001', title: '做个按钮' };
-  assert.equal(src.commitMessage(t, 'dev').message, '--story=1001 --user=bot-npc 做个按钮');
-  assert.equal(src.commitMessage(t, 'review').message, '--story=1001 --user=bot-npc 审查修正：<一句话>');
-  assert.equal(src.commitMessage(t, 'fix').message, '--story=1001 --user=bot-npc 验证不过修正：<一句话>');
-  assert.throws(() => src.commitMessage(t, 'x'), /不认 kind/);
+  const t = { id: '1152360842001004854', ref: 'story 1152360842001004854', title: '做个按钮' };
+  assert.deepEqual(src.commitMessage(t, { type: 'fix', summary: '按钮换色' }), { message: 'fix:1004854 按钮换色' }, '7 位短号、没有正文');
+  assert.ok(src.COMMIT_TYPES.includes('feat') && src.COMMIT_TYPES.includes('fix'));
+  assert.doesNotMatch(src.commitMessage(t, { type: 'feat', summary: 'x' }).message, /--story|--user|1152360842/);
 });
 
 const HOME = path.join(TMP, 'home');
@@ -422,16 +422,17 @@ async function withMark(label, fn, patch) {
   }
 }
 
-test('ticket_mark：四种 action 的标签变化，| 分隔；done 不改状态与处理人；出参形状同 GitHub', async () => {
+test('ticket_mark：四种 action 的标签变化，| 分隔；done 不改状态与处理人；出参形状同 GitHub；comment 原样发', async () => {
+  const long = `afk failed：${'很长的原因'.repeat(300)}`;
   const cases = [
-    ['claimed', 'ready-for-agent', 'ready-for-agent|afk-claimed', null],
-    ['done', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-delivered', '提交：abc123'],
-    ['failed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-failed', 'afk failed：测试没过'],
-    ['unpushed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-claimed', '本地提交（未推送）：abc123']
+    ['claimed', 'ready-for-agent', 'ready-for-agent|afk-claimed', {}, null],
+    ['done', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-delivered', {}, '提交：abc123'],
+    ['failed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-failed', { comment: long }, long],
+    ['unpushed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-claimed', {}, '本地提交（未推送）：abc123']
   ];
-  for (const [action, from, to, comment] of cases) {
+  for (const [action, from, to, input, comment] of cases) {
     await withMark(from, async (mark, f) => {
-      const { out } = mark({ action, sha: 'abc123', comment: '测试没过' });
+      const { out } = mark({ action, sha: 'abc123', ...input });
       assert.equal(out.status, 'ok', `${action}：${out.say}`);
       assert.deepEqual(Object.keys(out.data).sort(), ['did', 'id', 'ref']);
       assert.equal(out.data.id, SID);
@@ -477,6 +478,13 @@ test('ticket_mark：回读不一致判失败；缺评论人时标签未被改动
   }, { comments: old });
 
   await withMark('ready-for-agent|afk-claimed', (mark, f) => {
+    const { out } = mark({ action: 'done', sha: 'abc' });
+    assert.equal(out.status, 'ok', `comment add 没回 id 也能按评论人回读到：${out.say}`);
+    assert.equal(readTapdState(f).comments.at(-1).description, '提交：abc');
+    assert.ok(openApiLog(f).some((l) => /order=created(\+|%20)desc/.test(l.url)), '没 id 时按创建时间倒序查');
+  }, { noCommentId: true, comments: old });
+
+  await withMark('ready-for-agent|afk-claimed', (mark, f) => {
     const { out } = mark({ action: 'done', sha: 'abc', dryRun: true });
     assert.equal(out.status, 'ok');
     assert.match(out.say, /干跑/);
@@ -496,7 +504,7 @@ test('ticket_mark：回帖稿传图替换引用、保留 alt；不支持的格�
   writeFileSync(reply, '## 为什么失败\n\n- 第一行\n- 第二行\n\n![红色 截图](images/a.png)\n\n![](images/b.webp)\n');
 
   await withMark('ready-for-agent|afk-claimed', (mark, f) => {
-    const { out, stderr } = mark({ action: 'failed', comment: '做不成', commentFile: reply });
+    const { out, stderr } = mark({ action: 'failed', comment: 'afk failed：做不成', commentFile: reply });
     assert.equal(out.status, 'ok', out.say);
     assert.match(out.say, /未上传/);
     assert.match(stderr, /b\.webp/);
@@ -520,8 +528,24 @@ test('ticket_mark：回帖稿传图替换引用、保留 alt；不支持的格�
   }, { escapeNewlines: true });
 
   await withMark('ready-for-agent|afk-claimed', (mark, f) => {
-    const { out } = mark({ action: 'failed', comment: '只有一句', commentFile: path.join(dir, 'none.md') });
+    const { out } = mark({ action: 'failed', comment: 'afk failed：只有一句', commentFile: path.join(dir, 'none.md') });
     assert.equal(out.status, 'ok');
     assert.equal(readTapdState(f).comments[0].description, 'afk failed：只有一句');
+  });
+
+  await withMark('ready-for-agent|afk-claimed', (mark, f) => {
+    const { out } = mark({ action: 'done', sha: 'abc', commentFile: reply });
+    assert.equal(out.status, 'ok', out.say);
+    const c = readTapdState(f).comments[0].description;
+    assert.ok(c.startsWith('## 为什么失败'), `done 也带回帖稿；只给 commentFile 时不加开头：${c}`);
+  });
+
+  const prose = path.join(dir, 'prose.md');
+  writeFileSync(prose, '第一行\n第二行\n\n- 列表一\n- 列表二\n\n```\ncode a\ncode b\n```\n\n| a | b |\n| - | - |\n');
+  await withMark('ready-for-agent|afk-claimed', (mark, f) => {
+    assert.equal(mark({ action: 'done', comment: '开头', commentFile: prose }).out.status, 'ok');
+    assert.equal(readTapdState(f).comments[0].description,
+      '开头\n\n第一行  \n第二行\n\n- 列表一\n- 列表二\n\n```\ncode a\ncode b\n```\n\n| a | b |\n| - | - |', '普通文字的单个换行转硬换行，列表、代码块、表格不动');
+    assert.equal(readTapdState(f).stories[0].label, 'ready-for-agent|afk-delivered');
   });
 });

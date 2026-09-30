@@ -12,12 +12,16 @@ const VERSION = JSON.parse(readFileSync(path.join(KERNEL, 'package.json'), 'utf8
 const TEMPLATES = path.join(KERNEL, 'templates');
 // 工单源模板都先叠上这份共用模板；以 _ 开头的目录不当模板列出
 const SHARED = '_shared';
+// init --upgrade 时归项目所有的配置文件，与其中按行保留的写法
+const PROJECT_FILES = new Set(['config.mjs', 'source.mjs']);
+const ONE_LINE_EXPORT = /^(export const (\w+) = .*;)[ \t]*(?=\r?$)/gm;
 const SKILL = path.join(KERNEL, 'SKILL.md');
 const RESERVED = new Set(['init', 'new', 'view', 'skill']);
 const NAME = /^[A-Za-z0-9_-]+$/;
 const USAGE = [
   'usage:',
   '  miworkflow init [--template <名字>]   在项目里建 .workflow/',
+  '  miworkflow init --upgrade [--template <名字>]   把模板新版铺回已有的 .workflow/（项目配置保留）',
   '  miworkflow new <name>                 建任务骨架 .workflow/tasks/<name>.mjs',
   '  miworkflow view                       起网页：看运行、审批、点运行',
   '  miworkflow skill                      打印写任务的完整说明（给 AI 看）',
@@ -68,7 +72,7 @@ const [cmd, name] = positional;
 if (argv[0] === '--version' || argv[0] === '-v') process.stdout.write(`${VERSION}\n`);
 else if (argv[0] === '--help' || argv[0] === '-h') process.stdout.write(`${USAGE}\n`);
 else if (!cmd) fail(USAGE);
-else if (cmd === 'init') await init(args.template);
+else if (cmd === 'init') await (args.upgrade ? upgrade(args.template) : init(args.template));
 else if (cmd === 'new') newTask(name);
 else if (cmd === 'view') {
   useHome();
@@ -215,6 +219,85 @@ function copyTree(src, dst, home, created, skipped) {
     if (e.isDirectory()) copyTree(from, to, home, created, skipped);
     else place(to, home, created, skipped, (f) => copyFileSync(from, f));
   }
+}
+
+// ── init --upgrade（§15）─────────────────────────────────────────────────
+// 模板改了（修 bug、改契约），已经 init 过的项目靠它跟上，不用两边各改一遍。
+// 模板里的文件直接覆盖；项目配置文件（PROJECT_FILES）以模板新版为底，项目里「一行写完的 export const」原样保留
+// （WORKSPACE_ID、PUSH、COMMIT_FORMAT 这类）。改动过的旧文件先备份到 logs/upgrade-<时间>/。
+// 模板里没有的文件（项目自己写的任务、脚本）不碰；init 生成的 AGENTS.md、.gitignore 不碰。
+async function upgrade(template) {
+  const home = findHome();
+  if (!home || !isDir(home)) fail('找不到 .workflow/（从当前目录一路往上找过了）。先在项目里跑 miworkflow init');
+  const choices = listTemplates();
+  template ??= detectTemplate(home, choices);
+  if (!choices.includes(template)) fail(`没有这个模板：${template}（可选：${choices.join(' / ')}）`);
+
+  const files = new Map();
+  for (const part of [SHARED, template]) listFiles(path.join(TEMPLATES, part)).forEach((rel) => files.set(rel, path.join(TEMPLATES, part, rel)));
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
+  const backup = path.join(home, 'logs', `upgrade-${stamp}`);
+  const lines = [];
+  let same = 0;
+  for (const [rel, src] of files) {
+    const dst = path.join(home, rel);
+    if (!existsSync(dst)) {
+      mkdirSync(path.dirname(dst), { recursive: true });
+      copyFileSync(src, dst);
+      lines.push(`  + ${rel}`);
+      continue;
+    }
+    const cur = readFileSync(dst);
+    let next = readFileSync(src);
+    let note = '已覆盖';
+    if (PROJECT_FILES.has(rel)) {
+      const merged = keepProjectValues(cur.toString('utf8'), next.toString('utf8'));
+      next = Buffer.from(merged.text, 'utf8');
+      note = [
+        '跟模板走',
+        merged.kept.length ? `保留项目的 ${merged.kept.join('、')}` : '',
+        merged.dropped.length ? `模板已没有、丢掉了 ${merged.dropped.join('、')}` : ''
+      ].filter(Boolean).join('，');
+    }
+    if (cur.equals(next)) { same++; continue; }
+    mkdirSync(path.dirname(path.join(backup, rel)), { recursive: true });
+    copyFileSync(dst, path.join(backup, rel));
+    writeFileSync(dst, next);
+    lines.push(`  ~ ${rel}（${note}）`);
+  }
+
+  console.log(`升级 HOME  ${home}（模板：${template}）`);
+  for (const l of lines) console.log(l);
+  console.log(`  = 另有 ${same} 个文件与模板一致，没动`);
+  if (lines.some((l) => l.startsWith('  ~'))) console.log(`改动前的旧文件备份在 ${backup}`);
+}
+
+// 没给 --template 时认：模板的文件在 .workflow/ 里全都在的那一个
+function detectTemplate(home, choices) {
+  const hits = choices.filter((t) => listFiles(path.join(TEMPLATES, t)).every((rel) => existsSync(path.join(home, rel))));
+  if (hits.length !== 1) fail(`认不出 .workflow/ 用的是哪个模板${hits.length ? `（${hits.join(' / ')} 都像）` : ''}，加 --template <名字>`);
+  return hits[0];
+}
+
+function listFiles(dir, prefix = '') {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory()
+    ? listFiles(path.join(dir, e.name), `${prefix}${e.name}/`)
+    : [`${prefix}${e.name}`]));
+}
+
+// 以模板新版为底，同名的一行 export const 换回项目的写法；项目有、模板已经没有的报出来
+function keepProjectValues(cur, next) {
+  const mine = new Map([...cur.matchAll(ONE_LINE_EXPORT)].map((m) => [m[2], m[1]]));
+  const names = new Set([...next.matchAll(/^export (?:const|let|(?:async )?function) (\w+)/gm)].map((m) => m[1]));
+  const kept = [];
+  const text = next.replace(ONE_LINE_EXPORT, (line, whole, name) => {
+    const own = mine.get(name);
+    if (own === undefined || own === whole) return line;
+    kept.push(name);
+    return own;
+  });
+  const dropped = [...mine.keys()].filter((k) => !names.has(k));
+  return { text, kept, dropped };
 }
 
 // 返回值是「项目根 AGENTS.md 怎么处理了」，给 init 拼成一行输出

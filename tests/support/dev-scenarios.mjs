@@ -51,6 +51,64 @@ export function defineDevScenarios(src) {
     for (const c of seen(s)) assert.match(c.ticket, new RegExp(`[\\\\/]tickets[\\\\/]${src.id(1)}[\\\\/]ticket\\.md$`));
   });
 
+  scenario('完成评论：开发、审查的回帖稿 + 工作流落款；提交信息用 Agent 给的类型和一句话', {
+    tickets: [{ key: 1, title: '加个文件', labels: READY }], push: true
+  }, (s, view) => {
+    plan(s, [
+      { choice: 'done', reason: '做完', file: { name: 'note.txt', content: 'hi' }, reply: '新增 note.txt。\n验证：没有运行。', data: { type: 'fix', summary: '补上说明文件。' } },
+      { choice: 'refined', reason: '顺手补了', file: { name: 'extra.txt', content: 'x' }, reply: '审查：补了 extra.txt，没有运行。' }
+    ]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 0, r.stderr);
+    const subject = gitOut(['log', '-1', '--pretty=%s'], s.root);
+    assert.equal(subject, src.commitSubject(1, 'fix', '补上说明文件'));
+    assert.doesNotMatch(gitOut(['log', '-1', '--pretty=%B'], s.root), /Co-authored-by|Made-with/i);
+    const c = view(1).comments.at(-1);
+    const at = (text) => { const i = c.indexOf(text); assert.ok(i >= 0, `评论里没有「${text}」：\n${c}`); return i; };
+    assert.ok(at('已完成') < at('**开发**') && at('**开发**') < at('新增 note.txt') && at('新增 note.txt') < at('**审查**') &&
+      at('**审查**') < at('审查：补了') && at('审查：补了') < at('改动 2 个文件'), c);
+    if (src.name === 'tapd') assert.ok(c.includes('新增 note.txt。  \n验证：没有运行。'), `TAPD 单个换行转硬换行：${c}`);
+    at('`note.txt`');
+    at('`extra.txt`');
+    at('审查者做了修正');
+    at('没配验证命令');
+    at(`${gitOut(['rev-parse', '--short=7', 'HEAD'], s.root)} ${subject}（已推送）`);
+    assert.doesNotMatch(c, /没写回帖稿/);
+  });
+
+  scenario('完成评论：Agent 没写回帖稿 → 用它回话的 reason 兜底；类型不在表里取第一个、没给一句话用标题', {
+    tickets: [{ key: 1, title: '加个文件', labels: READY }], push: true
+  }, (s, view) => {
+    plan(s, [
+      { choice: 'done', reason: '只改了一行字符串拼接，没有编译', file: { name: 'note.txt', content: 'hi' }, data: { type: 'feature' } },
+      { choice: 'clean', reason: '看过没问题，我也没编译' }
+    ]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(gitOut(['log', '-1', '--pretty=%s'], s.root), src.commitSubject(1, undefined, '加个文件'));
+    const c = view(1).comments.at(-1);
+    assert.ok(c.indexOf('**开发**（没写回帖稿，这是它的回话）') < c.indexOf('只改了一行字符串拼接，没有编译'), c);
+    assert.ok(c.indexOf('**审查**（没写回帖稿，这是它的回话）') < c.indexOf('看过没问题，我也没编译'), c);
+    assert.ok(c.indexOf('只改了一行字符串拼接') < c.indexOf('**审查**'), c);
+    assert.ok(c.includes('改动 1 个文件') && c.includes('审查者看过，没有改动'), c);
+  });
+
+  scenario('Agent 不听话自己提交了（开发、审查各一笔）→ 压成工作流的一笔，提交信息照规范重写', {
+    tickets: [{ key: 1, title: '加个文件', labels: READY }], push: true
+  }, (s, view) => {
+    plan(s, [
+      { choice: 'done', reason: '做完', file: { name: 'note.txt', content: 'hi' }, commit: 'wip 随便写的\n\nCo-authored-by: Cursor <cursoragent@cursor.com>' },
+      { choice: 'refined', reason: '改了', file: { name: 'more.txt', content: 'x' }, commit: 'review fix' }
+    ]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 0, r.stderr);
+    assertDelivered(view(1));
+    assert.equal(gitOut(['rev-list', '--count', 'HEAD'], s.root), '2', 'init + 这一笔');
+    assert.equal(gitOut(['log', '-1', '--pretty=%s'], s.root), src.commitSubject(1, undefined, '加个文件'));
+    assert.doesNotMatch(gitOut(['log', '-1', '--pretty=%B'], s.root), /Co-authored-by/);
+    assert.deepEqual(gitOut(['show', '--name-only', '--pretty=', 'HEAD'], s.root).split('\n').sort(), ['more.txt', 'note.txt']);
+  });
+
   scenario('审查拒绝 → 回滚 + afk-failed + 评论', { tickets: [{ key: 1, labels: READY }] }, (s, view) => {
     plan(s, [
       { choice: 'done', reason: '做完', file: { name: 'bad.txt', content: 'x' } },

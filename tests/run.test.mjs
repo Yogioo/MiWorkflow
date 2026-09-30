@@ -353,6 +353,55 @@ test('init --template tapd：共用 + TAPD 两部分都复制进来，不带 Git
   assert.match(bad.stderr, /可选：[^\n]*tapd/, '模板菜单出现 TAPD');
 });
 
+test('init --upgrade：认出模板；模板文件覆盖、缺的补上；项目配置的一行 export const 保留；项目自己的文件不碰；旧文件备份', () => {
+  const dir = tmpDir();
+  assert.equal(cli(['init', '--template', 'tapd'], { cwd: dir }).code, 0);
+  const home = path.join(dir, '.workflow');
+  const edit = (rel, fn) => writeFileSync(path.join(home, rel), fn(readFileSync(path.join(home, rel), 'utf8')));
+  edit('source.mjs', (s) => `${s
+    .replace("export const WORKSPACE_ID = '';", "export const WORKSPACE_ID = '52360842';")
+    .replace(/^export const COMMIT_TYPES = .*;$/m, "export const COMMIT_TYPES = ['feat', 'fix', 'art'];")}export const OLD_ONLY = 1;\n`);
+  edit('config.mjs', (s) => s.replace('export const PUSH = true;', 'export const PUSH = false;'));
+  writeFileSync(path.join(home, 'tasks', 'dev.mjs'), '// 旧版\n');
+  rmSync(path.join(home, 'prompts', 'fix.md'));
+  writeFileSync(path.join(home, 'tasks', 'mine.mjs'), '// 项目自己的\n');
+  mkdirSync(path.join(home, 'prompts', 'local'));
+  writeFileSync(path.join(home, 'prompts', 'local', 'dev.md'), '项目补充\n');
+
+  const r = cli(['init', '--upgrade'], { cwd: dir });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /模板：tapd/);
+  const tpl = (part, rel) => readFileSync(path.join(TEMPLATES, part, rel), 'utf8');
+  assert.equal(readFileSync(path.join(home, 'tasks', 'dev.mjs'), 'utf8'), tpl('_shared', 'tasks/dev.mjs'));
+  assert.match(r.stdout, /~ tasks\/dev\.mjs（已覆盖）/);
+  assert.equal(readFileSync(path.join(home, 'prompts', 'fix.md'), 'utf8'), tpl('_shared', 'prompts/fix.md'));
+  assert.match(r.stdout, /\+ prompts\/fix\.md/);
+  assert.equal(readFileSync(path.join(home, 'tasks', 'mine.mjs'), 'utf8'), '// 项目自己的\n');
+  assert.equal(readFileSync(path.join(home, 'prompts', 'local', 'dev.md'), 'utf8'), '项目补充\n');
+
+  const src = readFileSync(path.join(home, 'source.mjs'), 'utf8');
+  assert.match(src, /^export const WORKSPACE_ID = '52360842';$/m);
+  assert.match(src, /^export const COMMIT_TYPES = \['feat', 'fix', 'art'\];$/m);
+  assert.doesNotMatch(src, /OLD_ONLY/);
+  assert.match(r.stdout, /source\.mjs（跟模板走，保留项目的 WORKSPACE_ID、COMMIT_TYPES，模板已没有、丢掉了 OLD_ONLY）/);
+  assert.match(readFileSync(path.join(home, 'config.mjs'), 'utf8'), /^export const PUSH = false;$/m);
+
+  const backups = readdirSync(path.join(home, 'logs')).filter((d) => d.startsWith('upgrade-'));
+  assert.equal(backups.length, 1);
+  assert.equal(readFileSync(path.join(home, 'logs', backups[0], 'tasks', 'dev.mjs'), 'utf8'), '// 旧版\n');
+  assert.match(r.stdout, /备份在/);
+
+  const again = cli(['init', '--upgrade'], { cwd: dir });
+  assert.equal(again.code, 0, again.stderr);
+  assert.doesNotMatch(again.stdout, /^\s+[~+] /m, '再升一次什么都不动');
+
+  const bare = tmpDir();
+  mkdirSync(path.join(bare, '.workflow'));
+  const unknown = cli(['init', '--upgrade'], { cwd: bare });
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.stderr, /认不出.*--template/);
+});
+
 // ── new ───────────────────────────────────────────────────────────────────
 
 test('new：建传参骨架，能直接跑；已存在不覆盖', () => {

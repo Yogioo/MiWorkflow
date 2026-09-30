@@ -42,10 +42,12 @@ export function firstJson(raw, context = 'tapd-cli') {
   throw new Error(mask(`${context} 返回的 JSON 不完整`));
 }
 
-// TAPD 用 status=1 表示成功
+// TAPD 用 status=1 表示成功；tapd-cli 自己包的命令（comment add 等）出 { ok, id }，ok=false 算失败
 export function checkPayload(parsed, context) {
-  if (parsed && typeof parsed === 'object' && parsed.status !== undefined && Number(parsed.status) !== 1) {
-    throw new Error(mask(`${context} 失败：${parsed.info || JSON.stringify(parsed).slice(0, 200)}`));
+  const bad = parsed && typeof parsed === 'object' &&
+    ((parsed.status !== undefined && Number(parsed.status) !== 1) || parsed.ok === false);
+  if (bad) {
+    throw new Error(mask(`${context} 失败：${parsed.info || parsed.error || JSON.stringify(parsed).slice(0, 200)}`));
   }
   return parsed;
 }

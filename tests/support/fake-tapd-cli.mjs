@@ -2,8 +2,9 @@
 // 状态：{ stories: [{ id, name, label, priority, description, status, owner, workspace_id }],
 //         comments: [{ id, entry_type, entry_id, description, author, created }],
 //         fail?: { times, message }, calls: [argv…], uploads: [{ file, size }] }
-// 故障开关：ignoreUpdate（story update 不落库，测回读校验）、escapeNewlines（comment add 把换行存成字面量 \n）
-// 像真 tapd-cli 一样：连字符写法的参数静默丢掉；comment list 剥 HTML；comment add 在 JSON 后多一行。
+// 故障开关：ignoreUpdate（story update 不落库，测回读校验）、escapeNewlines（comment add 把换行存成字面量 \n）、
+// noCommentId（comment add 发成功了但不回评论 id）
+// 像真 tapd-cli 一样：连字符写法的参数静默丢掉；comment list 剥 HTML；comment add 出 { ok, id }，JSON 后面还跟几行。
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const STATE = process.env.FAKE_TAPD_STATE;
@@ -62,8 +63,10 @@ if (entity === 'story' && action === 'list') {
     created: `2026-01-01 00:00:${String(state.comments.length).padStart(2, '0')}`
   };
   state.comments.push(c);
-  save(); out({ status: 1, data: { Comment: c }, info: 'success' });
-  process.stdout.write('\n已写入 /tmp/comment.log\n');
+  // 真 tapd-cli 出 { ok, id }（id 取自接口的 data.Comment.id，接口没给就是 null，也不写 /tmp/comment.log）
+  const id = state.noCommentId ? null : c.id;
+  save(); out({ ok: true, id });
+  if (id) process.stdout.write(`\n已写入 /tmp/comment.log\n[COMMENT_CONTENT_START]\n${c.description}\n`);
 } else if (entity === 'comment' && action === 'list') {
   const rows = state.comments
     .filter((c) => (!params.entry_type || c.entry_type === params.entry_type) && (!params.entry_id || c.entry_id === params.entry_id))

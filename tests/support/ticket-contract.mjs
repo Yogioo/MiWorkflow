@@ -2,7 +2,9 @@
 // 各家特有的细节（图片、回读、gh 版本……）留在 template-github-tickets / template-tapd 里。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { runScript } from './github-template.mjs';
 
 const READY = ['ready-for-agent'];
@@ -54,8 +56,8 @@ export function defineTicketContract(src) {
     assert.equal(runScript(s, 'ticket_view', {}).status, 'failed', '缺 id');
   });
 
-  contract('ticket_mark：入 { id, action, comment?, sha? }，出 { did, id, ref }；五种 action 的机器标签一致', {
-    tickets: [1, 2, 3, 4].map((key) => ({ key, labels: READY }))
+  contract('ticket_mark：入 { id, action, comment?, commentFile?, sha? }，出 { did, id, ref }；五种 action 的机器标签一致', {
+    tickets: [1, 2, 3, 4, 5].map((key) => ({ key, labels: READY }))
   }, (s, view) => {
     const mark = (key, input) => runScript(s, 'ticket_mark', { id: src.id(key), ...input });
 
@@ -81,10 +83,17 @@ export function defineTicketContract(src) {
     assert.ok(view(3).comments.some((c) => c.includes('原因')));
 
     mark(4, { action: 'claimed' });
-    assert.equal(mark(4, { action: 'released', comment: 'socket hang up' }).status, 'ok');
+    assert.equal(mark(4, { action: 'released', comment: 'Agent 连接失败：socket hang up' }).status, 'ok');
     assert.deepEqual(view(4).labels, READY, 'released 摘认领、不贴失败、保留 ready');
     assert.equal(view(4).closed, false);
     assert.ok(view(4).comments.some((c) => c.includes('Agent 连接失败') && c.includes('socket hang up')));
+
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'miworkflow-contract-'));
+    writeFileSync(path.join(dir, 'comment.md'), '背包按品质排序\n\n提交：aaa1111');
+    mark(5, { action: 'claimed' });
+    assert.equal(mark(5, { action: 'done', sha: 'aaa1111', commentFile: path.join(dir, 'comment.md') }).status, 'ok');
+    assert.deepEqual(view(5).comments, ['背包按品质排序\n\n提交：aaa1111'], '只给 commentFile：评论就是回帖稿原文，不加开头');
+    rmSync(dir, { recursive: true, force: true });
 
     const nope = mark(3, { action: 'nope' });
     assert.equal(nope.status, 'failed');

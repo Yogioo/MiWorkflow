@@ -191,6 +191,22 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
       「回滚要丢掉的提交 → 先备份成 ref 再回滚，评论里带上 ref」；再给原有的回滚用例补一条「没提交要丢就不造 ref」。
       两条路径都在测试里：「Agent 提交」和「Agent 不提交、工作流兜底」。
 
+- [x] **B8. TAPD 实跑：提交信息不合规、评论只有一句 SHA；模板与项目两处维护** —— **2026-09-30 定并实现**（推翻 B7 ③「提交归 Agent」）
+      经过：DigitDoor 跑 `story 1152360842001004854`（run `3f4950be`），产出提交 `babe4c2f3 --story=<19 位 ID> --user=… 编辑器优化`，
+      带 `Co-authored-by: Cursor`；TAPD 上只有一句「本地提交（未推送）：…」，而且 `ticket_mark` 还报了「comment add 没回评论 id」。
+      根因：① `commitMessage` 还是模板默认，提示词让 Agent 照抄并自己提交，工作流事后不把关；
+      ② 成功路径 `ticket_mark done / unpushed` 根本不传回帖稿，回帖稿又被写成可选（4 次 Agent 调用一份没写）；
+      ③ 真 `tapd-cli comment add` 出 `{ ok, id }`，模板按 `data.Comment.id` 取，假 tapd-cli 照错的形状写，测试一直绿；
+      ④ 模板「复制出去不回头同步」，DigitDoor 的 `.workflow/` 和模板一字不差只差 6 行配置，却要两处各修。
+      实现：
+      - 提交归工作流：Agent 不提交，回话 `data` 给 `type` / `summary`；`dev` 在审查、验证、`--confirm` 之后统一提交，一张工单一笔。
+        `git_commit` 收 `baseSha`，Agent 自己的提交 `reset --soft` 压进来；提交后回读，标题被钩子改了或带 AI 署名判失败回滚。
+        `--confirm` 回到「提交前点头」。提交格式做成 `source.mjs` 的一行常量 `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY`，
+        TAPD 缺省 `{type}:{short} {summary}`（短号 = 后 7 位）。
+      - 评论：回帖稿必写（写给谁看、必含四项、好坏范例）；完成 / 未推送 / 推送失败都发「开头一句 + 各份回帖稿（没写用 reason）+ 工作流落款」；
+        `ticket_mark` 不再拼硬编码开头、不截断，调用方给整段；失败发完整原因。`comment add` 的 id 按 `{ ok, id }` 取，为空时按评论人回查。
+      - 同步：`miworkflow init --upgrade`，模板文件覆盖，`config.mjs` / `source.mjs` 里一行写完的 `export const` 保留项目的值，旧文件备份。
+
 ## C. 初始工作流创建体验
 
 - [x] **C1. 补 `AGENTS.md`** —— 并入 B3：改为内核根的 `SKILL.md`，可链成技能（已写）
