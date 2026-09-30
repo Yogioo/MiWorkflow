@@ -311,12 +311,12 @@ function releaseLock(lock) {
 function parseInterval(text) {
   const m = /^(\d+)([smh])$/.exec(text);
   const ms = m ? Number(m[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[m[2]] : 0;
-  return ms > 0 ? ms : null;
+  return ms > 0 && ms <= 2 ** 31 - 1 ? ms : null; // setTimeout 超过约 24.8 天会立刻触发，循环就空转了
 }
 
 async function loopTask(task, every) {
   const ms = parseInterval(every);
-  if (!ms) fail(`--every 要一个间隔，如 30s / 5m / 1h（拿到的是：${every || '空'}）`);
+  if (!ms) fail(`--every 要一个间隔，如 30s / 5m / 1h，最长 596h（拿到的是：${every || '空'}）`);
   const home = useHome();
   if (!existsSync(path.join(home, 'tasks', `${task}.mjs`))) fail(`task not found: ${task}（在 ${path.join(home, 'tasks')} 下找）`);
 

@@ -406,7 +406,7 @@ test('--every：某一轮失败记下退出码，循环照常继续', async () =
 test('--every：缺值 / 格式不对 → 报错退出，不起任何 run', () => {
   const dir = tmpDir();
   const home = makeHome(dir, { tick: ROUND_TASK });
-  for (const argv of [['tick', '--every'], ['tick', '--every', '--x', '1'], ['tick', '--every', '5'], ['tick', '--every=5x'], ['tick', '--every', '0s']]) {
+  for (const argv of [['tick', '--every'], ['tick', '--every', '--x', '1'], ['tick', '--every', '5'], ['tick', '--every=5x'], ['tick', '--every', '0s'], ['tick', '--every', '1000h']]) {
     const r = cli(argv, { cwd: dir });
     assert.equal(r.code, 1, argv.join(' '));
     assert.match(r.stderr, /--every/);
