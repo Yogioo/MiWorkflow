@@ -19,10 +19,12 @@ const PROJECT = fileURLToPath(new URL('../..', import.meta.url));
 const PROMPT = fileURLToPath(new URL('../prompts/grilling.md', import.meta.url));
 const ENTER = 'agent-discuss';
 const GRILLING = 'discuss:grilling';
-const MARK = /<!--\s*miworkflow:discuss\s+hash=([0-9a-f]+)\s*-->/;
+// 标记必须在评论末尾：人引用 AI 评论时标记落在中间，不能把人的评论当成 AI 的。
+const MARK = /<!--\s*miworkflow:discuss\s+hash=([0-9a-f]+)\s*-->\s*$/;
 
 export default async function ({ script, agent, args }) {
-  const max = args.max ? Number(args.max) : Infinity;
+  const max = args.max === undefined ? Infinity : Number(args.max);
+  if (max !== Infinity && !(Number.isInteger(max) && max >= 1)) throw new Error(`--max 要正整数：${args.max}`);
   const r = await script('gh_discuss_list', { enter: ENTER, grilling: GRILLING });
   if (r.status !== 'ok') throw new Error(`列讨论单失败：${r.error}`);
 

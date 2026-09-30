@@ -35,6 +35,11 @@ test('进入：只挑 agent-discuss 且无阶段或 grilling；首轮贴 discuss
   run(s);
   assert.equal(bodies(s, 1).length, 3);
   assert.match(bodies(s, 1)[2], /测试/);
+
+  reply(s, 1, `> ${bodies(s, 1)[2]}\n\n引用一下，再补一句`);
+  plan(s, [ask('3. 引用后接着问')]);
+  run(s);
+  assert.equal(bodies(s, 1).length, 5, '人引用 AI 评论（标记在中间）仍算人的内容');
 });
 
 test('AI 思考期间人补发的评论，下一次运行会被处理；改正文也触发', () => {
