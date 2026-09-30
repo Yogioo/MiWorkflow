@@ -153,7 +153,7 @@ function toArgv(args) {
   if (typeof args !== 'object' || Array.isArray(args)) return null;
   const out = [];
   for (const [k, v] of Object.entries(args)) {
-    if (!SAFE_KEY.test(k)) return null;
+    if (!SAFE_KEY.test(k) || k === 'every') return null; // 网页点运行只跑一次，不提供 --every 常驻循环
     if (v === true) out.push(`--${k}`);
     else if (typeof v === 'string' || typeof v === 'number') out.push(`--${k}=${v}`);
     else return null;

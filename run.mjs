@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // run.mjs — 唯一入口（§9）：miworkflow init | new <name> | view | skill | <task> [--key value]
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -19,7 +19,7 @@ const USAGE = [
   '  miworkflow new <name>                 建任务骨架 .workflow/tasks/<name>.mjs',
   '  miworkflow view                       起网页：看运行、审批、点运行',
   '  miworkflow skill                      打印写任务的完整说明（给 AI 看）',
-  '  miworkflow <task> [--key value]... [--yes] [--dry-run]'
+  '  miworkflow <task> [--key value]... [--yes] [--dry-run] [--every <30s|5m|1h>]'
 ].join('\n');
 
 // init 放进 .workflow/ 的 AI 入口：只写硬规则，完整写法指向 miworkflow skill，换机器、升内核都不过时
@@ -59,7 +59,7 @@ const ROOT_AGENTS_MD = [
 ].join('\n');
 
 const argv = process.argv.slice(2);
-const { positional, args, dryRun } = parseArgv(argv);
+const { positional, args, dryRun, every, forward } = parseArgv(argv);
 const [cmd, name] = positional;
 
 // 内核自身的开关，早于任务分派。注意 -v / -h 不是 -- 开头，parseArgv 会当成任务名
@@ -72,16 +72,27 @@ else if (cmd === 'view') {
   useHome();
   await import('./viewer/serve.mjs');
 } else if (cmd === 'skill') process.stdout.write(readFileSync(SKILL, 'utf8'));
+else if (every !== undefined) await loopTask(cmd, every);
 else await runTask(cmd);
 
 // ── 参数 ──────────────────────────────────────────────────────────────────
-// --key value / --key=value / --flag(=true)；值一律是字符串。--yes、--dry-run 归内核，不进 args
+// --key value / --key=value / --flag(=true)；值一律是字符串。--yes、--dry-run、--every 归内核，不进 args。
+// forward 是去掉 --every 之后的原始 argv，循环的每一轮原样交给子进程
 function parseArgv(argv) {
   const positional = [];
   const args = {};
+  const forward = [];
   let dryRun = false;
+  let every;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === '--every' || a.startsWith('--every=')) {
+      const next = argv[i + 1];
+      if (a !== '--every') every = a.slice('--every='.length);
+      else every = next !== undefined && !next.startsWith('--') ? (i++, next) : '';
+      continue;
+    }
+    forward.push(a);
     if (!a.startsWith('--')) {
       positional.push(a);
       continue;
@@ -97,9 +108,10 @@ function parseArgv(argv) {
       continue;
     }
     const next = argv[i + 1];
+    if (next !== undefined && !next.startsWith('--')) forward.push(next);
     args[a.slice(2)] = next !== undefined && !next.startsWith('--') ? (i++, next) : true;
   }
-  return { positional, args, dryRun };
+  return { positional, args, dryRun, every, forward };
 }
 
 function fail(message) {
@@ -290,6 +302,40 @@ function releaseLock(lock) {
   try {
     rmSync(lock.file, { force: true });
   } catch { /* 已经没了就算了 */ }
+}
+
+// ── 循环运行（§9）：--every <间隔> ──────────────────────────────────────────
+// 外层循环不是 run：不加载 core、不写日志、不拿锁。每一轮起一个子进程当全新的 run
+// （删掉 AGENTFLOW_RUN_ID / AGENTFLOW_TASK，子进程自己生成），间隔从上一轮结束算，所以不会自己重叠。
+// Ctrl-C 不拦：终端把信号发给整个前台进程组，外层和正在跑的 run 一起结束。
+function parseInterval(text) {
+  const m = /^(\d+)([smh])$/.exec(text);
+  const ms = m ? Number(m[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[m[2]] : 0;
+  return ms > 0 ? ms : null;
+}
+
+async function loopTask(task, every) {
+  const ms = parseInterval(every);
+  if (!ms) fail(`--every 要一个间隔，如 30s / 5m / 1h（拿到的是：${every || '空'}）`);
+  const home = useHome();
+  if (!existsSync(path.join(home, 'tasks', `${task}.mjs`))) fail(`task not found: ${task}（在 ${path.join(home, 'tasks')} 下找）`);
+
+  const env = { ...process.env };
+  delete env.AGENTFLOW_RUN_ID;
+  delete env.AGENTFLOW_TASK;
+  for (let round = 1; ; round++) {
+    console.log(`[every ${every}] 第 ${round} 轮`);
+    const code = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [fileURLToPath(import.meta.url), ...forward], { env, stdio: 'inherit' });
+      child.on('error', (err) => {
+        console.error(err);
+        resolve(1);
+      });
+      child.on('exit', (c, sig) => resolve(c ?? sig));
+    });
+    if (code !== 0) console.error(`[every ${every}] 第 ${round} 轮退出码 ${code}，继续`);
+    await new Promise((r) => setTimeout(r, ms));
+  }
 }
 
 // ── 跑任务 ────────────────────────────────────────────────────────────────

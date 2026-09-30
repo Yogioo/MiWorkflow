@@ -41,6 +41,7 @@ npm link                  # 全局 miworkflow → 这个目录
 miworkflow init                  # 建 .workflow/，并往项目根 AGENTS.md 追加 AI 入口（终端里可选模板）
 miworkflow new fix_tests         # 建任务骨架 .workflow/tasks/fix_tests.mjs
 miworkflow fix_tests --filter login   # 跑；项目里任意子目录都行，往上找 .workflow/
+miworkflow fix_tests --every 5m  # 常驻循环：每轮一次全新的 run，间隔从上轮结束算（30s / 5m / 1h）；Ctrl+C 退出
 miworkflow view                  # 网页：点「运行」、看每一步、点「通过 / 拒绝」
 miworkflow skill                 # 打印写任务的完整说明（给 AI 看）
 ```

@@ -336,7 +336,7 @@ MiCan 在真实使用里踩出来的需求。MiWorkflow 现在都没有，但**�
 
 | # | 需求 | MiCan 出处 | 什么时候做 | 大概落点 |
 |---|---|---|---|---|
-| E1 | 定时触发 | ADR-0010 | 第一个需要定时跑的任务出现 | Windows 任务计划程序调 `node run.mjs <task>`，不进内核 |
+| E1 | 定时触发 | ADR-0010 | 第一个需要定时跑的任务出现 | ✅ 循环运行由入口的 `--every` 提供（#9；`miworkflow <task> --every 5m`，每轮全新 run，纯 Node 跨平台） |
 | E2 | 占用：同一任务在跑就跳过 | ADR-0027 | 定时任务第一次撞车 | `run.mjs` 起跑前按 task 建锁文件（动内核） |
 | E3 | 长任务的过程留痕：Agent 每一步动作进日志 | ADR-0021、0031 | 复盘时只看 `reason` 不够用 | C2 的适配器已把归一事件存进 HOME `logs/`；剩下的是 trace 行引用它、viewer 展开它（动内核） |
 | E4 | 插话：往正在跑的 Agent 里塞一句 | ADR-0032 | Agent 反复绕圈子，人看得见却说不上话 | pi `--mode rpc`；`agent()` 与 viewer 各开一个口子（动内核） |

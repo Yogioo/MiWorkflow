@@ -1,7 +1,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -342,4 +342,75 @@ test('new：没有 .workflow/ → 报错提示 init；保留字不能当任务�
   assert.equal(cli(['new', 'view'], { cwd: dir }).code, 1);
   assert.equal(cli(['new', 'skill'], { cwd: dir }).code, 1);
   assert.equal(cli(['new', '../evil'], { cwd: dir }).code, 1);
+});
+
+// ── --every：起真实 CLI 子进程，秒级间隔，攒够轮数就杀掉外层循环 ──
+const ROUND_TASK = [
+  "import { appendFileSync } from 'node:fs';",
+  "export const title = '循环一轮';",
+  'export default async function ({ args }) {',
+  "  appendFileSync(new URL('../rounds.jsonl', import.meta.url), JSON.stringify({ runId: process.env.AGENTFLOW_RUN_ID, args }) + '\\n');",
+  "  if (args.fail) throw new Error('这一轮故意失败');",
+  '}',
+  ''
+].join('\n');
+
+function readRounds(home) {
+  try {
+    return readFileSync(path.join(home, 'rounds.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
+}
+
+async function loopUntil(argv, home, rounds, env = {}) {
+  const base = { ...process.env };
+  for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES', 'AGENTFLOW_DRY_RUN']) delete base[k];
+  const child = spawn(process.execPath, [path.join(ROOT, 'run.mjs'), ...argv], {
+    env: { ...base, AGENTFLOW_HOME: home, ...env }
+  });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', (d) => { out += d; });
+  const exited = new Promise((r) => child.once('exit', r));
+  let done = false;
+  exited.then(() => { done = true; });
+  const deadline = Date.now() + 20_000;
+  while (!done && readRounds(home).length < rounds && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  await new Promise((r) => setTimeout(r, 300)); // 让最后一轮的退出码打到终端
+  child.kill();
+  await exited;
+  return { rounds: readRounds(home), out };
+}
+
+test('--every：每轮全新 runId、不继承外部 runId，--every 不进 args，其余参数原样传', async () => {
+  const home = makeHome(tmpDir(), { tick: ROUND_TASK });
+  const r = await loopUntil(['tick', '--every', '1s', '--x', '1'], home, 2, { AGENTFLOW_RUN_ID: 'outer' });
+  assert.ok(r.rounds.length >= 2, r.out);
+  const ids = r.rounds.map((x) => x.runId);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.ok(!ids.includes('outer'));
+  for (const x of r.rounds) assert.deepEqual(x.args, { x: '1' });
+  // 外层循环不写 run 日志：日志里只有各轮自己的 runId
+  const logs = readdirSync(path.join(home, 'logs')).filter((f) => f.endsWith('.jsonl')).map((f) => f.slice(0, -6));
+  assert.ok(!logs.includes('outer'));
+});
+
+test('--every：某一轮失败记下退出码，循环照常继续', async () => {
+  const home = makeHome(tmpDir(), { tick: ROUND_TASK });
+  const r = await loopUntil(['tick', '--every=1s', '--fail'], home, 2);
+  assert.ok(r.rounds.length >= 2, r.out);
+  assert.match(r.out, /退出码 1/);
+});
+
+test('--every：缺值 / 格式不对 → 报错退出，不起任何 run', () => {
+  const dir = tmpDir();
+  const home = makeHome(dir, { tick: ROUND_TASK });
+  for (const argv of [['tick', '--every'], ['tick', '--every', '--x', '1'], ['tick', '--every', '5'], ['tick', '--every=5x'], ['tick', '--every', '0s']]) {
+    const r = cli(argv, { cwd: dir });
+    assert.equal(r.code, 1, argv.join(' '));
+    assert.match(r.stderr, /--every/);
+  }
+  assert.deepEqual(readRounds(home), []);
+  assert.ok(!existsSync(path.join(home, 'logs')));
 });

@@ -75,6 +75,7 @@ test('POST /api/run：没有的任务、坏参数 → 400', async () => {
   assert.equal((await post(`${base}/api/run`, { task: '../x' })).status, 400);
   assert.equal((await post(`${base}/api/run`, { task: 'nope' })).status, 400);
   assert.equal((await post(`${base}/api/run`, { task: 'echo', args: { who: { a: 1 } } })).status, 400);
+  assert.equal((await post(`${base}/api/run`, { task: 'echo', args: { every: '5m' } })).status, 400);
 });
 
 test('GET /api/run/<id>：日志还没生成 → 空，不报错', async () => {
