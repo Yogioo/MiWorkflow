@@ -86,7 +86,7 @@ MiWorkflow/
 |---|---|
 | `miworkflow --version` / `miworkflow -v` | 打印内核 `package.json` 的 `version`（不写死）到 stdout，退出 0 |
 | `miworkflow --help` / `miworkflow -h` | 打印用法（USAGE）到 stdout，退出 0；不带任何参数时 USAGE 打到 stderr、退出 1 |
-| `miworkflow init [--template <名字>]` | 建 `.workflow/`：`tasks/`、`scripts/`、`.gitignore`、`AGENTS.md`，并往项目根的 `AGENTS.md` 追加一段 AI 入口（没有就建、有就追加、已含就不动）。建在 git 仓库根，不在仓库里就建在当前目录。终端里有模板可选时让人选（**空白** = 只建目录，或 `templates/` 下的某个）；非终端缺省空白。已存在 `.workflow/` 时只补缺的文件，**已有的文件一个不覆盖**，跳过的列出来 |
+| `miworkflow init [--template <名字>]` | 建 `.workflow/`：`tasks/`、`scripts/`、`.gitignore`、`AGENTS.md`，并往项目根的 `AGENTS.md` 追加一段 AI 入口（没有就建、有就追加、已含就不动）。建在 git 仓库根，不在仓库里就建在当前目录。终端里有模板可选时让人选（**空白** = 只建目录，或 `templates/` 下的某个工单源；选了就先复制共用的 `templates/_shared/` 再复制它，§15）；非终端缺省空白。已存在 `.workflow/` 时只补缺的文件，**已有的文件一个不覆盖**，跳过的列出来 |
 | `miworkflow new <name>` | 建 `tasks/<name>.mjs` 骨架（`title` + 传参的 `default`），不覆盖已有；没有 `.workflow/` 就报错，提示先 `init` |
 | `miworkflow <task> [--key value]` | 跑任务 |
 | `miworkflow <task> --every <间隔> [--key value]` | 常驻循环跑：间隔 `30s` / `5m` / `1h`，必须显式给值，缺值或格式不对报错退出、不起 run。外层循环不是 run（不写日志、不拿锁）；每一轮起一个子进程当全新的 run（新 runId，不继承 `AGENTFLOW_RUN_ID`），其余参数原样传；间隔从上一轮结束算，不会自己重叠；某轮非 0 退出只在终端记下退出码，循环继续；另一个终端在跑同一任务时由按任务锁挡住，该轮跳过。Ctrl+C 不特殊处理，连同正在跑的 run 一起结束。纯 Node，三平台一致；一个命令一个任务，多个任务开多个终端；viewer 的「运行」不提供 |
