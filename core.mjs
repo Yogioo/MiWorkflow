@@ -132,9 +132,9 @@ function agentCommand(opts) {
 function adapterCommand(spec) {
   const a = typeof spec === 'string' ? { cli: spec } : spec;
   const argv = [process.execPath, AGENT_CLI, String(a.cli)];
-  for (const k of ['model', 'thinking', 'provider']) if (a[k]) argv.push(`--${k}`, String(a[k]));
+  for (const k of ['model', 'thinking', 'provider', 'session']) if (a[k]) argv.push(`--${k}`, String(a[k]));
   if (a.args?.length) argv.push('--', ...a.args.map(String));
-  return { argv, agent: { cli: a.cli, model: a.model, thinking: a.thinking } };
+  return { argv, agent: { cli: a.cli, model: a.model, thinking: a.thinking, session: a.session } };
 }
 
 export async function agent(goal, opts = {}) {
@@ -150,6 +150,7 @@ export async function agent(goal, opts = {}) {
   let choice;
   let reason;
   let data;
+  let session; // 适配器交回的会话号：只透传、记日志，不参与契约判定（§10）
 
   const command = agentCommand(opts);
 
@@ -181,6 +182,7 @@ export async function agent(goal, opts = {}) {
     const res = await run(bin, rest, JSON.stringify(pkg), (pkg.budget.timeoutSec + 5) * 1000, env);
     try {
       const out = JSON.parse(res.stdout);
+      session = out?.session;
       // 输出不合契约（§6.2）就 failed：不补默认值，不猜，不隐式回落
       if (!['ok', 'need_human', 'failed'].includes(out?.status) || typeof out?.choice !== 'string') {
         status = 'failed';
@@ -210,12 +212,13 @@ export async function agent(goal, opts = {}) {
     status,
     choice,
     reason,
+    session,
     say: reason || `agent: ${choice}`,
     error: status === 'failed' ? reason : undefined,
     durationMs: Date.now() - startedAt
   });
 
-  return { status, choice, reason, data };
+  return session === undefined ? { status, choice, reason, data } : { status, choice, reason, data, session };
 }
 
 // events 一律记成相对 HOME logs/ 的路径（§12）：viewer 按 logs/<events> 拼文件

@@ -205,7 +205,7 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
       exec-review 的 `spawn-turn.mjs`（非流式）没用上，没复制。
       `agent()` 默认 `timeoutSec` 由 120 改为 7200（2 小时，2026-09-29 定）：120 秒连一次改代码都不够。
       实测：本机 pi / codex / cursor 各在临时 git 仓库里建一个文件并按契约交回，一次过（codex 在去掉 schema 后）。
-      以下为拍板时的记录。C2-1 放 `agents/`；C2-2 不做；C2-3 先不做。
+      以下为拍板时的记录。C2-1 放 `agents/`；C2-2 不做；C2-3 先不做（后由 #7 落地）。
       2026-09-29 补：每次调用可单独选 CLI + 模型 + 思考等级（`opts.agent = { cli, model, thinking, provider, args }`），
       按任务 / 按用途的默认值用普通 JS 常量，不加配置机制。
       2026-09-29 再补：**从 exec-review 的 runner 层复制一份起步，之后独立演进**，不依赖、不回头同步 exec-review。
@@ -256,8 +256,10 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
       - **C2-2 choice 要不要由 core 校验**：给 `agent()` 加可选 `opts.choices`，`choice` 不在里面就判
         `agent_bad_output` —— 契约更硬，但动内核。**推荐先不做**：`choices` 放 `inputs` 里给适配器渲染，
         任务 JS 照 §7 的写法自己兜底（未知 `choice` 就 `throw`）。
-      - **C2-3 会话延续**：§7 的重试循环每次 `agent()` 都是新上下文。**推荐先不做**：重试时把上一次的
+      - [x] **C2-3 会话延续**（#7，已做）：§7 的重试循环每次 `agent()` 都是新上下文。当初推荐先不做：重试时把上一次的
         `reason` 和失败输出放进 `inputs`。真出现「每次从头读项目、慢得不行」再加 `inputs.session`。
+        落地时改为：会话号走 `opts.agent.session`（适配器参数，不进 `inputs`），适配器输出顶层 `session` 交回，
+        core 只透传、记日志、不参与契约校验；续不上 → `session_not_found`。写法见 `Core.md` §10 / §10.1。
 
 - [x] **C3. 首个工作流：GitHub 开发（`templates/github/`）** —— **2026-09-29 定，已实现**
       实现了 `config.mjs` / `tasks/github_dev.mjs` / `scripts/{gh_ready,gh_issue_view,gh_issue_mark,git_state,git_commit,git_restore,run_cmd,_lib}.mjs`。

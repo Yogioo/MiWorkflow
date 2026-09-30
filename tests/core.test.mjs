@@ -269,6 +269,47 @@ test('agent：先写带 events 的 running 行，结束后写带 ref 的终态�
   }
 });
 
+test('agent：输出顶层 session 透传给任务、记进终态行，形状任意都不影响契约（§10）', async () => {
+  const cases = [
+    { out: { status: 'ok', choice: 'done', reason: '', session: 's-1' }, status: 'ok', session: 's-1' },
+    { out: { status: 'ok', choice: 'done', reason: '', session: { id: 7, n: [1] } }, status: 'ok', session: { id: 7, n: [1] } },
+    { out: { choice: 'done', session: 's-2' }, status: 'failed', session: 's-2' }
+  ];
+  for (const [i, c] of cases.entries()) {
+    const runId = uniq();
+    process.env.AGENTFLOW_TASK = 'unit';
+    process.env.AGENTFLOW_RUN_ID = runId;
+    const fake = writeFakeAgent(`__test_agent_session_${i}`, `process.stdout.write(${JSON.stringify(JSON.stringify(c.out))});`);
+    try {
+      const { agent } = await import('../core.mjs');
+      const r = await agent('续着干', { cmd: fake.cmd });
+      assert.equal(r.status, c.status, JSON.stringify(r));
+      if (c.status === 'failed') assert.equal(r.choice, 'agent_bad_output', 'session 不能替缺了的 status 兜底');
+      assert.deepEqual(r.session, c.session);
+      assert.deepEqual(rows(runId).at(-1).session, c.session);
+    } finally {
+      rmSync(fake.file, { force: true });
+      rmSync(logPath(runId), { force: true });
+    }
+  }
+});
+
+test('agent：输出没有 session → 返回值与日志都不带 session（§10）', async () => {
+  const runId = uniq();
+  process.env.AGENTFLOW_TASK = 'unit';
+  process.env.AGENTFLOW_RUN_ID = runId;
+  const fake = writeFakeAgent('__test_agent_nosession', "process.stdout.write(JSON.stringify({ status: 'ok', choice: 'done', reason: '' }));");
+  try {
+    const { agent } = await import('../core.mjs');
+    const r = await agent('随便', { cmd: fake.cmd });
+    assert.deepEqual(Object.keys(r), ['status', 'choice', 'reason', 'data']);
+    assert.ok(!('session' in rows(runId).at(-1)));
+  } finally {
+    rmSync(fake.file, { force: true });
+    rmSync(logPath(runId), { force: true });
+  }
+});
+
 test('agent：输出缺 status / choice → failed，不补默认值（§6.2）', async () => {
   const runId = uniq();
   process.env.AGENTFLOW_TASK = 'unit';

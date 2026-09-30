@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { parseCliArgv, renderPrompt, stripFence, normalizeReply, extractJson } from '../agents/prompt.mjs';
-import { normalizeEvent } from '../agents/normalize-event.mjs';
+import { normalizeEvent, extractSessionFromRaw } from '../agents/normalize-event.mjs';
+import { precheckSession, looksLikeSessionNotFound, sessionNotFound, sessionOut } from '../agents/session.mjs';
 import { buildPiArgs } from '../agents/runners/pi.mjs';
 import { buildCodexArgs } from '../agents/runners/codex.mjs';
 import { buildCursorArgs, applyThinkingToModel } from '../agents/runners/cursor.mjs';
@@ -41,6 +42,54 @@ test('codex：-m / model_reasoning_effort，全权限，不带 --output-schema',
   assert.deepEqual(args.slice(args.indexOf('-m')), ['-m', 'gpt-5.5', '-c', 'model_reasoning_effort=high', '-']);
 });
 
+// ── 纯函数：会话进出（§10.1）────────────────────────────────────────────
+
+test('pi：给会话号就 --session-id 续（不带 --no-session），没给维持一次性会话', () => {
+  const args = buildPiArgs({ ...TURN, session: 's-1' });
+  assert.deepEqual(args.slice(0, 4), ['-p', '--session-id', 's-1', '--mode']);
+  assert.ok(!args.includes('--no-session'));
+  assert.ok(buildPiArgs(TURN).includes('--no-session'));
+});
+
+test('codex：给会话号走 exec resume <id>，不带 exec resume 不认的 -C / --color', () => {
+  const args = buildCodexArgs({ ...TURN, session: 'th-1', model: 'm' });
+  assert.deepEqual(args.slice(0, 3), ['exec', 'resume', 'th-1']);
+  assert.ok(!args.includes('-C') && !args.includes('--color'));
+  assert.equal(args.at(-1), '-');
+  assert.equal(buildCodexArgs(TURN)[1], '-C');
+});
+
+test('codex 事件流里取会话号：thread.started / 旧版 session_configured；别家不取', () => {
+  assert.equal(extractSessionFromRaw({ type: 'thread.started', thread_id: 'th-9' }, 'codex'), 'th-9');
+  assert.equal(extractSessionFromRaw({ msg: { type: 'session_configured', session_id: 'se-1' } }, 'codex'), 'se-1');
+  assert.equal(extractSessionFromRaw({ type: 'thread.started', thread_id: 'x' }, 'pi'), '');
+  const parsed = parseJsonlChunk(`${JSON.stringify({ type: 'thread.started', thread_id: 'th-2' })}\n`, '', 'codex');
+  assert.equal(parsed.session, 'th-2');
+});
+
+test('会话号交回：pi 交回给的；codex 取事件流里的、没有就用给的；cursor 不交回', () => {
+  assert.equal(sessionOut('create-or-resume', 's-1', ''), 's-1');
+  assert.equal(sessionOut('create-or-resume', '', ''), '');
+  assert.equal(sessionOut('resume', '', 'th-1'), 'th-1');
+  assert.equal(sessionOut('resume', 'th-1', ''), 'th-1');
+  assert.equal(sessionOut('none', 's-1', 'x'), '');
+});
+
+test('session_not_found：cursor 传会话号开跑前就判；错误文本像「会话不存在」才算', () => {
+  assert.deepEqual(precheckSession('cursor', 'none', 's-1'), {
+    status: 'failed', choice: 'session_not_found', reason: 'cursor 续不上会话 s-1：这家 CLI 不支持续会话', data: {}
+  });
+  assert.equal(precheckSession('cursor', 'none', ''), null);
+  assert.equal(precheckSession('codex', 'resume', 'th-1'), null);
+  assert.match(sessionNotFound('codex', 'th-1', 'boom').reason, /codex 续不上会话 th-1：boom/);
+
+  assert.ok(looksLikeSessionNotFound('Error: No saved session found with ID th-1'));
+  assert.ok(looksLikeSessionNotFound('thread th-1 not found'));
+  assert.ok(looksLikeSessionNotFound('rollout does not exist'));
+  assert.ok(!looksLikeSessionNotFound('额度用完了'));
+  assert.ok(!looksLikeSessionNotFound('model not found'));
+});
+
 test('codex 的错误事件归一成 error，取出 API 错误里那句', () => {
   const ev = normalizeEvent({ type: 'error', message: JSON.stringify({ error: { message: 'Invalid schema' } }) }, 'codex');
   assert.equal(ev.kind, 'error');
@@ -66,8 +115,9 @@ test('cursor：思考等级折进 model[effort=…]；只给 thinking 就报错'
 
 test('parseCliArgv：三个开关两种写法，-- 之后原样给 CLI', () => {
   assert.deepEqual(parseCliArgv(['codex', '--model', 'm', '--thinking=high', '--', '--foo', 'bar']), {
-    cli: 'codex', model: 'm', thinking: 'high', provider: '', extraArgs: ['--foo', 'bar']
+    cli: 'codex', model: 'm', thinking: 'high', provider: '', session: '', extraArgs: ['--foo', 'bar']
   });
+  assert.equal(parseCliArgv(['pi', '--session', 's-1']).session, 's-1');
   assert.throws(() => parseCliArgv(['pi', '--foo']), /不认识的开关/);
 });
 
@@ -261,4 +311,66 @@ test('不认识的 CLI、cursor 只给 thinking → agent_cli_failed，说清原
   const cursor = (await callAgent('随便', { agent: { cli: 'cursor', thinking: 'high' } })).r;
   assert.equal(cursor.choice, 'agent_cli_failed');
   assert.match(cursor.reason, /只给 thinking/);
+});
+
+// ── 端到端：会话进出（§10.1）────────────────────────────────────────────
+
+test('pi：opts.agent.session 到 --session-id，交回同一个会话号，记进日志；不进 inputs', async () => {
+  const { r, runId } = await callAgent('续着干', { agent: { cli: 'pi', session: 's-42' } });
+  assert.equal(r.status, 'ok', JSON.stringify(r));
+  assert.equal(r.session, 's-42');
+  assert.match(r.data.argv.join(' '), /--session-id s-42/);
+  assert.ok(!r.data.argv.includes('--no-session'));
+  assert.doesNotMatch(r.data.prompt, /s-42/, '会话号是适配器参数，不进发给 Agent 的 inputs');
+  const row = rows(runId).at(-1);
+  assert.equal(row.session, 's-42');
+  assert.equal(row.agent.session, 's-42');
+});
+
+test('pi：不写 session 行为不变，返回值没有 session 字段', async () => {
+  const { r, runId } = await callAgent('随便', { agent: 'pi' });
+  assert.equal(r.choice, 'done');
+  assert.ok(!('session' in r));
+  assert.ok(r.data.argv.includes('--no-session'));
+  assert.ok(!('session' in rows(runId).at(-1)));
+});
+
+test('cursor：传 session → session_not_found，reason 写明哪家、哪个会话号', async () => {
+  const { r } = await callAgent('随便', { agent: { cli: 'cursor', session: 'c-1' } });
+  assert.equal(r.status, 'failed');
+  assert.equal(r.choice, 'session_not_found');
+  assert.match(r.reason, /cursor 续不上会话 c-1/);
+  assert.ok(!('session' in r));
+});
+
+// 假 codex：事件流报 thread.started，回话写进 -o 指的文件；resume missing 时按「会话不存在」失败
+const FAKE_CODEX = path.join(HOME, 'fake-codex-session.mjs');
+writeFileSync(FAKE_CODEX, `
+import { writeFileSync } from 'node:fs';
+const argv = process.argv.slice(2);
+for await (const _ of process.stdin);
+const resume = argv[1] === 'resume' ? argv[2] : null;
+if (resume === 'missing') { process.stderr.write('Error: No saved session found with ID missing\\n'); process.exit(1); }
+process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: resume ?? 'th-new' }) + '\\n');
+writeFileSync(argv[argv.indexOf('-o') + 1], JSON.stringify({ status: 'ok', choice: 'done', reason: '', data: { argv } }));
+`);
+
+test('codex：没给会话号从事件流取出交回；给了就 exec resume 续；续不上 → session_not_found', async () => {
+  process.env.CODEX_BIN = FAKE_CODEX;
+  try {
+    const fresh = (await callAgent('随便', { agent: 'codex' })).r;
+    assert.equal(fresh.status, 'ok', JSON.stringify(fresh));
+    assert.equal(fresh.session, 'th-new');
+
+    const resumed = (await callAgent('随便', { agent: { cli: 'codex', session: 'th-7' } })).r;
+    assert.equal(resumed.session, 'th-7');
+    assert.deepEqual(resumed.data.argv.slice(0, 3), ['exec', 'resume', 'th-7']);
+
+    const missing = (await callAgent('随便', { agent: { cli: 'codex', session: 'missing' } })).r;
+    assert.equal(missing.status, 'failed');
+    assert.equal(missing.choice, 'session_not_found');
+    assert.match(missing.reason, /codex 续不上会话 missing：Error: No saved session found/);
+  } finally {
+    delete process.env.CODEX_BIN;
+  }
 });

@@ -2,7 +2,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { appendFileSync, createWriteStream, writeFileSync } from 'node:fs';
 import { resolveBin } from './resolve-bin.mjs';
-import { normalizeEvent, extractReplyFromRaw } from '../normalize-event.mjs';
+import { normalizeEvent, extractReplyFromRaw, extractSessionFromRaw } from '../normalize-event.mjs';
 
 // 杀整棵进程树（Windows：taskkill /T；其它：进程组）
 function killTree(child) {
@@ -28,15 +28,17 @@ export function parseJsonlChunk(chunkText, remainder, runner) {
   const nextRemainder = lines.pop() || '';
   const rawEvents = [];
   let reply = '';
+  let session = '';
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
       const raw = JSON.parse(line);
       rawEvents.push(raw);
       reply = extractReplyFromRaw(raw, runner) || reply;
+      session = extractSessionFromRaw(raw, runner) || session;
     } catch { /* 非 JSON 行 */ }
   }
-  return { remainder: nextRemainder, rawEvents, reply };
+  return { remainder: nextRemainder, rawEvents, reply, session };
 }
 
 /**
@@ -52,8 +54,9 @@ export function parseJsonlChunk(chunkText, remainder, runner) {
  * @param {boolean} [req.writeOutFile]
  * @param {AbortSignal} [req.signal] abort → 杀整棵进程树
  * @param {(ev: object) => void} [req.onEvent]
- * @returns {Promise<{ code: number, aborted?: boolean, stderr: string, error: string }>}
+ * @returns {Promise<{ code: number, aborted?: boolean, stderr: string, error: string, session: string }>}
  *   error：事件流里最后一条错误事件的文本（codex 的错误不走 stderr）
+ *   session：事件流里报出的会话号（只有 codex 报），没有就是空串
  */
 export function spawnStreamTurn(req) {
   const { bin, runner, workdir, args, stdinText, outFile, logFile, eventsFile, writeOutFile = true, signal, onEvent } = req;
@@ -67,6 +70,7 @@ export function spawnStreamTurn(req) {
     let reply = '';
     let stderr = '';
     let error = '';
+    let session = '';
 
     const child = spawn(resolved.command, [...resolved.argsPrefix, ...args], {
       cwd: workdir,
@@ -83,7 +87,7 @@ export function spawnStreamTurn(req) {
       settled = true;
       killTree(child);
       logStream.end();
-      resolve({ code: 124, aborted: true, stderr, error });
+      resolve({ code: 124, aborted: true, stderr, error, session });
     };
     if (signal) {
       if (signal.aborted) onAbort();
@@ -93,6 +97,7 @@ export function spawnStreamTurn(req) {
     const ingest = (parsed) => {
       remainder = parsed.remainder;
       reply = parsed.reply || reply;
+      session = parsed.session || session;
       for (const raw of parsed.rawEvents) {
         const ev = normalizeEvent(raw, runner);
         if (ev.kind === 'error' && ev.text) error = ev.text;
@@ -123,7 +128,7 @@ export function spawnStreamTurn(req) {
       if (remainder.trim()) ingest(parseJsonlChunk('\n', remainder, runner));
       if (writeOutFile) writeFileSync(outFile, reply);
       logStream.end();
-      resolve({ code: code ?? 1, stderr, error });
+      resolve({ code: code ?? 1, stderr, error, session });
     });
 
     if (stdinText != null) child.stdin.write(stdinText);

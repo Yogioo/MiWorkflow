@@ -15,7 +15,7 @@ export function createRunner(name, opts = {}) {
 }
 
 // 续会话能力：'create-or-resume'（pi）/ 'resume'（codex，只能续）/ 'none'（cursor）。
-// v1.7 不开放续会话（Core.md §19.2），留着以后接 inputs.session
+// 会话号由 opts.agent.session 传入（Core.md §10.1），怎么进出见 ../session.mjs
 export function runnerSessionMode(name) {
   return createRunner(name).sessionMode;
 }

@@ -417,6 +417,12 @@ Agent 输出：结构化选择
 }
 ```
 
+会话进出（可选）：任务写 `agent(goal, { agent: { cli, session } })` 续上同一个 Agent 会话；
+会话号是适配器参数（与 `model`、`thinking` 同级），**不进**发给 Agent 的 `inputs`。
+适配器能交回会话号时，输出在上面四个字段之外多一个顶层 `session`；core 只把它透传进 `agent()` 的返回值、
+记进该步的日志行，**不参与契约判定**（缺失或形状任意都不影响 `status` / `choice` 的校验）。
+没有 `session` 时返回值仍是 `{status, choice, reason, data}`。
+
 约束：
 
 - 必须结构化 JSON
@@ -426,7 +432,7 @@ Agent 输出：结构化选择
 
 ### 10.1 内核适配器 `agents/agent_cli.mjs`
 
-`node agents/agent_cli.mjs <pi|codex|cursor> [--model m] [--thinking t] [--provider p] [-- 其余开关]`：
+`node agents/agent_cli.mjs <pi|codex|cursor> [--model m] [--thinking t] [--provider p] [--session s] [-- 其余开关]`：
 一份适配器，一个参数选家。与 `viewer/` 同类的外部工具（core 不 import 它，只当命令起它）——
 它带着全权限开关，放在内核仓库，不跟着业务仓库的进化一起被改。
 runner 层从 exec-review 技能复制起步，之后**独立演进**，不回头同步、不依赖 exec-review。
@@ -440,8 +446,8 @@ runner 层从 exec-review 技能复制起步，之后**独立演进**，不回�
   });
   ```
 
-  `opts.agent` 是对象 `{ cli, model?, thinking?, provider?, args? }`，或只写 CLI 名的字符串（`'pi'` = `{ cli: 'pi' }`）。
-  core 把它展开成 `node <内核>/agents/agent_cli.mjs <cli> [--model <m>] [--thinking <t>] [--provider <p>] [-- ...args]`。
+  `opts.agent` 是对象 `{ cli, model?, thinking?, provider?, session?, args? }`，或只写 CLI 名的字符串（`'pi'` = `{ cli: 'pi' }`）。
+  core 把它展开成 `node <内核>/agents/agent_cli.mjs <cli> [--model <m>] [--thinking <t>] [--provider <p>] [--session <s>] [-- ...args]`。
   - 值**原样转交**，各家换成自己的开关，不翻译、不校验：
     pi → `--model` / `--thinking` / `--provider`；codex → `-m` / `-c model_reasoning_effort=<t>`；
     cursor → `--model <m>[effort=<t>]`，**只给 `thinking` 不给 `model` 就报错**，不静默丢掉。
@@ -477,8 +483,13 @@ runner 层从 exec-review 技能复制起步，之后**独立演进**，不回�
   提示词、原始输出、统一后的事件落在 HOME `logs/<runId>/agent-<n>.{prompt.md,log,events.jsonl,out.txt}`
   （子目录，viewer 不当成一次运行）；core 开跑前就给每次 `agent()` 分配好这个位置，写进日志的 `events` 字段
   （§13.1 的进行中记录）—— 适配器会往里写，自定义命令（`opts.cmd`）也可以不写。这顺带就是 E3「长任务过程留痕」的底子。
-- **会话**：runner 层自带续会话能力表（pi 有就续没有就建、codex 只能续、cursor 不支持就报错）。
-  v1.7 **不开放**，以后按需接 `inputs.session`。
+- **会话**（§10 的会话进出）：`opts.agent.session` → `--session <s>`，各家按 runner 的续会话能力表处理：
+  - pi：给了就 `--session-id <s>`（有就续、没有就建，不再带 `--no-session`），并交回这个会话号；没给维持一次性会话（`--no-session`），不交回。
+  - codex：给了就 `exec resume <s>` 续；没给就从事件流取本次会话号（`thread.started` 的 `thread_id`）交回。
+  - cursor：续会话接口没验证过，不交回 `session`；传了 `session` 按「续不上」处理，开跑前就判。
+  - 续不上（会话不存在 / CLI 不支持续）→ `{status:'failed', choice:'session_not_found', reason:'<哪家> 续不上会话 <s>：<原因>'}`。
+    会话不存在靠 CLI 失败时的错误文本识别（`agents/session.mjs`），认不出的仍是 `agent_cli_failed`。
+  - 交回的会话号写在回话 JSON 顶层 `session`；回话不是 JSON 对象时原样交给 core 判（§6.2）。
 - **预算**：只有 `timeoutSec` 真生效 —— 适配器到点杀整棵进程树，core 在 `timeoutSec + 5` 秒兜底；
   `maxTokens` / `maxTurns` 三家都没有对应开关，只写进提示词。默认 7200 秒（2 小时），按改代码这类长活定的；
   短活想早点失败就显式给小一点的 `budget: { timeoutSec }`。

@@ -1,20 +1,32 @@
 #!/usr/bin/env node
 // agent_cli.mjs — 运行期 Agent 适配器（Core.md §10、§19.2）
-//   node agents/agent_cli.mjs <pi|codex|cursor> [--model m] [--thinking t] [--provider p] [-- 其余开关]
+//   node agents/agent_cli.mjs <pi|codex|cursor> [--model m] [--thinking t] [--provider p] [--session s] [-- 其余开关]
 // stdin：§10 任务包 → 渲染提示词 → 起那家 CLI → stdout：最后一条回话（剥一层围栏；整段不是 JSON 就取最后一段 JSON）。
-// 合不合 §6.2 契约由 core 判；这里只在 CLI 起不来 / 非 0 退出 / 超时 / 没回话时写 agent_cli_failed（这是事实，不是猜）。
+// 合不合 §6.2 契约由 core 判；这里只在 CLI 起不来 / 非 0 退出 / 超时 / 没回话时写 agent_cli_failed（这是事实，不是猜），
+// 续不上会话时写 session_not_found。有会话号可交回时，在回话 JSON 顶层加 session。
 // 过程翻成人话写 stderr；提示词、原始输出、归一事件落在 AGENTFLOW_AGENT_LOG（core 给的前缀）或临时目录。
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRunner } from './runners/index.mjs';
 import { parseCliArgv, renderPrompt, normalizeReply } from './prompt.mjs';
+import { precheckSession, looksLikeSessionNotFound, sessionNotFound, sessionOut } from './session.mjs';
+
+// 带着现成结果的失败：catch 里原样写出，不再包成 agent_cli_failed
+class Outcome extends Error {
+  constructor(result) {
+    super(result.reason);
+    this.result = result;
+  }
+}
 
 let cli = 'agent';
 try {
   const opts = parseCliArgv(process.argv.slice(2));
   cli = opts.cli || cli;
   const runner = createRunner(opts.cli);
+  const precheck = precheckSession(cli, runner.sessionMode, opts.session);
+  if (precheck) throw new Outcome(precheck);
 
   let raw = '';
   for await (const chunk of process.stdin) raw += chunk;
@@ -55,6 +67,7 @@ try {
       model: opts.model,
       thinking: opts.thinking,
       provider: opts.provider,
+      session: opts.session,
       extraArgs: opts.extraArgs,
       signal: controller.signal,
       onEvent: narrate
@@ -67,17 +80,33 @@ try {
 
   if (res.aborted) throw new Error(`${cli} 超时（${timeoutSec} 秒），已结束进程`);
   if (res.code !== 0) {
-    throw new Error(`${cli} 退出码 ${res.code}：${firstLine(res.error) || firstLine(res.stderr) || '没有错误输出'}`);
+    const why = firstLine(res.error) || firstLine(res.stderr) || '没有错误输出';
+    if (opts.session && looksLikeSessionNotFound(`${res.error}\n${res.stderr}`)) {
+      throw new Outcome(sessionNotFound(cli, opts.session, why));
+    }
+    throw new Error(`${cli} 退出码 ${res.code}：${why}`);
   }
 
   const reply = readFileSync(files.outFile, 'utf8');
   if (!reply.trim()) throw new Error(`${cli} 没有给出最后回话`);
   const { text, extracted } = normalizeReply(reply);
   if (extracted) say('  · 回话里除了 JSON 还有别的字，取了最后一段 JSON');
-  process.stdout.write(text);
+  process.stdout.write(withSession(text, sessionOut(runner.sessionMode, opts.session, res.session)));
 } catch (err) {
-  process.stdout.write(JSON.stringify({ status: 'failed', choice: 'agent_cli_failed', reason: err.message, data: {} }));
+  process.stdout.write(JSON.stringify(err.result ?? { status: 'failed', choice: 'agent_cli_failed', reason: err.message, data: {} }));
   process.exitCode = 1;
+}
+
+// 会话号放回话 JSON 顶层；没有会话号、或回话不是 JSON 对象（交给 core 判）就原样
+function withSession(text, session) {
+  if (!session) return text;
+  try {
+    const out = JSON.parse(text);
+    if (!out || typeof out !== 'object' || Array.isArray(out)) return text;
+    return JSON.stringify({ ...out, session });
+  } catch {
+    return text;
+  }
 }
 
 function say(line) {

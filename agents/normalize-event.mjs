@@ -199,6 +199,16 @@ function messageText(msg) {
   return msg.content.map((p) => (p && typeof p === 'object' && 'text' in p ? String(p.text || '') : '')).join('');
 }
 
+// ── 会话号 ───────────────────────────────────────────────────────────────
+// 从原始事件里取本次会话号（只有 codex 在事件流里报）：thread.started 的 thread_id，旧版 session_configured 的 session_id
+export function extractSessionFromRaw(raw, runner) {
+  if (!raw || typeof raw !== 'object' || runner !== 'codex') return '';
+  if (raw.type === 'thread.started' && raw.thread_id) return String(raw.thread_id);
+  const msg = raw.msg && typeof raw.msg === 'object' ? raw.msg : raw;
+  if (msg.type === 'session_configured' && msg.session_id) return String(msg.session_id);
+  return '';
+}
+
 // ── 最后一条回话 ─────────────────────────────────────────────────────────
 // 从原始事件里取「可能是最后回话」的文本；流里越靠后的越新
 export function extractReplyFromRaw(raw, runner) {

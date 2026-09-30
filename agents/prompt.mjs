@@ -1,17 +1,17 @@
 // prompt.mjs — 适配器的纯函数：解析命令行、把 §10 任务包渲染成提示词、剥围栏
 // 输出形状三家都靠提示词：codex 的 --output-schema 走严格模式，不允许 §6.2 里自由形状的 data
 
-// agent_cli.mjs <cli> [--model m] [--thinking t] [--provider p] [-- 其余开关原样给 CLI]
+// agent_cli.mjs <cli> [--model m] [--thinking t] [--provider p] [--session s] [-- 其余开关原样给 CLI]
 export function parseCliArgv(argv) {
   const [cli, ...rest] = argv;
-  const out = { cli, model: '', thinking: '', provider: '', extraArgs: [] };
+  const out = { cli, model: '', thinking: '', provider: '', session: '', extraArgs: [] };
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === '--') {
       out.extraArgs = rest.slice(i + 1);
       break;
     }
-    const m = a.match(/^--(model|thinking|provider)(?:=(.*))?$/);
+    const m = a.match(/^--(model|thinking|provider|session)(?:=(.*))?$/);
     if (!m) throw new Error(`不认识的开关：${a}（给 CLI 的其它开关放在 -- 后面）`);
     out[m[1]] = m[2] ?? rest[++i] ?? '';
   }
