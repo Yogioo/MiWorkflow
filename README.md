@@ -92,9 +92,9 @@ Cursor / Codex / Claude Code / pi 从 cwd 往上就能读到，它让 AI 先跑 
 ```bash
 miworkflow init --template github      # 复制模板（已有文件一个不覆盖）
 miworkflow dev                         # 把就绪 issue 逐个做完
-miworkflow dev --issue 42       # 只做 #42（不看标签和依赖，人点名就跑）
-miworkflow dev --max 3          # 最多 3 个；--max-failures 1 连续失败就停
-miworkflow dev --confirm        # 每次发布（推送 + 关单）前 human 确认；--dry-run 只报会做什么
+miworkflow dev --issue 42              # 只做 #42（不看标签和依赖，人点名就跑）
+miworkflow dev --max 3                 # 最多 3 个；--max-failures 1 连续失败就停
+miworkflow dev --confirm               # 每次发布（推送 + 关单）前 human 确认；--dry-run 只报会做什么
 ```
 
 issue 约定与 afk-run 一致，同一个仓库两边可以换着跑：

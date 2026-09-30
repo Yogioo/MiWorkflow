@@ -2,7 +2,7 @@
 // 人是把 issue 贴上 ready-for-agent 标签；失败就回滚 + 贴评论 + afk-failed，等人看完摘标签重新入队。
 //
 // 用法：
-//   miworkflow dev                           按队列一直跑到空
+//   miworkflow dev                    按队列一直跑到空
 //   miworkflow dev --max 3            最多做 3 个
 //   miworkflow dev --max-failures 1   连续失败 1 次就停（默认 3）
 //   miworkflow dev --issue 42         只做 #42（不看标签和依赖，人点名就跑）
