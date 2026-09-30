@@ -135,7 +135,7 @@ export async function openApi(pathname, { query = {}, method = 'GET', body, time
 // TAPD 的描述、评论都是富文本 HTML。转成完整 Markdown：标题、表格、列表、加粗、斜体、行内代码、代码块、链接、引用。
 // <img> 交给 opts.img(src, alt) 决定写成什么；src 用宽松正则认（属性顺序不定，单 / 双引号、不带引号都认）。
 export const IMG_SRC = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))[^>]*>/gi;
-export const imgSrcOf = (m) => String(m[1] ?? m[2] ?? m[3] ?? '').trim();
+export const imgSrcOf = (m) => decode(String(m[1] ?? m[2] ?? m[3] ?? '').trim());
 
 const VOID = new Set(['br', 'img', 'hr', 'input', 'meta', 'link', 'col', 'area', 'base', 'wbr', 'source']);
 const DROP = new Set(['script', 'style', 'head', 'title']);
@@ -255,7 +255,7 @@ export function htmlToMarkdown(html, { img = (src, alt) => `![${alt}](${src})` }
       case 'img': {
         const m = [...n.raw.matchAll(IMG_SRC)][0];
         const src = m ? imgSrcOf(m) : '';
-        return src ? img(decode(src), attrOf(n.raw, 'alt').replace(/[[\]]/g, '')) : '';
+        return src ? img(src, attrOf(n.raw, 'alt').replace(/[[\]]/g, '')) : '';
       }
       case 'ul': case 'ol': return ctx.cell ? n.children.map((c) => inline(c.children ?? [], ctx).trim()).filter(Boolean).join('<br>') : list(n, ctx);
       case 'table': return ctx.cell ? kids() : table(n, ctx);

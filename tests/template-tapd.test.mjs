@@ -246,11 +246,11 @@ test('ticket_view：快照含描述 + 全部评论（走 OpenAPI），HTML 转 M
         '<ul><li><strong>必须</strong>能点</li></ul><p><img width=10 src=/tfl/a.png></p><p><img src="/tfl/missing.png" alt="坏"></p>'
     })],
     comments: [
-      { id: '2', entry_type: 'stories', entry_id: id, description: '<p>第二条<img src=\'/tfl/b.jpg\'/></p>', author: 'bob', created: '2026-01-02 00:00:00' },
+      { id: '2', entry_type: 'stories', entry_id: id, description: '<p>第二条<img src=\'/tfl/b.jpg\'/><img src="/tfl/c.png?a=1&amp;b=2"></p>', author: 'bob', created: '2026-01-02 00:00:00' },
       { id: '1', entry_type: 'stories', entry_id: id, description: '<p>第一条 <b>要点</b></p>', author: 'amy', created: '2026-01-01 00:00:00' },
       { id: '3', entry_type: 'stories', entry_id: 'other', description: '别家的', author: 'x', created: '1' }
     ],
-    files: { '/tfl/a.png': PNG.toString('base64'), '/tfl/b.jpg': JPG.toString('base64') }
+    files: { '/tfl/a.png': PNG.toString('base64'), '/tfl/b.jpg': JPG.toString('base64'), '/tfl/c.png': PNG.toString('base64') }
   });
   const api = await startFakeOpenApi(f);
   try {
@@ -280,7 +280,8 @@ test('ticket_view：快照含描述 + 全部评论（走 OpenAPI），HTML 转 M
     assert.ok(!calls.some((c) => c[0] === 'comment'), '评论不走 tapd-cli comment list');
     assert.deepEqual(calls[0].slice(0, 4), ['story', 'list', `id=${id}`, 'with_v_status=1']);
     assert.deepEqual(calls.filter((c) => c[0] === 'attachment').map((c) => c.find((a) => a.startsWith('image_path='))),
-      ['image_path=/tfl/a.png', 'image_path=/tfl/missing.png', 'image_path=/tfl/b.jpg']);
+      ['image_path=/tfl/a.png', 'image_path=/tfl/missing.png', 'image_path=/tfl/b.jpg', 'image_path=/tfl/c.png?a=1&b=2']);
+    assert.match(md, /!\[\]\(images\/3\.png\)/, 'src 里的实体解码后再下载、再改写');
     const comment = openApiLog(f).filter((l) => l.url.startsWith('/comments'));
     assert.equal(comment.length, 1);
     assert.match(comment[0].url, /entry_type=stories/);
