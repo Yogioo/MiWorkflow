@@ -124,7 +124,7 @@ async function runTicket(t, ctx) {
   const st = await script('git_state', { cwd: root, baseSha: base });
   if (st.status !== 'ok') return fail(t, `看不了改动：${st.error}`, base, ctx);
   const changed = st.data.changed;
-  if (!changed.length) return fail(t, `Agent 报完成，但 git 看不到改动：${dev.reason}`, base, ctx);
+  if (!changed.length) return fail(t, `Agent 报完成，但 git 看不到改动：${dev.reason}`, base, ctx, reply);
 
   // 3. 审查（有问题直接改）
   reply = nextReply(t);
