@@ -284,8 +284,8 @@ test('init：项目根没有 AGENTS.md 就建一个（不在 git 仓库里也是
   assert.match(r.stdout, /AGENTS\.md（新建）/);
 });
 
-test('init：复制模板，已有文件不覆盖并列出来；没有的模板报错', (t) => {
-  const tpl = path.join(TEMPLATES, '__test_tpl');
+test('init：复制模板（先叠共用模板），已有文件不覆盖并列出来；没有的模板报错', (t) => {
+  const tpl = path.join(TEMPLATES, 'zz_test_tpl');
   const hadTemplates = existsSync(TEMPLATES);
   mkdirSync(path.join(tpl, 'tasks'), { recursive: true });
   writeFileSync(path.join(tpl, 'tasks', 'from_tpl.mjs'), "export const title = '模板任务';\n");
@@ -296,19 +296,40 @@ test('init：复制模板，已有文件不覆盖并列出来；没有的模板�
   mkdirSync(path.join(dir, '.workflow'));
   writeFileSync(path.join(dir, '.workflow', 'config.mjs'), 'export const X = 42;\n');
 
-  const r = cli(['init', '--template', '__test_tpl'], { cwd: dir });
+  const r = cli(['init', '--template', 'zz_test_tpl'], { cwd: dir });
   assert.equal(r.code, 0, r.stderr);
   assert.ok(existsSync(path.join(dir, '.workflow', 'tasks', 'from_tpl.mjs')));
+  assert.ok(existsSync(path.join(dir, '.workflow', 'tasks', 'dev.mjs')), '共用模板也复制了');
   assert.equal(readFileSync(path.join(dir, '.workflow', 'config.mjs'), 'utf8'), 'export const X = 42;\n');
   assert.match(r.stdout, /config\.mjs（已存在，没动）/);
 
-  const again = cli(['init', '--template', '__test_tpl'], { cwd: dir });
+  const again = cli(['init', '--template', 'zz_test_tpl'], { cwd: dir });
   assert.equal(again.code, 0, again.stderr);
   assert.doesNotMatch(again.stdout, /^\s+\+ /m, '重复 init 一个文件都不新建');
 
   const bad = cli(['init', '--template', '__nope'], { cwd: dir });
   assert.equal(bad.code, 1);
   assert.match(bad.stderr, /没有这个模板/);
+
+  const shared = cli(['init', '--template', '_shared'], { cwd: dir });
+  assert.equal(shared.code, 1, '共用模板不能单独选');
+  assert.doesNotMatch(shared.stderr, /可选：[^\n]*_shared/);
+});
+
+test('init --template github：共用 + GitHub 两部分都复制进来', () => {
+  const dir = tmpDir();
+  const r = cli(['init', '--template', 'github'], { cwd: dir });
+  assert.equal(r.code, 0, r.stderr);
+  const home = path.join(dir, '.workflow');
+  for (const f of ['config.mjs', 'tasks/dev.mjs', 'scripts/_lib.mjs', 'scripts/git_commit.mjs', 'scripts/run_cmd.mjs',
+    'source.mjs', 'tasks/github_discuss.mjs', 'scripts/_gh.mjs', 'scripts/gh_ready.mjs', 'prompts/grilling.md']) {
+    assert.ok(existsSync(path.join(home, f)), f);
+  }
+  assert.ok(!existsSync(path.join(home, 'tasks', 'github_dev.mjs')));
+
+  const again = cli(['init', '--template', 'github'], { cwd: dir });
+  assert.equal(again.code, 0, again.stderr);
+  assert.doesNotMatch(again.stdout, /^\s+\+ /m, '重复 init 一个文件都不新建');
 });
 
 // ── new ───────────────────────────────────────────────────────────────────

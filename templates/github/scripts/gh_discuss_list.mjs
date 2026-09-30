@@ -1,7 +1,8 @@
 // 列要处理的讨论单：打开、贴了进入标签，且没有阶段标签（discuss:*）或阶段是 grilling / spec。
 // 入：{ enter, grilling, spec, repo? }
 // 出：{ status, say, data: { issues: [{ number, title, labels }] } }，按 issue 号升序
-import { main, readStdin, emit, runGh, labelName } from './_lib.mjs';
+import { main, readStdin, emit } from './_lib.mjs';
+import { runGh, labelName } from './_gh.mjs';
 
 await main(async () => {
   const args = await readStdin();

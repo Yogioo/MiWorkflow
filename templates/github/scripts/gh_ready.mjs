@@ -1,7 +1,8 @@
 // 列出就绪的 issue：贴 ready 标签、没在跑、没失败、依赖都满足；按 P 优先级 + issue 号排序。
 // 入：{ repo?, labels?: { ready, inProgress, failed } }
 // 出：{ status, say, data: { issues: [{ number, title, priority }] } }
-import { main, readStdin, emit, runGh, hasLabel, priorityFromLabels, parseTaskList } from './_lib.mjs';
+import { main, readStdin, emit } from './_lib.mjs';
+import { runGh, hasLabel, priorityFromLabels, parseTaskList } from './_gh.mjs';
 
 const LIST_LIMIT = 1000;
 

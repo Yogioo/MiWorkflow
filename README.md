@@ -91,10 +91,10 @@ Cursor / Codex / Claude Code / pi 从 cwd 往上就能读到，它让 AI 先跑 
 
 ```bash
 miworkflow init --template github      # 复制模板（已有文件一个不覆盖）
-miworkflow github_dev                  # 把就绪 issue 逐个做完
-miworkflow github_dev --issue 42       # 只做 #42（不看标签和依赖，人点名就跑）
-miworkflow github_dev --max 3          # 最多 3 个；--max-failures 1 连续失败就停
-miworkflow github_dev --confirm        # 每次发布（推送 + 关单）前 human 确认；--dry-run 只报会做什么
+miworkflow dev                         # 把就绪 issue 逐个做完
+miworkflow dev --issue 42       # 只做 #42（不看标签和依赖，人点名就跑）
+miworkflow dev --max 3          # 最多 3 个；--max-failures 1 连续失败就停
+miworkflow dev --confirm        # 每次发布（推送 + 关单）前 human 确认；--dry-run 只报会做什么
 ```
 
 issue 约定与 afk-run 一致，同一个仓库两边可以换着跑：
@@ -119,9 +119,9 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
 - 一轮失败会发一条评论写明原因，不自动重试、不贴 `afk-failed`；回复任意内容即重试
 - 回复 `/spec` → AI 按 `.workflow/prompts/spec.md` 把 spec 写进正文末尾的 spec 标记区域（原文留在上面），阶段改为 `discuss:spec`；
   之后的评论（或再次 `/spec`）都是修改意见，AI 只重写那一段。spec 区域不算「人的内容」，AI 写 spec 不会触发它自己；spec 不贴 `ready-for-agent`
-- 追问的 Agent 由 `config.mjs` 的 `DISCUSS` 指定
+- 追问的 Agent 由 `source.mjs` 的 `DISCUSS` 指定
 
-改行为就改 `.workflow/config.mjs`（`DEV` / `REVIEWER` / `DISCUSS` / `VERIFY` / `ROUNDS` / `PUSH` / 标签名）；
+改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `VERIFY` / `ROUNDS` / `PUSH`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS`）；
 模板复制出去后归项目所有，各自演进，不回头同步内核。
 
 ## 内核仓库

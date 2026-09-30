@@ -1,7 +1,8 @@
 // 改 issue 状态：认领（claimed）/ 完成关单（done）/ 未推送留人处理（unpushed）/ 失败待人看（failed）。
 // 入：{ number, action, comment?, sha?, repo?, labels?: {...}, dryRun? }
 // 出：{ status, say, data: { did: string[] } }
-import { main, readStdin, emit, runGh } from './_lib.mjs';
+import { main, readStdin, emit } from './_lib.mjs';
+import { runGh } from './_gh.mjs';
 
 await main(async () => {
   const args = await readStdin();

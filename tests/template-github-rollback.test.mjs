@@ -1,4 +1,4 @@
-// github_dev 模板的端到端测试：失败回滚（含备份 ref）。脚手架在 tests/support/github-template.mjs。
+// dev（GitHub 工单源）的端到端测试：失败回滚（含备份 ref）。脚手架在 tests/support/github-template.mjs。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -12,7 +12,7 @@ test('审查拒绝 → 回滚改动 + afk-failed + 评论', () => {
     { choice: 'reject', reason: '方向根本错了' }
   ]);
 
-  const r = cli(s, ['github_dev']);
+  const r = cli(s, ['dev']);
   assert.equal(r.code, 1);
   assert.equal(issueState(s, 1).state, 'OPEN', '失败不关单');
   assert.ok(!existsSync(path.join(s.root, 'bad.txt')), '回滚应删掉 Agent 写的文件');
@@ -31,7 +31,7 @@ test('回滚要丢掉的提交 → 先备份成 ref 再回滚，评论里带上 
     { choice: 'reject', reason: '方向根本错了' }
   ]);
 
-  const r = cli(s, ['github_dev']);
+  const r = cli(s, ['dev']);
   assert.equal(r.code, 1);
   assert.equal(gitOut(['log', '-1', '--pretty=%s'], s.root), 'init', 'HEAD 回到起点');
   assert.ok(!existsSync(path.join(s.root, 'bad.txt')), '回滚应删掉 Agent 写的文件');
@@ -55,7 +55,7 @@ test('验证不过、超过 ROUNDS → 回滚 + afk-failed', () => {
     { choice: 'fixed', reason: '改了' }
   ]);
 
-  const r = cli(s, ['github_dev']);
+  const r = cli(s, ['dev']);
   assert.equal(r.code, 1);
   assert.ok(!existsSync(path.join(s.root, 'a.txt')), '回滚');
   assert.ok(labelsOf(s, 1).includes('afk-failed'));
@@ -66,7 +66,7 @@ test('Agent need_human → 回滚 + 把问题贴成评论 + afk-failed', () => {
   const s = setup({ issues: [issue(1, { labels: ['ready-for-agent'] })] });
   plan(s, [{ status: 'need_human', choice: 'ask', reason: '请补充接口文档' }]);
 
-  const r = cli(s, ['github_dev']);
+  const r = cli(s, ['dev']);
   assert.equal(r.code, 1);
   assert.ok(labelsOf(s, 1).includes('afk-failed'));
   assert.match(comments(issueState(s, 1)), /请补充接口文档/);

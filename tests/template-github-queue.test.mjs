@@ -1,4 +1,4 @@
-// github_dev 模板的端到端测试：选队列、脏工作区、--dry-run。脚手架在 tests/support/github-template.mjs。
+// dev（GitHub 工单源）的端到端测试：选队列、脏工作区、--dry-run。脚手架在 tests/support/github-template.mjs。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -14,7 +14,7 @@ test('依赖挡住 → 不算就绪，不跑', () => {
   });
   plan(s, []);
 
-  const r = cli(s, ['github_dev']);
+  const r = cli(s, ['dev']);
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /队列空/);
   assert.equal(issueState(s, 2).state, 'OPEN');
@@ -33,7 +33,7 @@ test('优先级 P0 比 issue 号靠前；--issue 点名不看标签和依赖', (
     { choice: 'clean', reason: 'ok' }
   ]);
 
-  const r = cli(s, ['github_dev', '--max', '1']);
+  const r = cli(s, ['dev', '--max', '1']);
   assert.equal(r.code, 0, r.stderr);
   assert.equal(issueState(s, 9).state, 'CLOSED', 'P0 先做');
   assert.equal(issueState(s, 1).state, 'OPEN');
@@ -44,7 +44,7 @@ test('优先级 P0 比 issue 号靠前；--issue 点名不看标签和依赖', (
     { choice: 'done', reason: '做了', file: { name: 'seven.txt', content: '1' } },
     { choice: 'clean', reason: 'ok' }
   ]);
-  const r2 = cli(s2, ['github_dev', '--issue', '7']);
+  const r2 = cli(s2, ['dev', '--issue', '7']);
   assert.equal(r2.code, 0, r2.stderr);
   assert.equal(issueState(s2, 7).state, 'CLOSED');
 });
@@ -55,7 +55,7 @@ test('工作区不干净 → 整轮不跑', () => {
     { choice: 'done', reason: '做了', file: { name: 'x', content: '1' } }
   ]);
 
-  const r = cli(s, ['github_dev']);
+  const r = cli(s, ['dev']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /工作区有未提交改动/);
   assert.equal(issueState(s, 1).state, 'OPEN');
@@ -66,7 +66,7 @@ test('--dry-run → 只报会做哪个 issue，不叫 Agent、不改盘', () => 
   const s = setup({ issues: [issue(1, { title: '加个文件', labels: ['ready-for-agent'] })] });
   plan(s, []);
 
-  const r = cli(s, ['github_dev', '--dry-run']);
+  const r = cli(s, ['dev', '--dry-run']);
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /干跑/);
   assert.match(r.stdout, /#1/);

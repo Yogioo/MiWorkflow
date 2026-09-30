@@ -21,7 +21,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { DISCUSS } from '../config.mjs';
+import { DISCUSS } from '../source.mjs';
 
 export const title = 'GitHub 讨论单：agent-discuss → 评论区逐轮追问 → /spec 写入正文 → /tickets 建开发单';
 

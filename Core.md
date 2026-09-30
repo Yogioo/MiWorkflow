@@ -742,8 +742,8 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 
 **模板**：`templates/<名字>/` 是一份完整的 HOME 片段（`tasks/`、`scripts/`、配置常量），**只在 `init` 时复制**，
 不默认加载 —— 跟 §16「不内置具体任务 / 脚本」不冲突。复制过去就归项目所有，在项目里各自演进，**不回头同步**。
-模板的测试留在内核仓库（假外部命令 / 假 Agent），保证复制出去的那一刻是好的。已实现的模板：
-`templates/github/` = GitHub 开发（认领 issue → 开发 → 审查 → 验证 → 提交 → 关单，见 TODO C3）。
+模板的测试留在内核仓库（假外部命令 / 假 Agent），保证复制出去的那一刻是好的。`init` 按组合复制：先复制共用模板 `templates/_shared/`（开发任务 `dev`、git 脚本、`run_cmd`、`config.mjs`），再复制所选工单源；以 `_` 开头的目录不出现在模板菜单与 `--template` 里。已实现的工单源：
+`templates/github/` = GitHub（`gh_*` 脚本、`source.mjs`、讨论流程 `github_discuss`；配合 `dev`：认领 issue → 开发 → 审查 → 验证 → 提交 → 关单，见 TODO C3）。
 
 ---
 
@@ -793,7 +793,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 13. ✅ v1.7 零配置使用：全局命令、原语与 `args` 传参、往上找 `.workflow/`、`init`（选模板）/ `new` / `view`、网页运行按钮、`SKILL.md`（§3、§5、§13.6、§15）。
 14. ✅ v1.7 运行期 Agent 适配器：`agents/agent_cli.mjs`（pi / codex / cursor）、`opts.agent`、`AGENTFLOW_AGENT`（§10.1）。
 15. ✅ 首个工作流：GitHub 开发，作为 `init` 可选的模板 `templates/github/`（TODO C3，已实现）。
-    人是给 issue 贴 `ready-for-agent`；任务 `github_dev` 逐个「认领 → 开发 → 审查 → 验证 → 提交 → 关单」，
+    人是给 issue 贴 `ready-for-agent`；任务 `dev` 逐个「认领 → 开发 → 审查 → 验证 → 提交 → 关单」，
     失败回滚 + 贴评论 + `afk-failed`。测试留内核仓库（假 gh / 假 Agent / 临时 git 仓库）。
     回滚不销毁提交：`base..HEAD` 的提交先备份成 `refs/afk-backup/*` 再回滚，ref 写进失败评论（TODO B7）。
 

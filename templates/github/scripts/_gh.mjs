@@ -1,31 +1,6 @@
-// 模板共用工具：stdin/stdout 契约（Core §6.1）、gh 调用、git 调用。
+// GitHub 工单源专用工具：gh 调用、issue / label 小工具。通用的 stdin/stdout、git 在 _lib.mjs。
 // 这是模板内容，复制进项目后归项目所有。
 import { execFileSync } from 'node:child_process';
-
-// stdin 读一段 JSON；空输入当 {}
-export async function readStdin() {
-  let raw = '';
-  for await (const chunk of process.stdin) raw += chunk;
-  return raw.trim() ? JSON.parse(raw) : {};
-}
-
-export function emit(result) {
-  process.stdout.write(JSON.stringify(result));
-}
-
-// 脚本外壳：出错也回一个合法的 failed（§6.1），别让 core 只能从 stderr 猜
-export async function main(handler) {
-  try {
-    await handler();
-  } catch (err) {
-    const message = String(err?.message ?? err);
-    process.stdout.write(JSON.stringify({
-      status: 'failed',
-      say: `出错了：${message.split('\n')[0]}`,
-      error: message
-    }));
-  }
-}
 
 // ── gh ────────────────────────────────────────────────────────────────────
 // 不经 shell（Core §11）；网络类错误有限重试。
@@ -63,13 +38,6 @@ export function runGh(argv, opts = {}) {
       sleep((opts.retryDelayMs ?? RETRY_DELAY_MS) * 2 ** attempt);
     }
   }
-}
-
-// ── git ───────────────────────────────────────────────────────────────────
-export function git(argv, cwd) {
-  return execFileSync('git', argv, {
-    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
-  });
 }
 
 // ── issue / label 小工具 ──────────────────────────────────────────────────

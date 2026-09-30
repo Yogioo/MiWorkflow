@@ -1,7 +1,8 @@
 // 回查讨论单拆出的开发单：找出正文 Parent 指向讨论单的打开的 issue，确认开发队列能解析它们的标签与依赖。
 // 入：{ parent, ready?, repo? }
 // 出：{ status, say, data: { tickets: [{ number, title }], problems: string[] } }，tickets 按 issue 号升序
-import { main, readStdin, emit, runGh, hasLabel, labelName, parseTaskList } from './_lib.mjs';
+import { main, readStdin, emit } from './_lib.mjs';
+import { runGh, hasLabel, labelName, parseTaskList } from './_gh.mjs';
 
 const LIST_LIMIT = 1000;
 

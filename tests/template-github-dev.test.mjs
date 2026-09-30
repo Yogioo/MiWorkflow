@@ -1,4 +1,4 @@
-// github_dev 模板的端到端测试：开发 → 提交 → 关单的正常路径。脚手架在 tests/support/github-template.mjs。
+// dev（GitHub 工单源）的端到端测试：开发 → 提交 → 关单的正常路径。脚手架在 tests/support/github-template.mjs。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -12,7 +12,7 @@ test('成功：认领 → 开发 → 审查 → 提交 → 关单（且推送）
     { choice: 'clean', reason: '看着没问题' }
   ]);
 
-  const r = cli(s, ['github_dev']);
+  const r = cli(s, ['dev']);
   assert.equal(r.code, 0, r.stderr);
   assert.equal(issueState(s, 1).state, 'CLOSED');
   assert.deepEqual(labelsOf(s, 1), [], 'ready 与 in-progress 都要摘掉');
@@ -35,7 +35,7 @@ test('验证配了且能过 → 正常提交关单', () => {
     { choice: 'clean', reason: '没问题' }
   ]);
 
-  const r = cli(s, ['github_dev']);
+  const r = cli(s, ['dev']);
   assert.equal(r.code, 0, r.stderr);
   assert.equal(issueState(s, 2).state, 'CLOSED');
 });
@@ -52,7 +52,7 @@ test('Agent 自己先提交了 → 不判失败，照常推送关单', () => {
     { choice: 'clean', reason: '看着没问题' }
   ]);
 
-  const r = cli(s, ['github_dev']);
+  const r = cli(s, ['dev']);
   assert.equal(r.code, 0, r.stderr);
   assert.equal(issueState(s, 1).state, 'CLOSED');
   assert.ok(!/commit_failed/.test(comments(issueState(s, 1))), '不该有 commit_failed 评论');

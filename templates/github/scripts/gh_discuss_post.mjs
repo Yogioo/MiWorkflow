@@ -1,7 +1,8 @@
 // 讨论单的写操作：改正文、贴 / 摘标签、发评论（都可选，按顺序做）。
 // 入：{ number, setBody?, addLabel?, removeLabel?, body?, repo? }
 // 出：{ status, say, data: { did: string[] } }
-import { main, readStdin, emit, runGh } from './_lib.mjs';
+import { main, readStdin, emit } from './_lib.mjs';
+import { runGh } from './_gh.mjs';
 
 await main(async () => {
   const args = await readStdin();

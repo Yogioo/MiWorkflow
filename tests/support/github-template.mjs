@@ -1,7 +1,7 @@
-// github_dev 模板的端到端脚手架：假 gh + 假 Agent + 临时 git 仓库。
+// dev + GitHub 工单源的端到端脚手架：假 gh + 假 Agent + 临时 git 仓库。
 // 用例拆在 template-github-*.test.mjs 里：node:test 只按文件起进程，而测试体是同步 spawnSync
 // （会把事件循环堵死，文件内 describe 并发也没用），所以靠拆文件让它们真并行。
-// C3 模板（templates/github/）的端到端测试：假 gh + 假 Agent + 临时 git 仓库（Core §15）。
+// C3 模板（templates/_shared/ + templates/github/）的端到端测试：假 gh + 假 Agent + 临时 git 仓库（Core §15）。
 // 模板复制出去的那一刻要是好的——所以这些测试留在内核仓库，不跟着模板进项目。
 import { after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +12,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const TEMPLATE = path.join(ROOT, 'templates', 'github');
+// 与 init --template github 同一套组合：先共用模板，再 GitHub 工单源
+const TEMPLATES = ['_shared', 'github'].map((t) => path.join(ROOT, 'templates', t));
 
 const TMP = mkdtempSync(path.join(os.tmpdir(), 'miworkflow-c3-'));
 after(() => rmSync(TMP, { recursive: true, force: true }));
@@ -105,11 +106,15 @@ export const issue = (number, { title = `issue ${number}`, body = `做 ${number}
 export const CONFIG = (verify, rounds, push) => [
   'export const DEV = null;',
   'export const REVIEWER = null;',
-  'export const DISCUSS = null;',
   `export const VERIFY = ${JSON.stringify(verify)};`,
   `export const ROUNDS = ${rounds};`,
   `export const PUSH = ${push};`,
+  ''
+].join('\n');
+
+export const SOURCE = [
   "export const LABELS = { ready: 'ready-for-agent', inProgress: 'in-progress', failed: 'afk-failed' };",
+  'export const DISCUSS = null;',
   ''
 ].join('\n');
 
@@ -120,9 +125,10 @@ export function setup({ issues = [], verify = '', rounds = 2, push = false, dirt
 
   const home = path.join(root, '.workflow');
   mkdirSync(home, { recursive: true });
-  cpSync(TEMPLATE, home, { recursive: true });
+  for (const t of TEMPLATES) cpSync(t, home, { recursive: true });
   const withPush = push || remoteAhead;
   writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush));
+  writeFileSync(path.join(home, 'source.mjs'), SOURCE);
   writeFileSync(path.join(home, '.gitignore'), 'logs/\n');
 
   git(['init', '-q', '--initial-branch=main'], root);

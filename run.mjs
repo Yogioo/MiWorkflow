@@ -10,6 +10,8 @@ import path from 'node:path';
 const KERNEL = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = JSON.parse(readFileSync(path.join(KERNEL, 'package.json'), 'utf8')).version;
 const TEMPLATES = path.join(KERNEL, 'templates');
+// 工单源模板都先叠上这份共用模板；以 _ 开头的目录不当模板列出
+const SHARED = '_shared';
 const SKILL = path.join(KERNEL, 'SKILL.md');
 const RESERVED = new Set(['init', 'new', 'view', 'skill']);
 const NAME = /^[A-Za-z0-9_-]+$/;
@@ -157,7 +159,9 @@ async function init(template) {
   for (const dir of ['tasks', 'scripts']) mkdirSync(path.join(home, dir), { recursive: true });
   place(path.join(home, '.gitignore'), home, created, skipped, (f) => writeFileSync(f, 'logs/\n'));
   place(path.join(home, 'AGENTS.md'), home, created, skipped, (f) => writeFileSync(f, AGENTS_MD));
-  if (template !== 'blank') copyTree(path.join(TEMPLATES, template), home, home, created, skipped);
+  if (template !== 'blank') {
+    for (const part of [SHARED, template]) copyTree(path.join(TEMPLATES, part), home, home, created, skipped);
+  }
   const rootAgents = writeRootAgents(root);
 
   console.log(`HOME  ${home}（模板：${template}）`);
@@ -169,7 +173,8 @@ async function init(template) {
 
 function listTemplates() {
   try {
-    return readdirSync(TEMPLATES, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    return readdirSync(TEMPLATES, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && !d.name.startsWith('_')).map((d) => d.name);
   } catch {
     return [];
   }
