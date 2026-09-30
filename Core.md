@@ -754,12 +754,25 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 
 - **工单快照**（读）：正文 + 全部评论转成 Markdown，写到 `logs/<runId>/tickets/<id>/ticket.md`，图片下到同目录 `images/`、相对路径引用；Agent 的 `inputs` 只给路径，自己读。
 - **回帖稿**（写）：`dev` 每次调 Agent 前分配 `logs/<runId>/tickets/<id>/reply-<n>.md`；Agent 有话对人说就写进去（图片放同目录、相对路径），`ticket_mark` 收 `commentFile` 传图发评论；没写就退回一句话的 `comment`。
-- **机器标签**（名字在各工单源的 `source.mjs`，可改）：入队 `ready-for-agent`；`afk-claimed`（认领中）/ `afk-delivered`（已交付）/ `afk-failed`（失败）。依赖满足 = 前置单贴了 `afk-delivered` 或已关单。
+- **机器标签**（名字在各工单源的 `source.mjs`，可改）：入队 `ready-for-agent`；`afk-claimed`（认领中）/ `afk-delivered`（已交付）/ `afk-failed`（失败）。依赖满足 = 前置单贴了 `afk-delivered` 或已关单（TAPD：已到结束类状态）。
 - 每个工单源带 `source.mjs`：这家的常量 + `commitMessage(ticket, kind)`；共用的 `config.mjs` 只留 `DEV / REVIEWER / VERIFY / ROUNDS / PUSH`。
 
 已实现的工单源：
 `templates/github/` = GitHub（`ticket_*` 脚本、`source.mjs`、讨论流程 `github_discuss` 与 `gh_*` 脚本；配合 `dev`：认领 issue → 开发 → 审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`，见 TODO C3、F2）。
 回帖稿带图时用 `gh issue comment --attach` 上传，要 `gh` ≥ 2.99.0；只在确实有图时查版本，不够就把图片换成「图片未上传」占位、`say` 提示升级，评论照发。
+
+`templates/tapd/` = TAPD（`ticket_*` 脚本、`scripts/_tapd.mjs`、`source.mjs`；只有开发流程，讨论流程搁置，TODO F3、F4）。三个脚本的 TAPD 实现：
+
+- 调用：`execFileSync` 起 `tapd-cli`（不经 shell，瞬时错误最多重试 2 次；`MIWORKFLOW_TAPD` 可换成一个 JS 文件）；`tapd-cli` 没封装或取不全的
+  （评论完整 HTML、前后置依赖、工作流结束状态）直连 OpenAPI：`$TAPD_API_ENDPOINT` + `Authorization: Bearer $TAPD_TOKEN`，报错信息里令牌打码。
+- `ticket_ready`：只接需求，一次 `story list label=<ready>` 拿全部候选；优先级按中文档位映射（高 1 / 中 2 / 空 2 / 低 3，不认识的当 2 并提示）；
+  空壳需求（描述与评论都空）进 `blocked` 并贴 `afk-failed` + 评论；依赖 = TAPD 原生前后置，前置贴了 `afk-delivered` 或已到结束类状态才满足
+  （结束类状态先按工作流 `workflows/last_steps` 取，取不到退回 `source.mjs` 的 `END_STATUSES`），不认识的前置当挡住。
+- `ticket_view`：描述与评论 HTML 转完整 Markdown，图片经 `attachment get-image` 下载、按魔数定扩展名。
+- `ticket_mark`：标签多值用 `|` 分隔，写完回读校验；评论要评论人（`COMMENTER` / `TAPD_NPC_ROLE`），缺了在改标签之前报错；
+  回帖稿的图逐张 `upload-image` 换成 TAPD 图片地址再 `comment add`，发完经 OpenAPI 回读。`done` **不关单**：只贴 `afk-delivered`，状态由人验收后流转。
+- `source.mjs`：`WORKSPACE_ID`、`COMMENTER`、`LABELS`、`END_STATUSES`、`PRIORITY`；`ref` 为 `story <需求ID>`；`commitMessage` 先按
+  `--story=<需求ID> --user=<评论人> <标题>`（源码关联写法待真项目实测）。
 
 ---
 
@@ -814,6 +827,8 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
     回滚不销毁提交：`base..HEAD` 的提交先备份成 `refs/afk-backup/*` 再回滚，ref 写进失败评论（TODO B7）。
 16. ✅ 工单源接口（TODO F2）：模板拆成 `_shared` + 工单源、`init` 组合复制；`github_dev` → `dev`；
     `ticket_ready` / `ticket_view` / `ticket_mark`；工单快照 + 回帖稿；机器标签统一（§15）。
+17. ✅ TAPD 开发（TODO F3）：`templates/tapd/`，`dev` 接 TAPD 需求；只接需求、原生前后置依赖、完成不关单（§15）。
+    测试用假 `tapd-cli` + 假 OpenAPI，与 GitHub 同一套场景；源码关联写法、每日配额、结束类状态待真项目实测。
 
 ---
 

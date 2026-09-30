@@ -12,7 +12,7 @@
 3. ✅ **C2 运行期 Agent 适配器**（已实现并用三家真 CLI 实测，见 `Core.md` §10.1）
 4. ✅ **C3 首个工作流：GitHub 开发**（`templates/github/`，已实现并用假 gh / 假 Agent / 临时 git 仓库测了 10 条路径）
 5. ✅ **讨论单 + 循环运行 + 会话**（spec #6，开发单 #7–#12，由 `github_dev` 自己开发完）
-6. **F 工单源无关 + TAPD**（见下文 F，2026-09-30 已拍板；✅ F2 已实现（#13–#19），下一步 F3 接 TAPD 开发；F4 搁置）
+6. ✅ **F 工单源无关 + TAPD**（见下文 F，2026-09-30 已拍板；✅ F2 已实现（#13–#19），✅ F3 TAPD 开发已实现（#20–#26，真 TAPD 项目实测项见 F6）；F4 搁置）
 7. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
 B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项目专用的（如 Unity 跑测试）。
@@ -415,6 +415,15 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 
 ### F3. TAPD 开发流程（`dev` 接 TAPD）
 
+✅ **已实现**（2026-09-30，#20–#26；规范见 `Core.md` §15，用法见 README「开箱即用：TAPD 开发」）。实现时的取舍：
+- 只做开发流程，`dev` 与提示词跟 GitHub 共用，一行没为 TAPD 改；TAPD 的差异全关在三个 `ticket_*` 与 `source.mjs` 里
+- `tapd-cli` 管写（改标签、发评论、传图），读评论 / 前后置依赖 / 工作流结束状态直连 OpenAPI（`tapd-cli` 剥 HTML、没封装）
+- 候选一次 `story list label=<ready>` 拿全，依赖只对非空壳候选查、同一前置一轮只查一次（个人令牌有每日配额）
+- 结束类状态先按项目工作流取，取不到退回 `END_STATUSES` 写死表；不认识的前置一律当挡住，不猜
+- 完成不关单：只贴 `afk-delivered`，状态流转留给人验收；工单引用写全 ID `story <需求ID>`（界面短 ID 跨项目会重）
+- 提交信息先按 `--story=<需求ID> --user=<评论人> <标题>`，源码关联写法未实测
+- 端到端与契约测试用假 `tapd-cli` + 假 OpenAPI，跟 GitHub 同一套场景（#25）；真项目只测过读单与回帖稿全链路（见 F6）
+
 进度：#20 已搭骨架——`templates/tapd/`（`source.mjs`、`scripts/_tapd.mjs`、三个 `ticket_*` 占位报 failed），
 假 `tapd-cli` / 假 OpenAPI 在 `tests/support/`（`tapd-fakes.mjs`），`init --template tapd` 可用。
 #21 `ticket_ready`、#22 `ticket_view`、#23 `ticket_mark` 已实现（`upload-image` 的文件参数先按 `file=<绝对路径>`，出参取 `image_src`，待真项目实测）。
@@ -519,9 +528,9 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
   `comment add` Markdown（标题 / 加粗 / 行内代码 / 列表 / 表格 / 两种图片写法）→ OpenAPI 回读为正确 HTML、无字面量 `\n`、两张 `<img>` 都在 →
   按快照取法 `get-image` 把两张评论图下载回来、魔数确认 PNG。顺带查出上面「评论读取」与「stdout 多一行」两个坑。
   （之前「332 条评论没有一条带图」是 `tapd-cli` 剥掉 HTML 造成的假象）
-- TAPD 源码关联关键字的写法（`commitMessage` 要用）
-- 每日配额够不够 `--every 5m`
-- TAPD「结束类状态」能否按工作流取到
+- TAPD 源码关联关键字的写法（`commitMessage` 要用）——F3 已按 `--story=… --user=…` 实现，待真 TAPD 项目实测
+- 每日配额够不够 `--every 5m`——待真 TAPD 项目实测
+- TAPD「结束类状态」能否按工作流取到——F3 已按 `workflows/last_steps` / `status_map` 实现、取不到退回 `END_STATUSES`，待真 TAPD 项目实测
 
 ## E. 来自 MiCan 的经验（先不做，写明什么时候做）
 

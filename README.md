@@ -130,6 +130,36 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
 开发 / 审查 / 验证修正的提示词在 `.workflow/prompts/dev.md` / `review.md` / `fix.md`；
 模板复制出去后归项目所有，各自演进，不回头同步内核。
 
+## 开箱即用：TAPD 开发
+
+同一条 `dev` 流水线换成 TAPD 需求当工单（`--template tapd`，开发任务与提示词跟 GitHub 模板共用）：
+
+```bash
+miworkflow init --template tapd        # 复制模板（已有文件一个不覆盖）
+miworkflow dev --dry-run               # 先干跑：只报会做哪些需求、哪些被挡住，不叫 Agent、不改 TAPD、不碰 git
+miworkflow dev                         # 把就绪需求逐个做完；--issue <需求ID> / --max / --confirm 同 GitHub
+```
+
+跑之前要配好：
+
+- `.workflow/source.mjs`：`WORKSPACE_ID` 填项目 ID（URL 里 `tapd.cn/<这串数字>/…`）；评论人 `COMMENTER`（留空就读环境变量 `TAPD_NPC_ROLE`，
+  认领 / 完成 / 失败都要发评论，缺了在动标签之前就报错）
+- `tapd-cli` 已装好并登录（认领、改标签、发评论、传图走它）
+- 环境变量 `TAPD_API_ENDPOINT` + `TAPD_TOKEN`（个人令牌）：读评论、查前后置依赖、取结束类状态走 OpenAPI，`tapd-cli` 没封装这些
+
+需求约定（标签名在 `source.mjs` 的 `LABELS` 里可改；TAPD 标签多值用 `|` 分隔，脚本写完都回读校验）：
+
+- 只接**需求**，缺陷不处理；入队只看标签：贴 `ready-for-agent`、没贴任何机器标签（`afk-claimed` / `afk-delivered` / `afk-failed`），不要求处理人
+- 优先级：`高` 1 / `中` 2 / 空 2 / `低` 3（`source.mjs` 的 `PRIORITY`），不认识的当 2 并提示；同级按需求 ID 升序
+- 依赖：TAPD 原生前后置关系；前置需求贴了 `afk-delivered` 或已到结束类状态（先按项目工作流取，取不到退回 `source.mjs` 的 `END_STATUSES`）才算满足；
+  不认识的前置（缺陷、别的项目、已删除、查不到）当挡住，原因写进 `blocked`，由人解开
+- 空壳拒单：描述与评论都空的需求不做，贴 `afk-failed` + 评论请人补充（`--dry-run` 只报不改）
+- 工单引用写成 `story <需求ID>`；提交信息按 `source.mjs` 的 `commitMessage`（先用 `--story=<需求ID> --user=<评论人> <标题>`，源码关联写法待实测）
+
+**完成不关单**：做完只贴 `afk-delivered`、摘 `ready-for-agent` / `afk-claimed`、发评论，需求状态不动——人验收后自己在 TAPD 里流转状态。
+失败、未推送的处理与 GitHub 相同（失败保留 `ready-for-agent`、贴 `afk-failed`；未推送保留 `afk-claimed`、评论注明本地提交）。
+工单快照里的图片经 `tapd-cli attachment get-image` 下载；回帖稿的图逐张 `upload-image` 后随评论发出。
+
 ## 内核仓库
 
 ```
@@ -179,6 +209,9 @@ node --test
 | `PORT` / `HOST` | viewer 监听，默认 `8787` / `0.0.0.0` |
 | `MIWORKFLOW_REMOTE_RUN=1` | 允许非本机从网页起任务（能起任务 = 能起全权限 Agent） |
 | `MIWORKFLOW_GH` | GitHub 模板改用它当 `gh`（一个 JS 文件，参数照传）；测试 / 替换 `gh` 用 |
+| `MIWORKFLOW_TAPD` | TAPD 模板改用它当 `tapd-cli`（一个 JS 文件，参数照传）；测试 / 替换 `tapd-cli` 用 |
+| `TAPD_NPC_ROLE` | TAPD 模板的评论人（`source.mjs` 的 `COMMENTER` 留空时读它） |
+| `TAPD_API_ENDPOINT` / `TAPD_TOKEN` | TAPD 模板直连 OpenAPI 的地址与个人令牌（评论、前后置依赖、结束类状态） |
 
 ## 人类可见
 
