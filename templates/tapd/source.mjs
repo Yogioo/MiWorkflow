@@ -50,3 +50,8 @@ export function commitMessage(ticket, { type = '', summary = '' } = {}) {
   const fill = (tpl) => tpl.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
   return { message: fill(COMMIT_FORMAT), ...(COMMIT_BODY ? { body: fill(COMMIT_BODY) } : {}) };
 }
+
+// 谁来在讨论单（discuss）里追问：写法同 config.mjs 的 DEV，null = 本机缺省。
+// TAPD 的讨论流程（grilling → spec → tickets）还没实现（TODO.md F4 Step 2）：本目录下的 discuss_* 是报失败的占位桩，
+// 共用的 tasks/discuss.mjs 靠这个常量才能加载。
+export const DISCUSS = null;

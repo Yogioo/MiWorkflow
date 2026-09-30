@@ -1,4 +1,4 @@
-// github_discuss 模板的端到端测试：进入、带标记追问、哈希判轮、竞态补发、改正文、失败不重试、--max、/spec。
+// 讨论流程模板的端到端测试（共用 tasks/discuss.mjs + GitHub 工单源的 discuss_* 脚本）：进入、带标记追问、哈希判轮、竞态补发、改正文、失败不重试、--max、/spec。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -10,7 +10,7 @@ const ask = (comment) => ({ choice: 'ask', data: { comment } });
 const edit = (s, fn) => { const st = readState(s); fn(st); writeFileSync(s.stateFile, JSON.stringify(st)); };
 const reply = (s, num, body) => edit(s, (st) => st.issues.find((i) => i.number === num).comments.push({ author: 'human', at: '', body }));
 const bodies = (s, num) => issueState(s, num).comments.map((c) => c.body);
-const run = (s, argv = []) => { const r = cli(s, ['github_discuss', ...argv]); assert.equal(r.code, 0, r.stderr); return r; };
+const run = (s, argv = []) => { const r = cli(s, ['discuss', ...argv]); assert.equal(r.code, 0, r.stderr); return r; };
 
 test('进入：只挑 agent-discuss 且无阶段或 grilling / spec；首轮贴 discuss:grilling、评论带标记；哈希不变不重复', () => {
   const s = setup({ issues: [

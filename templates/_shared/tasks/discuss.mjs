@@ -1,4 +1,6 @@
-// GitHub 讨论单：人给 issue 贴 agent-discuss，AI 就在评论区按 prompts/grilling.md 逐轮追问；人回复后下一次运行接着问。
+// 讨论单：人给工单贴 agent-discuss，AI 就在评论区按 prompts/grilling.md 逐轮追问；人回复后下一次运行接着问。
+// 任务只认三个脚本名（discuss_list / discuss_view / discuss_post / discuss_check）与 prompts/ 里的提示词，
+// 具体是哪家工单系统、正文与评论长什么样，全在每个工单源的那几个脚本里。
 // 人回复 /spec，AI 按 prompts/spec.md 把 spec 写进正文末尾的 spec 标记区域（人写的原文留在上面），阶段改为 discuss:spec；
 // 之后 spec 阶段的评论（或再次 /spec）都当作对 spec 的修改意见，AI 只重写 spec 区域。spec 不贴 ready-for-agent。
 // spec 阶段人回复 /tickets（别的阶段不生效，当普通评论），AI 按 prompts/tickets.md 用 gh 建开发单；随后脚本回查
@@ -16,14 +18,14 @@
 // 一轮失败也发一条带标记的评论（写明原因），哈希不变就不自动重试；人回复任意内容即重试。
 //
 // 用法：
-//   miworkflow github_discuss            逐张处理轮到 AI 的讨论单
-//   miworkflow github_discuss --max 3    最多处理 3 张
+//   miworkflow discuss            逐张处理轮到 AI 的讨论单
+//   miworkflow discuss --max 3    最多处理 3 张
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DISCUSS } from '../source.mjs';
 
-export const title = 'GitHub 讨论单：agent-discuss → 评论区逐轮追问 → /spec 写入正文 → /tickets 建开发单';
+export const title = '讨论单：agent-discuss → 评论区逐轮追问 → /spec 写入正文 → /tickets 建开发单';
 
 const PROJECT = fileURLToPath(new URL('../..', import.meta.url));
 const PROMPTS = {
@@ -49,13 +51,13 @@ const TICKETS_AREA = /<!--\s*miworkflow:tickets:begin\s*-->[\s\S]*?<!--\s*miwork
 export default async function ({ script, agent, args }) {
   const max = args.max === undefined ? Infinity : Number(args.max);
   if (max !== Infinity && !(Number.isInteger(max) && max >= 1)) throw new Error(`--max 要正整数：${args.max}`);
-  const r = await script('gh_discuss_list', { enter: ENTER, grilling: GRILLING, spec: SPEC });
+  const r = await script('discuss_list', { enter: ENTER, grilling: GRILLING, spec: SPEC });
   if (r.status !== 'ok') throw new Error(`列讨论单失败：${r.error}`);
 
   let handled = 0;
   for (const item of r.data.issues) {
     if (handled >= max) break;
-    const v = await script('gh_discuss_view', { number: item.number });
+    const v = await script('discuss_view', { number: item.number });
     if (v.status !== 'ok') { console.error(`✖ 读 #${item.number} 失败：${v.error}`); continue; }
     const issue = v.data;
     const hash = humanHash(issue);
@@ -72,10 +74,10 @@ export default async function ({ script, agent, args }) {
     }
     if (mode === 'spec') {
       if (!hasLabel(issue, SPEC) || hasLabel(issue, GRILLING)) {
-        await script('gh_discuss_post', { number: issue.number, addLabel: SPEC, ...(hasLabel(issue, GRILLING) ? { removeLabel: GRILLING } : {}) });
+        await script('discuss_post', { number: issue.number, addLabel: SPEC, ...(hasLabel(issue, GRILLING) ? { removeLabel: GRILLING } : {}) });
       }
     } else if (!hasLabel(issue, GRILLING)) {
-      await script('gh_discuss_post', { number: issue.number, addLabel: GRILLING });
+      await script('discuss_post', { number: issue.number, addLabel: GRILLING });
     }
     const out = await askRound(issue, last, agent, mode);
     const mark = marker(hash, humanComments(issue).length, out.cli, out.session, bodyHash(issue));
@@ -88,7 +90,7 @@ export default async function ({ script, agent, args }) {
     } else {
       post.body = `${out.text}\n\n${mark}`;
     }
-    const p = await script('gh_discuss_post', post);
+    const p = await script('discuss_post', post);
     const done = mode === 'spec' ? '已写 spec' : '已追问';
     if (p.status !== 'ok') console.error(`✖ #${issue.number} 回写失败：${p.error}`);
     else console.log(`${out.ok ? '✔' : '✖'} #${issue.number} ${out.ok ? done : `失败：${out.reason}`}`);
@@ -121,7 +123,7 @@ async function askRound(issue, last, agent, mode) {
   return { ok: true, cli, session, text };
 }
 
-// Agent 建完开发单后不信它自报：脚本回查 GitHub 上的实际结果。
+// Agent 建完开发单后不信它自报：脚本回查工单系统上的实际结果。
 async function ticketsRound(issue, last, hash, agent, script) {
   const out = await askRound(issue, last, agent, 'tickets');
   const mark = marker(hash, humanComments(issue).length, out.cli, out.session, bodyHash(issue));
@@ -131,7 +133,7 @@ async function ticketsRound(issue, last, hash, agent, script) {
     post.body = `这一轮建开发单失败：${out.reason}\n\n回复 /tickets 重试。\n\n${mark}`;
     line = `✖ #${issue.number} 失败：${out.reason}`;
   } else {
-    const c = await script('gh_tickets_check', { parent: issue.number });
+    const c = await script('discuss_check', { parent: issue.number });
     const problems = c.status === 'ok' ? c.data.problems : [`回查失败：${c.error}`];
     if (problems.length) {
       post.body = `开发单回查不通过，没有改阶段，请修好后回复 /tickets 再回查：\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\n${mark}`;
@@ -145,7 +147,7 @@ async function ticketsRound(issue, last, hash, agent, script) {
       line = `✔ #${issue.number} 已建开发单 ${c.data.tickets.length} 张`;
     }
   }
-  const p = await script('gh_discuss_post', post);
+  const p = await script('discuss_post', post);
   if (p.status !== 'ok') console.error(`✖ #${issue.number} 回写失败：${p.error}`);
   else console.log(line);
 }

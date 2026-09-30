@@ -135,7 +135,7 @@ export function issueNumber(id) {
   return Number(s);
 }
 
-// 读一个 issue：正文 + 全部评论（按时间，不截断）+ 拼好给 Agent 看的文本。ticket_view 与 gh_discuss_view 共用
+// 读一个 issue：正文 + 全部评论（按时间，不截断）+ 拼好给 Agent 看的文本。ticket_view 与 discuss_view 共用
 export function viewIssue(number, repoArg = []) {
   const raw = runGh([
     'issue', 'view', String(number),

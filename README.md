@@ -143,7 +143,7 @@ Agent 每次都要写**回帖稿**（同目录的 `reply-<n>.md`，可带图）�
 
 ### 讨论单：先把需求问清楚
 
-给 issue 贴 `agent-discuss`，跑 `miworkflow github_discuss`（`--max N` 限张数；适合定时跑），
+给 issue 贴 `agent-discuss`，跑 `miworkflow discuss`（`--max N` 限张数；适合定时跑），
 AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一条评论，问题全部编号、每题附推荐答案；
 问完会提示「回复 /spec 生成」。首次处理贴 `discuss:grilling`；讨论期间 Agent 对仓库只读。
 

@@ -29,6 +29,6 @@ export function commitMessage(ticket, { type = '', summary = '' } = {}) {
   return { message: fill(COMMIT_FORMAT), ...(COMMIT_BODY ? { body: fill(COMMIT_BODY) } : {}) };
 }
 
-// 谁来在讨论单（github_discuss）里追问：写法同 config.mjs 的 DEV，null = 本机缺省。
+// 谁来在讨论单（discuss）里追问：写法同 config.mjs 的 DEV，null = 本机缺省。
 // pi 能续会话最省；cursor 每轮重放完整正文 + 全部评论。
 export const DISCUSS = null;

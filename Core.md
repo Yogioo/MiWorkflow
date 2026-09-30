@@ -747,7 +747,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 结果同一个 bug 要在两处各修一遍）。归项目的只有配置：`config.mjs`、`source.mjs` 里一行写完的 `export const`
 （升级时原样保留）、`prompts/local/<dev|review|fix>.md`（项目对各 Agent 的补充要求，接到对应提示词的 `{{local}}` 处），
 以及项目自己加的任务 / 脚本；想改模板行为就把它做成一行常量或补充要求，别直接改模板文件，下次升级会被覆盖（有备份）。
-模板的测试留在内核仓库的 `tests/template-*.test.mjs`（假外部命令 / 假 Agent / 临时 git 仓库），保证复制出去的那一刻是好的。`init` 按组合复制：先复制共用模板 `templates/_shared/`（开发任务 `dev`、开发提示词 `prompts/dev|review|fix.md`、git 脚本、`run_cmd`、`config.mjs`），再复制所选工单源；以 `_` 开头的目录不出现在模板菜单与 `--template` 里。
+模板的测试留在内核仓库的 `tests/template-*.test.mjs`（假外部命令 / 假 Agent / 临时 git 仓库），保证复制出去的那一刻是好的。`init` 按组合复制：先复制共用模板 `templates/_shared/`（两个任务 `dev` / `discuss`，讨论提示词 `prompts/grilling|spec|tickets.md`，开发提示词 `prompts/dev|review|fix.md`，git 脚本、`run_cmd`、`config.mjs`），再复制所选工单源；以 `_` 开头的目录不出现在模板菜单与 `--template` 里。
 
 工单源的约定就是三个脚本名 + 输入输出（不做抽象层，TODO F2）；`dev` 只调它们，不知道背后是哪家。工单号一律字符串，日志 / 评论 / 提问里用工单引用 `ref`：
 
@@ -758,6 +758,15 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 | `ticket_mark` | `{ id, action, commentFile?, comment?, sha? }` | `action` = `claimed` / `done` / `failed` / `unpushed` / `released`（Agent 连接失败：摘认领、不贴失败、保留入队，下轮重做）；评论由调用方给整段（`comment` 在前、`commentFile` 在后，原样发），两样都没给才用一句缺省 |
 
 三个脚本失败时，若是**工单系统暂时不可用**（5xx、网络、限流，脚本内已退避重试用完），出参 `data` 带 `transient: true`；`dev` 据此整轮停下、不计入失败、不回滚已推送的代码。其他失败不带。
+
+讨论流程同理，也是固定四个脚本名；`discuss` 任务只调它们，不知道背后是哪家：
+
+| 脚本 | 入 | 出 |
+|---|---|---|
+| `discuss_list` | `{ enter, grilling, spec }` | `{ issues: [{ number, title, labels }] }`：打开、贴了 `enter`、阶段标签空或 `grilling` / `spec`，按工单号升序 |
+| `discuss_view` | `{ number }` | `{ number, title, body, comments, text, labels }`：正文 + 全部评论（不截断）与拼好给 Agent 看的文本 |
+| `discuss_post` | `{ number, setBody?, addLabel?, removeLabel?, body? }` | `{ did: string[] }`：改正文 / 贴摘标签 / 发评论都可选、按序做 |
+| `discuss_check` | `{ parent }` | `{ tickets: [{ number, title }], problems: string[] }`：回查讨论单拆出的开发单能不能被开发队列解析 |
 
 - **工单快照**（读）：正文 + 全部评论转成 Markdown，写到 `logs/<runId>/tickets/<id>/ticket.md`，图片下到同目录 `images/`、相对路径引用；Agent 的 `inputs` 只给路径，自己读。
 - **回帖稿**（写）：`dev` 每次调 Agent 前分配 `logs/<runId>/tickets/<id>/reply-<n>.md`，提示词要求**必写**（写给没看过过程的人：做了什么、关键取舍、怎么验证的、遗留风险；图片放同目录、相对路径）。
@@ -771,7 +780,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 - 每个工单源带 `source.mjs`：这家的常量 + `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY` + `commitMessage(ticket, { type, summary })`；共用的 `config.mjs` 只留 `DEV / REVIEWER / REVIEW / VERIFY / ROUNDS / PUSH`。
 
 已实现的工单源：
-`templates/github/` = GitHub（`ticket_*` 脚本、`source.mjs`、讨论流程 `github_discuss` 与 `gh_*` 脚本；配合 `dev`：认领 issue → 开发 →（要审查的单子）审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`，见 TODO C3、F2）。
+`templates/github/` = GitHub（`ticket_*` 脚本、讨论流程的 `discuss_*` 脚本、`source.mjs`；配合共用的 `dev` 与 `discuss`：认领 issue → 开发 →（要审查的单子）审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`；讨论单贴 `agent-discuss` → 评论区逐轮追问 → `/spec` 写进正文 → `/tickets` 建开发单，见 TODO C3、F2、F4）。
 回帖稿带图时用 `gh issue comment --attach` 上传，要 `gh` ≥ 2.99.0；只在确实有图时查版本，不够就把图片换成「图片未上传」占位、`say` 提示升级，评论照发。
 
 `templates/tapd/` = TAPD（`ticket_*` 脚本、`scripts/_tapd.mjs`、`source.mjs`；只有开发流程，讨论流程搁置，TODO F3、F4）。三个脚本的 TAPD 实现：

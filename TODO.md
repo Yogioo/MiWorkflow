@@ -486,21 +486,65 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 - **调用配额**：个人令牌每天有上限（`with_usage=1` 看剩余）；afk-run 没处理（每次全量拉评论）。`--every` 轮询下 `ticket_ready` 先按修改时间粗筛
 - 假 `tapd-cli`：照 afk-run 测试的做法（`node fake.mjs` + 状态 JSON 文件），注入点照 `MIWORKFLOW_GH` 用 `MIWORKFLOW_TAPD`
 
-### F4. TAPD 讨论流程（**搁置**，2026-09-30 定：后期要做，这一批不做）
+### F4. TAPD 讨论流程（**开工**，2026-09-30；Step 0 摸底 + Step 1 抽共用已做）
 
 开工时先做两件事：① 按 F1 末尾重新审视「拆单由谁建」，与回帖稿的做法对齐；
 ② 把 F2 挪过来的讨论侧接口（`tk_discuss_list` / `tk_post` / `tk_create_tickets`、AI 标记与 spec 的编码归脚本）重新过一遍。
-以下为搁置前的分析，留作记录：
 
-- **AI 标记**：先实测 TAPD 评论里 HTML 注释能不能原样存下来；不能就用可见的一行（afk-run 用 `[AFK]` 前缀，从没测过 HTML 注释）
-- **spec 放哪**（待拍板）：
-  - 写进需求描述的一段区域：跟 GitHub 一致，但要改写人写的 HTML 描述，风险大
-  - 发成一条带 `kind=spec` 标记的 AI 评论，最新一条就是当前 spec：不碰人写的描述，实现简单（推荐）
-  - 写进 Wiki 页面并在评论里挂链接：适合很长的 spec，多一个实体
-- **拆单**：`tk_create_tickets` 建**子需求**（挂在讨论单下，`parent_id` 类参数，**要实测 tapd-cli 支不支持**）+ 写前后置依赖；
-  开发单清单写成一条 AI 评论（TAPD 页面上子需求列表本身也能看进度）
-- **阶段**：仍用标签（`discuss:grilling` / `discuss:spec` / `discuss:ticketed`）；TAPD 标签是项目级的，第一次用要先在项目里有这些标签
-- **配额**：讨论单每个周期都要读评论算哈希，是配额大头；按修改时间粗筛后只读有变化的单
+**进度**（2026-09-30）：
+- ✅ **Step 0 TAPD 现场摸底**（真项目 `52360842`）：结论见 F4.1。
+- ✅ **Step 1 抽共用（不改行为）**：`github_discuss` → `_shared/tasks/discuss.mjs`；脚本 `gh_discuss_{list,view,post}` / `gh_tickets_check` → `discuss_{list,view,post,check}`；
+  讨论提示词 `grilling|spec|tickets.md` 搬进 `_shared/prompts/`；`discuss_*` 四个脚本名与输入输出写进 `Core.md` §15。
+  测试与文档同步（`template-github-discuss.test.mjs` 的任务名、`run.test.mjs` 的文件清单、README / Core.md）。208 测试全绿。
+  TAPD 侧补 4 个报失败的占位桩（`scripts/discuss_{list,view,post,check}.mjs`，同 #20 的先例）+ `source.mjs` 的 `DISCUSS = null`，
+  让 `init --template tapd` 拿到自洽的一份（有 `discuss` 任务也有它的脚本，跑起来是「尚未实现」而不是「找不到脚本」）；Step 2 用真实现替换占位。
+  已 `init` 过的项目不回头同步，用 `init --upgrade` 或重 init（§15）。
+- ⏳ **Step 2** TAPD 讨论脚本（`templates/tapd/scripts/discuss_*.mjs`）；**Step 3** 同一套场景 × 两家假工单源；**Step 4** 文档 + 真项目跑一整条。
+- **待拍板**：D1 拆单由谁建、D3 标记形态、D5 建单细节归谁（证据见下）。
+
+以下为搁置前的分析，已按 Step 0 实测结果改写：
+
+- **AI 标记**（D3，待拍板）：✅ 实测——TAPD **会剥掉 HTML 注释**（`<!-- miworkflow:discuss … -->` 写完回读就没了），
+  GitHub 那套不能照搬；带 `<` 的 Markdown **仍按 Markdown 转换**（不会误判成 HTML 模式）。四种候选**都原样存活**：
+  纯文本行 `<p>[miworkflow:discuss …]</p>`、`<sub>` 包裹、`<details>` 折叠、`<span data-mw-discuss="…">`（属性也保留、肉眼不可见）。
+- **spec 放哪**（D2）：①「写进描述」**排除**——✅ 实测 `story update description=` **不幂等**，每次写入外包一层 `<p>`，写两次变 `<p><p><p>…`。
+  剩②发成一条带标记的 AI 评论（最新一条就是当前 spec）与③ Wiki 页面 + 评论链接。
+- **拆单**（D1，待拍板）：✅ 实测 `story add parent_id=` 能建**子需求**（项目已在用，一个父单下 20 个子单）、`story list parent_id=` 能回查；
+  ✅ 写前后置依赖要直连 OpenAPI `stories/save_time_relations`，**必须 form-encoded**（`relations[0][workitem_id]` 等，JSON 报 422），删用 `relation_ids[0]`。
+  硬理由：这些 `tapd-cli` **完全没封装**，Agent 自己做不到 → 倾向「Agent 产出结构化清单、脚本建单 + 写依赖」（F1 末尾的重新审视）。
+  开发单清单可写成一条 AI 评论（TAPD 页面上子需求列表本身也能看进度），机器读的是 `parent_id`。
+- **阶段**：仍用标签（`discuss:grilling` / `discuss:spec` / `discuss:ticketed`）；✅ 实测标签名**写入即隐式创建**，不用先在项目里建好；清空用 `label=`。
+- **配额**：✅ 实测个人令牌 2000/日（测试时剩 1794）；讨论单每个周期都要读评论算哈希，是配额大头；按修改时间粗筛后只读有变化的单。
+
+### F4.1 Step 0 实测结论（2026-09-30，真项目 `52360842`，详细记录在内核仓库本机 `logs/step0/findings.md`）
+
+只读（`openApi()` 的原生 fetch **直连可用**，与代理无关）：
+
+| 结论 | 证据 |
+|---|---|
+| F3 结束类状态**能按工作流取**：`/workflows/last_steps?system=story` → `status_7=已完成, resolved=已实现, rejected=已拒绝`；`status_map` 给全量中英映射 | 不用退回写死的 `END_STATUSES` 表 |
+| F3 配额 `limit 2000/日` | `story list with_usage=1` |
+| `parent_id` 过滤有效；项目**已在大量使用子需求**（父单 `…1004537` 下 20 个子单） | 子需求天然适合做开发单 |
+| 没有删需求 / 删评论的命令 | `story` / `comment` 子命令列表 |
+| **前后置依赖真实形状**：`data: [{ WorkitemTimeRelation: { id, workspace_id, workitem_type, workitem_id, src_field, dst_workspace_id, dst_workitem_type, dst_workitem_id, dst_field, relation_type, lag_time } }]` | `ticket_ready` 的 `unwrap()`+`predecessorsOf()` 对得上 ✓ |
+| F3 遗留 bug（已修）：跨项目判定读 `src_workspace_id`，真字段是 `workspace_id` | 改后补了回归用例（`template-tapd.test.mjs`） |
+| `tapd-cli` 是 Bun 打包单文件二进制，字符串里 `marked` 出现 20 次 | MD→HTML 用它，默认透传 HTML |
+
+写操作（测试数据：父单 `…1004860` + 子单 `…1004861`，依赖已自清理，需求/评论待人删）：
+
+| # | 结论 |
+|---|---|
+| W1 | **TAPD 会剥掉 HTML 注释**（写完回读就没了）；带 `<` 的 Markdown 仍按 Markdown 转换 |
+| W2 | 四种标记编码都原样存活（纯文本行 / `<sub>` / `<details>` / `<span data-*>`，属性也保留） |
+| W3 | `story update description=` **不幂等**：每次写入外包一层 `<p>`；块级标签被塞进 `<p>` 里，标签本身全保留 |
+| W4 | `story add parent_id=` 建子需求成功，回参 `Story.id`；`story list parent_id=` 能查回 |
+| W5 | `priority_label=中`（中文）写入可用并回读 |
+| W6 | `label=a\|b` 的 `\|` 分隔写入正确；**标签名写入隐式创建**，清空用 `label=` |
+| W7 | `save_time_relations` **必须 form-encoded**；`delete_time_relations` 用 `relation_ids[0]=<关系id>` |
+| W8 | `tapd-cli comment add` 出参是 `{ ok, id }`，**没有 `status` 字段** |
+
+**没测**：F3 的 `--story=<需求ID> --user=<评论人>` 源码关联关键字（要真提交进 TAPD 绑定的仓库，单独排期）。
+
 
 ### F5. 顺序与测试
 
@@ -509,7 +553,7 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 1. **F2 在 GitHub 上成形**：模板拆 `_shared` + `github`、`init` 改组合；`github_dev` → `dev`；`gh_ready / gh_issue_view / gh_issue_mark` → `ticket_*`；
    `source.mjs` + `commitMessage`；工单号字符串 + `ref`；DEV / REVIEWER / FIX 提示词进 `prompts/`；机器标签统一；工单快照 + 回帖稿（`gh --attach`）
 2. **F3 TAPD 开发**：`templates/tapd/` 的 `ticket_*` + `source.mjs` + 前后置依赖；假 `tapd-cli` 测试；在一个真 TAPD 项目里实测一轮
-3. F4 搁置
+3. F4：Step 0 摸底 + Step 1 抽共用已做（2026-09-30）；Step 2/3/4 见 F4
 
 - 测试：开发流程的端到端测试改成「同一套场景 × 两家假工单源」各跑一遍（接口一致就该都绿）；
   另给 `ticket_*` 脚本各自一套契约测试（同样的入参，两家交回同样形状）
