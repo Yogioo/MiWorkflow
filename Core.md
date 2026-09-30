@@ -66,6 +66,7 @@ MiWorkflow/
     AGENTS.md     # 硬规则正文：这是什么、几条硬规则、完整写法跑 miworkflow skill
     tasks/        # 任务，mjs
     scripts/      # 原子能力，mjs
+    prompts/      # 任务读的提示词，md（模板带来，如 github 的 grilling.md）
     tests/        # 沉淀自己的测试
     logs/         # 运行记录 JSONL（首跑时自动建）
 ```

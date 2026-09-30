@@ -108,7 +108,17 @@ issue 约定与 afk-run 一致，同一个仓库两边可以换着跑：
 推送失败不关单、整轮停下，本地提交保留，留给人处理。`PUSH = false`（只本地提交）同款语义：
 没发布就不算做完——评论注明「本地提交（未推送）：<sha>」、不关单、保留 `in-progress`、整轮停下。
 
-改行为就改 `.workflow/config.mjs`（`DEV` / `REVIEWER` / `VERIFY` / `ROUNDS` / `PUSH` / 标签名）；
+### 讨论单：先把需求问清楚
+
+给 issue 贴 `agent-discuss`，跑 `miworkflow github_discuss`（`--max N` 限张数；适合定时跑），
+AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一条评论，问题全部编号、每题附推荐答案；
+问完会提示「回复 /spec 生成」。首次处理贴 `discuss:grilling`；讨论期间 Agent 对仓库只读。
+
+- 人回复评论或改正文 → 下一次运行接着问；没新内容就不重复回复（AI 评论里的隐藏标记记着它读到的内容哈希）
+- 一轮失败会发一条评论写明原因，不自动重试、不贴 `afk-failed`；回复任意内容即重试
+- 追问的 Agent 由 `config.mjs` 的 `DISCUSS` 指定
+
+改行为就改 `.workflow/config.mjs`（`DEV` / `REVIEWER` / `DISCUSS` / `VERIFY` / `ROUNDS` / `PUSH` / 标签名）；
 模板复制出去后归项目所有，各自演进，不回头同步内核。
 
 ## 内核仓库

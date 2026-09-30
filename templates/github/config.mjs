@@ -6,6 +6,10 @@
 export const DEV = null;
 export const REVIEWER = null;
 
+// 谁来在讨论单（github_discuss）里追问：写法同上，null = 本机缺省。
+// pi 能续会话最省；cursor 每轮重放完整正文 + 全部评论。
+export const DISCUSS = null;
+
 // 验证命令：跑在项目根，退出码 0 算过。空字符串 = 不验证，直接进提交流程。
 // 字符串走 shell（可有管道、&&）；也可以写数组精确到参数，如 ['npm', 'test']。
 export const VERIFY = '';
