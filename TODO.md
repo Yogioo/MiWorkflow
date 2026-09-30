@@ -428,6 +428,10 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
   `agent_cli_failed`（超时除外）/ 空 stdout 的 `agent_invalid_json` 按 `AGENT_RETRY_DELAYS` 退避重试（开发重试前先回起点），
   用完或 `agent_unavailable` / 超时就回滚、`ticket_mark released`（摘认领、不贴失败、保留 ready）、整轮停下，不计入 `--max-failures`。
   待做：Agent 静默超时（N 分钟无事件就杀，要改 `agents/runners/`）
+- ✅ #28（2026-09-30，起因：GitHub API 连续 5xx，#26 已推送却关单失败被记成工单失败、#27 认领两次失败，整轮「连续失败 3 次」退出）：
+  `runGh` / `runTapd` 对 5xx、GraphQL 通用服务端报错、限流按 `GH_RETRY_DELAYS` / `TAPD_RETRY_DELAYS`（各家 `source.mjs`）秒级退避，
+  用完 `ticket_*` 出 `data.transient`；`dev` 在挑单 / 认领 / 关单时见到就整轮停下（不计入 `--max-failures`、不贴 `afk-failed`、不回滚已推送代码）。
+  待做：关单失败后下一轮自动补标记（`ticket_ready` 会跳过贴了 `afk-claimed` 的单，要另议）
 
 进度：#20 已搭骨架——`templates/tapd/`（`source.mjs`、`scripts/_tapd.mjs`、三个 `ticket_*` 占位报 failed），
 假 `tapd-cli` / 假 OpenAPI 在 `tests/support/`（`tapd-fakes.mjs`），`init --template tapd` 可用。

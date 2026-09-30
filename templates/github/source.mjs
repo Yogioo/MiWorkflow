@@ -11,6 +11,9 @@ export const LABELS = {
   failed: 'afk-failed'          // 失败，等人看（摘掉它才重新入队）
 };
 
+// 工单系统故障（网络、5xx、GraphQL 通用服务端报错、限流）时 gh 调用的退避间隔（毫秒），一项一次重试；[] = 不重试。
+export const GH_RETRY_DELAYS = [5_000, 20_000, 60_000];
+
 // 提交信息：kind 为 dev（开发 / 工作流兜底提交）、review（审查修正）、fix（验证不过修正）。
 // 出 { message, body? }；<一句话> 原样交给 Agent 自己填。
 export function commitMessage(ticket, kind) {

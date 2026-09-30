@@ -752,6 +752,8 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 | `ticket_view` | `{ id }` | `{ id, ref, title, file }`：写出**工单快照** |
 | `ticket_mark` | `{ id, action, commentFile?, comment?, sha? }` | `action` = `claimed` / `done` / `failed` / `unpushed` / `released`（Agent 连接失败：摘认领、不贴失败、保留入队，下轮重做） |
 
+三个脚本失败时，若是**工单系统暂时不可用**（5xx、网络、限流，脚本内已退避重试用完），出参 `data` 带 `transient: true`；`dev` 据此整轮停下、不计入失败、不回滚已推送的代码。其他失败不带。
+
 - **工单快照**（读）：正文 + 全部评论转成 Markdown，写到 `logs/<runId>/tickets/<id>/ticket.md`，图片下到同目录 `images/`、相对路径引用；Agent 的 `inputs` 只给路径，自己读。
 - **回帖稿**（写）：`dev` 每次调 Agent 前分配 `logs/<runId>/tickets/<id>/reply-<n>.md`；Agent 有话对人说就写进去（图片放同目录、相对路径），`ticket_mark` 收 `commentFile` 传图发评论；没写就退回一句话的 `comment`。
 - **机器标签**（名字在各工单源的 `source.mjs`，可改）：入队 `ready-for-agent`；`afk-claimed`（认领中）/ `afk-delivered`（已交付）/ `afk-failed`（失败）。依赖满足 = 前置单贴了 `afk-delivered` 或已关单（TAPD：已到结束类状态）。

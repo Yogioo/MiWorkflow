@@ -86,7 +86,25 @@ export function defineTicketContract(src) {
     assert.equal(view(4).closed, false);
     assert.ok(view(4).comments.some((c) => c.includes('Agent 连接失败') && c.includes('socket hang up')));
 
-    assert.equal(mark(3, { action: 'nope' }).status, 'failed');
+    const nope = mark(3, { action: 'nope' });
+    assert.equal(nope.status, 'failed');
+    assert.notEqual(nope.data?.transient, true, '参数错不算工单系统故障');
     assert.equal(runScript(s, 'ticket_mark', { action: 'claimed' }).status, 'failed', '缺 id');
+  });
+
+  contract('工单系统一直 5xx：ticket_ready / ticket_view / ticket_mark 出 failed + data.transient', {
+    tickets: [{ key: 1, labels: READY }]
+  }, (s) => {
+    src.down(s);
+    for (const [name, input] of [
+      ['ticket_ready', {}],
+      ['ticket_view', { id: src.id(1) }],
+      ['ticket_mark', { id: src.id(1), action: 'claimed' }],
+      ['ticket_mark', { id: src.id(1), action: 'done', sha: 'abc1234' }]
+    ]) {
+      const r = runScript(s, name, input);
+      assert.equal(r.status, 'failed', `${name} ${JSON.stringify(input)}`);
+      assert.equal(r.data?.transient, true, `${name}：${r.error}`);
+    }
   });
 }

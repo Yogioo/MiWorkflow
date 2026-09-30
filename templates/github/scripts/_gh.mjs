@@ -3,13 +3,12 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { GH_RETRY_DELAYS } from '../source.mjs';
 
 // ── gh ────────────────────────────────────────────────────────────────────
-// 不经 shell（Core §11）；网络类错误有限重试。
+// 不经 shell（Core §11）；工单系统故障（网络、5xx、GraphQL 通用服务端报错、限流）按 GH_RETRY_DELAYS 退避重试。
+// 重试完仍是故障，抛出的错误带 transient: true，main() 据此在出参 data 里标 transient（Core §15）。
 // 测试 / 替换：设 MIWORKFLOW_GH 指向一个 JS 文件，就改成 node <那个文件> 执行（参数照传）。
-const RETRIES = 3;
-const RETRY_DELAY_MS = 100;
-
 const sleep = (ms) => {
   if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 };
@@ -18,8 +17,24 @@ const errorText = (err) =>
   [err?.stderr, err?.stdout, err?.message]
     .filter(Boolean).map((v) => String(v).trim()).filter(Boolean).join(' ');
 
-const retryable = (err) =>
-  /network|timeout|timed out|connection|econnreset|econnrefused|etimedout|eai_again|socket hang up|temporarily unavailable|rate limit|502|503|504|reset by peer|unexpected eof|\beof\b/i.test(errorText(err));
+const firstSentence = (text) => String(text ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+
+// 状态码要带 HTTP 或原因短语：「number of 500」这类工单号不算
+const SERVER_ERROR = /\bHTTP[/\d.]*\s*50[0-4]\b|\b50[0-4]\s+(internal server error|bad gateway|service unavailable|gateway time-?out)/i;
+const CLIENT_ERROR = /\bHTTP 4\d\d\b|not found|could not resolve|permission|forbidden|unauthori[sz]ed|must have|not accessible/i;
+
+// 只看 gh 的输出：err.message 里带着命令行，工单号 500 这类参数会被误认成状态码
+const outputText = (err) =>
+  [err?.stderr, err?.stdout].filter(Boolean).map((v) => String(v).trim()).filter(Boolean).join(' ') || String(err?.message ?? '');
+
+export const retryable = (err) => {
+  const text = outputText(err);
+  if (/rate limit/i.test(text)) return true;
+  if (/network|timeout|timed out|connection|econnreset|econnrefused|etimedout|eai_again|socket hang up|temporarily unavailable|reset by peer|unexpected eof|\beof\b/i.test(text)) return true;
+  if (SERVER_ERROR.test(text)) return true;
+  if (/something went wrong while executing your query/i.test(text)) return true;
+  return /GraphQL: Could not /i.test(text) && !CLIENT_ERROR.test(text);
+};
 
 export function runGh(argv, opts = {}) {
   const cwd = opts.cwd ?? process.cwd();
@@ -29,15 +44,22 @@ export function runGh(argv, opts = {}) {
     const args = fake ? [fake, ...argv] : argv;
     return execFileSync(bin, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   };
+  const delays = opts.retryDelays ?? GH_RETRY_DELAYS;
+  const retries = opts.retries ?? delays.length;
   for (let attempt = 0; ; attempt++) {
     try {
       return spawn();
     } catch (err) {
-      if (!retryable(err) || attempt >= (opts.retries ?? RETRIES)) {
-        const detail = errorText(err);
-        throw new Error(`gh ${argv.join(' ')} 失败${detail ? `：${detail}` : ''}`, { cause: err });
+      const transient = retryable(err);
+      const detail = errorText(err);
+      if (!transient || attempt >= retries) {
+        const e = new Error(`gh ${argv.join(' ')} 失败${detail ? `：${detail}` : ''}`, { cause: err });
+        if (transient) e.transient = true;
+        throw e;
       }
-      sleep((opts.retryDelayMs ?? RETRY_DELAY_MS) * 2 ** attempt);
+      const wait = delays[Math.min(attempt, delays.length - 1)] ?? 0;
+      process.stderr.write(`gh ${argv[0]} ${argv[1] ?? ''} 第 ${attempt + 1} 次重试（等 ${Math.round(wait / 1000)} 秒）：${firstSentence(outputText(err))}\n`);
+      sleep(wait);
     }
   }
 }

@@ -13,16 +13,19 @@ export function emit(result) {
   process.stdout.write(JSON.stringify(result));
 }
 
-// 脚本外壳：出错也回一个合法的 failed（§6.1），别让 core 只能从 stderr 猜
+// 脚本外壳：出错也回一个合法的 failed（§6.1），别让 core 只能从 stderr 猜。
+// 错误带 transient（工单系统暂时不可用，重试已用完）就在 data 里标 transient: true，调用方据此停下而不是记失败（Core §15）
 export async function main(handler) {
   try {
     await handler();
   } catch (err) {
     const message = String(err?.message ?? err);
+    const transient = err?.transient === true;
     process.stdout.write(JSON.stringify({
       status: 'failed',
-      say: `出错了：${message.split('\n')[0]}`,
-      error: message
+      say: `${transient ? '工单系统暂时不可用' : '出错了'}：${message.split('\n')[0]}`,
+      error: message,
+      ...(transient ? { data: { transient: true } } : {})
     }));
   }
 }

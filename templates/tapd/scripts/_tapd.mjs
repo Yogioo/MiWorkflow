@@ -1,6 +1,7 @@
 // TAPD 工单源专用工具：tapd-cli 调用、OpenAPI 调用、令牌打码。通用的 stdin/stdout、git 在 _lib.mjs。
 // 这是模板内容，复制进项目后归项目所有。
 import { execFileSync } from 'node:child_process';
+import { TAPD_RETRY_DELAYS } from '../source.mjs';
 
 // ── 打码 ──────────────────────────────────────────────────────────────────
 // 报错信息里不留令牌：32 位十六进制一律打码，TAPD_TOKEN 的原值也打码。
@@ -50,12 +51,10 @@ export function checkPayload(parsed, context) {
 }
 
 // ── tapd-cli ──────────────────────────────────────────────────────────────
-// 不经 shell（Core §11）；瞬时错误最多重试 2 次。
+// 不经 shell（Core §11）；工单系统故障（网络、5xx、限流）按 TAPD_RETRY_DELAYS 退避重试。
+// 重试完仍是故障，抛出的错误带 transient: true，main() 据此在出参 data 里标 transient（Core §15）。
 // 参数一律下划线写法（entry_id=…）：tapd-cli 会静默丢掉连字符形式，把带过滤的查询变成不带过滤的。
 // 测试 / 替换：设 MIWORKFLOW_TAPD 指向一个 JS 文件，就改成 node <那个文件> 执行（参数照传）。
-const RETRIES = 2;
-const RETRY_DELAY_MS = 100;
-
 const sleep = (ms) => {
   if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 };
@@ -64,8 +63,20 @@ const errorText = (err) =>
   [err?.stderr, err?.stdout, err?.message]
     .filter(Boolean).map((v) => String(v).trim()).filter(Boolean).join(' ');
 
-const retryable = (err) =>
-  /network|timeout|timed out|connection|econnreset|econnrefused|etimedout|eai_again|enetunreach|ehostunreach|socket hang up|temporarily unavailable|rate limit|502|503|504|reset by peer|unexpected eof|\beof\b/i.test(errorText(err));
+const firstSentence = (text) => String(text ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+
+// 只看 tapd-cli 的输出：err.message 里带着命令行，id=500 这类参数会被误认成状态码
+const outputText = (err) =>
+  [err?.stderr, err?.stdout].filter(Boolean).map((v) => String(v).trim()).filter(Boolean).join(' ') || String(err?.message ?? '');
+
+// 状态码要带 HTTP 或原因短语：id=500 这类参数不算
+const SERVER_ERROR = /\bHTTP[/\d.]*\s*50[0-4]\b|\b50[0-4]\s+(internal server error|bad gateway|service unavailable|gateway time-?out)/i;
+
+export const retryable = (err) => {
+  const text = outputText(err);
+  return SERVER_ERROR.test(text) ||
+    /network|timeout|timed out|connection|econnreset|econnrefused|etimedout|eai_again|enetunreach|ehostunreach|socket hang up|temporarily unavailable|rate limit|too many requests|something went wrong while executing your query|reset by peer|unexpected eof|\beof\b/i.test(text);
+};
 
 const missingCommand = (err) =>
   err?.code === 'ENOENT' || /\benoent\b|not recognized|不是内部或外部命令/i.test(errorText(err));
@@ -78,6 +89,8 @@ export function runTapd(argv, opts = {}) {
     const args = fake ? [fake, ...argv] : argv;
     return execFileSync(bin, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   };
+  const delays = opts.retryDelays ?? TAPD_RETRY_DELAYS;
+  const retries = opts.retries ?? delays.length;
   for (let attempt = 0; ; attempt++) {
     try {
       return spawn();
@@ -85,11 +98,16 @@ export function runTapd(argv, opts = {}) {
       if (!fake && missingCommand(err)) {
         throw new Error('找不到 tapd-cli：先装好它（见 tapd-cli 技能），或设 MIWORKFLOW_TAPD', { cause: err });
       }
-      if (!retryable(err) || attempt >= (opts.retries ?? RETRIES)) {
-        const detail = errorText(err);
-        throw new Error(mask(`tapd-cli ${argv.join(' ')} 失败${detail ? `：${detail}` : ''}`), { cause: err });
+      const transient = retryable(err);
+      const detail = errorText(err);
+      if (!transient || attempt >= retries) {
+        const e = new Error(mask(`tapd-cli ${argv.join(' ')} 失败${detail ? `：${detail}` : ''}`), { cause: err });
+        if (transient) e.transient = true;
+        throw e;
       }
-      sleep((opts.retryDelayMs ?? RETRY_DELAY_MS) * 2 ** attempt);
+      const wait = delays[Math.min(attempt, delays.length - 1)] ?? 0;
+      process.stderr.write(mask(`tapd-cli ${argv[0]} ${argv[1] ?? ''} 第 ${attempt + 1} 次重试（等 ${Math.round(wait / 1000)} 秒）：${firstSentence(outputText(err))}`) + '\n');
+      sleep(wait);
     }
   }
 }
@@ -125,9 +143,13 @@ export async function openApi(pathname, { query = {}, method = 'GET', body, time
     res = await fetch(url, { method, headers, body: payload, signal: AbortSignal.timeout(timeoutMs) });
     text = await res.text();
   } catch (err) {
-    throw new Error(mask(`${what} 失败：${err.message}`), { cause: err });
+    throw Object.assign(new Error(mask(`${what} 失败：${err.message}`), { cause: err }), { transient: true });
   }
-  if (!res.ok) throw new Error(mask(`${what} 失败：HTTP ${res.status} ${text.slice(0, 200)}`));
+  if (!res.ok) {
+    const e = new Error(mask(`${what} 失败：HTTP ${res.status} ${text.slice(0, 200)}`));
+    if (res.status >= 500 || res.status === 429) e.transient = true;
+    throw e;
+  }
   return checkPayload(firstJson(text, what), what);
 }
 

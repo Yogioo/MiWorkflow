@@ -2,6 +2,7 @@
 // 工单写成 { key, title?, body?, labels?, deps? }：key 是场景里的小编号，各家换成自己的工单号；
 // deps 是前置工单的 key（GitHub 写进正文 `- [ ] #N`，TAPD 写成前后置关系）。
 // 两家「完成」含义不同是有意的：GitHub 关单 + 只留 afk-delivered；TAPD 不关单、ready 保留、贴 afk-delivered。
+import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setup, issue, readState } from './github-template.mjs';
 import { readTapdState, startFakeOpenApi, story, tapdEnv, writeTapdState } from './tapd-fakes.mjs';
@@ -22,6 +23,13 @@ const github = {
   view(s, key) {
     const i = readState(s).issues.find((x) => x.number === key);
     return { closed: i.state === 'CLOSED', labels: i.labels.map((l) => l.name), comments: (i.comments ?? []).map((c) => c.body) };
+  },
+  // 工单系统一直 5xx：之后每条 gh / tapd-cli 调用都报错
+  down(s) {
+    const st = readState(s);
+    const fail = { times: 999, message: 'HTTP 500: Something went wrong while executing your query' };
+    st.ghFail = Object.fromEntries(['list', 'view', 'edit', 'comment', 'close', 'create'].map((a) => [a, { ...fail }]));
+    writeFileSync(s.stateFile, JSON.stringify(st));
   },
   deliveredLabels: ['afk-delivered']
 };
@@ -61,6 +69,11 @@ const tapd = {
       labels: String(x.label ?? '').split('|').filter(Boolean),
       comments: st.comments.filter((c) => c.entry_id === x.id).map((c) => c.description)
     };
+  },
+  down(s) {
+    const st = readTapdState(s.tapdFile);
+    st.fail = { times: 999, message: 'HTTP 500 Internal Server Error' };
+    writeFileSync(s.tapdFile, JSON.stringify(st));
   },
   deliveredLabels: ['ready-for-agent', 'afk-delivered']
 };

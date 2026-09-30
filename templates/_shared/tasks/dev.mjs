@@ -22,7 +22,10 @@ export const title = '开发：认领工单 → 开发 → 审查 → 验证 →
 // .workflow/ 的上一级 = 项目根
 const PROJECT = fileURLToPath(new URL('../..', import.meta.url));
 
-export default async function ({ script, agent, human, args }) {
+export default async function ({ script: rawScript, agent, human, args }) {
+  // 工单脚本内部对工单系统故障退避重试（一次 ticket_mark 可能多条命令各自等），缺省 120 秒不够
+  const script = (name, input, opts) =>
+    rawScript(name, input, name.startsWith('ticket_') ? { timeoutMs: 900_000, ...opts } : opts);
   const max = args.max ? Number(args.max) : Infinity;
   const maxFailures = args['max-failures'] ? Number(args['max-failures']) : 3;
   const only = args.issue ? String(args.issue) : null;
@@ -66,9 +69,16 @@ export default async function ({ script, agent, human, args }) {
     if (only && done + failures > 0) break;
 
     const t = await pick(only, ctx);
+    if (t?.down) { infraStopped = true; stop = t.down; break; }
     if (!t) { stop = '队列空'; break; }
 
     const outcome = await runTicket(t, ctx);
+    if (outcome === 'ticket_down') {
+      // 工单系统暂时不可用：同 Agent 连接失败，不计入 failures、立即停
+      infraStopped = true;
+      stop = ctx.down;
+      break;
+    }
     if (outcome === 'done') { done++; failures = 0; }
     else if (outcome === 'push_failed') {
       pushStopped = true;
@@ -91,26 +101,41 @@ export default async function ({ script, agent, human, args }) {
   if (pushStopped || infraStopped) throw new Error(stop);
 }
 
-// 挑下一张要做的工单：--issue 直接读那张；否则列就绪队列取第一张
+// 挑下一张要做的工单：--issue 直接读那张；否则列就绪队列取第一张。
+// 工单系统暂时不可用（出参 data.transient）时交回 { down: 停止原因 }，由主循环停下
 async function pick(only, ctx) {
   const { script } = ctx;
-  const id = only ?? await (async () => {
+  let id = only;
+  if (id === null) {
     const r = await script('ticket_ready', {});
-    if (r.status !== 'ok') throw new Error(`列就绪工单失败：${r.error}`);
-    return r.data.ready[0]?.id ?? null;
-  })();
+    if (r.status !== 'ok') {
+      if (transient(r)) return { down: `工单系统暂时不可用（列就绪工单）：${firstLine(r.error)}` };
+      throw new Error(`列就绪工单失败：${r.error}`);
+    }
+    id = r.data.ready[0]?.id ?? null;
+  }
   if (id === null) return null;
   const v = await script('ticket_view', { id });
-  if (v.status !== 'ok') throw new Error(`读工单 ${id} 失败：${v.error}`);
+  if (v.status !== 'ok') {
+    if (transient(v)) return { down: `工单系统暂时不可用（读工单 ${id}）：${firstLine(v.error)}` };
+    throw new Error(`读工单 ${id} 失败：${v.error}`);
+  }
   return v.data;
 }
 
-// 一张工单走完全程；返回 'done' | 'failed' | 'push_failed' | 'unpushed' | 'infra_failed'
+const transient = (r) => r?.data?.transient === true;
+
+// 一张工单走完全程；返回 'done' | 'failed' | 'push_failed' | 'unpushed' | 'infra_failed' | 'ticket_down'（停止原因在 ctx.down）
 async function runTicket(t, ctx) {
   const { script, human, args, root } = ctx;
 
-  if ((await script('ticket_mark', { id: t.id, action: 'claimed' })).status !== 'ok') {
-    console.error(`${t.ref} 认领失败`);
+  const claim = await script('ticket_mark', { id: t.id, action: 'claimed' });
+  if (claim.status !== 'ok') {
+    console.error(`${t.ref} 认领失败：${claim.error}`);
+    if (transient(claim)) {
+      ctx.down = `工单系统暂时不可用（认领 ${t.ref}）：下轮重做`;
+      return 'ticket_down';
+    }
     return 'failed';
   }
 
@@ -200,6 +225,10 @@ async function runTicket(t, ctx) {
   if (marked.status !== 'ok') {
     // 已经提交推送出去了，回滚反而更糟；留着让人看
     console.error(`${t.ref} 已提交但关单失败：${marked.error}`);
+    if (transient(marked)) {
+      ctx.down = `已推送 ${c.data.sha.slice(0, 7)}，工单 ${t.ref} 标记完成失败：工单系统暂时不可用，需人补标记`;
+      return 'ticket_down';
+    }
     return 'failed';
   }
 
@@ -209,7 +238,7 @@ async function runTicket(t, ctx) {
 
 // 提交成功但没发布（PUSH=false 或推送失败）：评论注明未推送、保留 afk-claimed、不关单，整轮停下留给人处理
 async function notPublished(outcome, t, sha, ctx) {
-  await ctx.script('ticket_mark', { id: t.id, action: 'unpushed', sha });
+  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'unpushed', sha }), t, '记录未推送');
   console.error(`✖ ${t.ref} 本地提交（未推送）：${String(sha ?? '').slice(0, 7)}，工单保持打开`);
   return outcome;
 }
@@ -220,8 +249,14 @@ async function notPublished(outcome, t, sha, ctx) {
 async function fail(t, reason, base, ctx, reply) {
   console.error(`✖ ${t.ref} ${reason}`);
   const note = await rollback(base, ctx);
-  await ctx.script('ticket_mark', { id: t.id, action: 'failed', comment: `${reason}${note}`, ...(reply ? { commentFile: reply } : {}) });
+  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'failed', comment: `${reason}${note}`, ...(reply ? { commentFile: reply } : {}) }), t, '标记失败');
   return 'failed';
+}
+
+// 收尾时的 ticket_mark 失败只打印，不覆盖这张工单原来的结果
+function markQuietly(r, t, what) {
+  if (r.status === 'ok') return;
+  console.error(`  ${t.ref} ${what}没成功${transient(r) ? '（工单系统暂时不可用）' : ''}：${firstLine(r.error)}`);
 }
 
 // Agent 基础设施故障重试用完（或不该重试）：回滚到起点，ticket_mark released——摘认领、不贴失败、保留入队，下轮重做
@@ -229,7 +264,7 @@ async function fail(t, reason, base, ctx, reply) {
 async function release(t, reason, base, ctx, saved = '') {
   console.error(`✖ ${t.ref} Agent 连接失败：${reason}`);
   const note = saved + await rollback(base, ctx);
-  await ctx.script('ticket_mark', { id: t.id, action: 'released', comment: `${reason}${note}` });
+  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'released', comment: `${reason}${note}` }), t, '释放');
   return 'infra_failed';
 }
 

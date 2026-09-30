@@ -35,6 +35,9 @@ writeFileSync(FAKE_GH, [
   'const rest = [];',
   'for (let i = 2; i < argv.length; i++) { if (argv[i] === "--repo") { i++; continue; } rest.push(argv[i]); }',
   'const find = (x) => state.issues.find((i) => i.number === Number(x));',
+  // ghFail: { <子命令>: { times, message } }——该子命令先报错 times 次（模拟 GitHub 服务端故障）
+  'const f = state.ghFail?.[action];',
+  'if (f && f.times > 0) { f.times--; save(state); die(f.message ?? "HTTP 500"); }',
   'if (argv[0] === "--version") {',
   '  state.versionChecks = (state.versionChecks ?? 0) + 1; save(state);',
   '  process.stdout.write(`gh version ${state.ghVersion ?? "2.101.0"} (2026-01-01)\\n`);',
@@ -150,7 +153,7 @@ export const CONFIG = (verify, rounds, push, retryDelays = [0, 0]) => [
 
 // repoLabels：给了就只认这些仓库标签（贴没有的会报错，要先 gh label create）；不给 = 什么标签都能贴
 // retryDelays：Agent 基础设施故障的重试间隔，测试里缺省 [0, 0]（不真等）
-export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {}, retryDelays = [0, 0] } = {}) {
+export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {}, retryDelays = [0, 0], ticketRetryDelays = [0, 0, 0] } = {}) {
   const base = tmpDir();
   const root = path.join(base, 'repo');
   mkdirSync(root, { recursive: true });
@@ -158,6 +161,10 @@ export function setup({ source = 'github', issues = [], repoLabels, verify = '',
   const home = path.join(root, '.workflow');
   mkdirSync(home, { recursive: true });
   for (const t of templatesOf(source)) cpSync(t, home, { recursive: true });
+  // 工单系统故障的退避间隔：测试里缺省全 0（不真等）
+  const srcFile = path.join(home, 'source.mjs');
+  writeFileSync(srcFile, readFileSync(srcFile, 'utf8')
+    .replace(/(export const (?:GH|TAPD)_RETRY_DELAYS = )\[[^\]]*\];/, `$1${JSON.stringify(ticketRetryDelays)};`));
   const withPush = push || remoteAhead;
   writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush, retryDelays));
   writeFileSync(path.join(home, '.gitignore'), 'logs/\n');

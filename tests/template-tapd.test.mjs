@@ -47,21 +47,31 @@ test('firstJson：只取第一段，字符串里的括号不算', () => {
   assert.throws(() => firstJson('{"a":'), /不完整/);
 });
 
-test('runTapd：瞬时错误最多重试 2 次', () => {
+test('runTapd：工单系统故障按间隔表重试，用完抛 transient；4xx / 权限错误不重试', () => {
+  const delays = [0, 0, 0];
   const ok = stateFile({ fail: { times: 2, message: 'network timeout' } });
   useEnv(tapdEnv(ok));
-  assert.equal(tapdJson(['story', 'list', 'id=1'], { retryDelayMs: 0 }).status, 1);
+  assert.equal(tapdJson(['story', 'list', 'id=1'], { retryDelays: delays }).status, 1);
   assert.equal(readTapdState(ok).calls.length, 3);
 
-  const bad = stateFile({ fail: { times: 3, message: 'network timeout' } });
-  useEnv(tapdEnv(bad));
-  assert.throws(() => runTapd(['story', 'list'], { retryDelayMs: 0 }), /network timeout/);
-  assert.equal(readTapdState(bad).calls.length, 3, '1 次 + 重试 2 次');
+  for (const message of ['HTTP 500 Internal Server Error', 'Something went wrong while executing your query']) {
+    const once = stateFile({ fail: { times: 1, message } });
+    useEnv(tapdEnv(once));
+    assert.equal(tapdJson(['story', 'list', 'id=1'], { retryDelays: delays }).status, 1, message);
+    assert.equal(readTapdState(once).calls.length, 2, message);
+  }
 
-  const perm = stateFile({ fail: { times: 5, message: 'invalid param' } });
-  useEnv(tapdEnv(perm));
-  assert.throws(() => runTapd(['story', 'list'], { retryDelayMs: 0 }), /invalid param/);
-  assert.equal(readTapdState(perm).calls.length, 1, '非瞬时错误不重试');
+  const bad = stateFile({ fail: { times: 9, message: 'HTTP 503' } });
+  useEnv(tapdEnv(bad));
+  assert.throws(() => runTapd(['story', 'list'], { retryDelays: delays }), (err) => err.transient === true && /HTTP 503/.test(err.message));
+  assert.equal(readTapdState(bad).calls.length, 4, '1 次 + 重试 3 次');
+
+  for (const message of ['HTTP 404 not found', 'permission denied', 'invalid param']) {
+    const perm = stateFile({ fail: { times: 5, message } });
+    useEnv(tapdEnv(perm));
+    assert.throws(() => runTapd(['story', 'list', 'id=500'], { retryDelays: delays }), (err) => !err.transient);
+    assert.equal(readTapdState(perm).calls.length, 1, `${message} 不重试`);
+  }
 });
 
 test('报错信息里 32 位十六进制令牌打码', () => {

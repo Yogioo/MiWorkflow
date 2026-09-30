@@ -80,12 +80,15 @@ await main(async () => {
         process.stderr.write(`（摘标签没成功，忽略：${err.message}）\n`);
         continue;
       }
-      if (!adding) throw err;
+      // 工单系统故障（重试已用完）不是缺标签，别再去建
+      if (!adding || err.transient) throw err;
       // 贴标签失败多半是仓库里还没这个标签：先建再贴一次
       try {
         runGh(['label', 'create', adding, '--description', 'MiWorkflow 机器标签', ...repoArg]);
       } catch (createErr) {
-        throw new Error(`贴标签 ${adding} 失败（${err.message}），建标签也失败：${createErr.message}`);
+        const e = new Error(`贴标签 ${adding} 失败（${err.message}），建标签也失败：${createErr.message}`);
+        if (createErr.transient) e.transient = true;
+        throw e;
       }
       runGh(argv);
     }

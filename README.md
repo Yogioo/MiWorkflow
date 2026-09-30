@@ -116,6 +116,11 @@ issue 约定（机器标签名在 `source.mjs` 的 `LABELS` 里可改；仓库�
   按 `config.mjs` 的 `AGENT_RETRY_DELAYS`（缺省 30 秒、2 分钟，空数组 = 不重试）重试同一步，开发重试前先回到本轮起点；
   还不行，或没配 Agent（`agent_unavailable`）、超时，就回滚（提交先备份成 `refs/afk-backup/*`）、摘 `afk-claimed`、**不贴** `afk-failed`、
   评论「Agent 连接失败，已回滚并释放，下轮重做：<原因>」，整轮立即停下（退出码非 0，不计入 `--max-failures`），下一轮自动重做。
+- **工单系统暂时不可用**：GitHub / TAPD 服务端 5xx、网络、限流、GraphQL 通用服务端报错（`Something went wrong while executing your query`、不带 4xx 的 `Could not ...`）。
+  `ticket_*` 脚本按各家 `source.mjs` 的 `GH_RETRY_DELAYS` / `TAPD_RETRY_DELAYS`（缺省 5 秒、20 秒、60 秒）退避重试，还不行就出 `failed` + `data.transient`；
+  `dev` 看到就整轮立即停下（退出码非 0，不计入 `--max-failures`，不贴 `afk-failed`）：认领时失败还没动 git，下轮重做；
+  关单时失败代码**已推送、不回滚**，停止原因写明「已推送 <sha>，工单 X 标记完成失败」，要人补标记（下一轮不会自动补）。
+  4xx、权限、工单不存在、参数错照旧当失败、不重试。
 
 Agent 不直接碰 GitHub：认领 / 读单 / 标记全由 `.workflow/scripts/` 里的 `ticket_ready` / `ticket_view` / `ticket_mark` 做。
 读单读的是**工单快照**（正文 + 全部评论转成的 Markdown，图片下到旁边，在 `.workflow/logs/<runId>/tickets/<id>/`）；

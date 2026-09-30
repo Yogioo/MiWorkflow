@@ -28,6 +28,9 @@ export const PRIORITY = { 高: 1, 中: 2, 低: 3 };
 export const priorityOf = (raw) => PRIORITY[String(raw ?? '').trim()] ?? 2;
 export const knownPriority = (raw) => !String(raw ?? '').trim() || String(raw).trim() in PRIORITY;
 
+// 工单系统故障（网络、5xx、限流）时 tapd-cli 调用的退避间隔（毫秒），一项一次重试；[] = 不重试。
+export const TAPD_RETRY_DELAYS = [5_000, 20_000, 60_000];
+
 // 工单引用：日志、评论、human() 提问里用。写全 ID：TAPD 界面上的短 ID 跨项目会重，
 // 且不像 GitHub 的 #N 那样一看就知道是哪家，所以带上类型前缀 `story <需求ID>`。
 export const refOf = (id) => `story ${id}`;
