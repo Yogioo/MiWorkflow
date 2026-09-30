@@ -788,7 +788,7 @@ AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 
 `templates/github/` = GitHub（`ticket_*` 脚本、讨论流程的 `discuss_*` 脚本、`source.mjs`；配合共用的 `dev` 与 `discuss`：认领 issue → 开发 →（要审查的单子）审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`；讨论单贴 `agent-discuss` → 评论区逐轮追问 → `/spec` 写进正文 → `/tickets` 建开发单，见 TODO C3、F2、F4）。
 回帖稿带图时用 `gh issue comment --attach` 上传，要 `gh` ≥ 2.99.0；只在确实有图时查版本，不够就把图片换成「图片未上传」占位、`say` 提示升级，评论照发。
 
-`templates/tapd/` = TAPD（`ticket_*` 脚本、`scripts/_tapd.mjs`、`source.mjs`；只有开发流程，讨论流程搁置，TODO F3、F4）。三个脚本的 TAPD 实现：
+`templates/tapd/` = TAPD（`ticket_*` + `discuss_*` 脚本、`scripts/_tapd.mjs` / `_discuss.mjs`、`source.mjs`；`dev` 与 `discuss` 都是共用的，TODO F3、F4）。三个 `ticket_*` 的 TAPD 实现：
 
 - 调用：`execFileSync` 起 `tapd-cli`（不经 shell，瞬时错误最多重试 2 次；`MIWORKFLOW_TAPD` 可换成一个 JS 文件）；`tapd-cli` 没封装或取不全的
   （评论完整 HTML、前后置依赖、工作流结束状态）直连 OpenAPI：`$TAPD_API_ENDPOINT` + `Authorization: Bearer $TAPD_TOKEN`，报错信息里令牌打码。
@@ -801,6 +801,15 @@ AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 
   `id` 为空时按创建时间倒序找评论人最新的一条）。`done` **不关单**：只贴 `afk-delivered`，状态由人验收后流转。
 - `source.mjs`：`WORKSPACE_ID`、`COMMENTER`、`LABELS`、`END_STATUSES`、`PRIORITY`；`ref` 为 `story <需求ID>`；
   提交信息缺省 `{type}:{short} {summary}`（`short` = 需求 ID 后 7 位，即 TAPD 界面上的短号），要源码关联可改成 `--story={short} {summary}`。
+
+四个 `discuss_*` 的 TAPD 实现（同一个 `discuss` 任务，规范形状见上表）：
+
+- **AI 记账标记**是评论末尾一行**纯文本** `[miworkflow:discuss hash=… seen=… cli=… session=… body=…]`——TAPD 会把评论里的 HTML 注释整个剥掉（TODO F4.1），所以不能像 GitHub 那样用隐藏注释；读回来经 `htmlToMarkdown` 就在末尾那行。
+- **spec 落在评论里**（`kind=spec` 那条，最新一条就是当前 spec），**不写需求描述**：`story update description=` 不幂等，每写一次外层多包一层 `<p>`（TODO F4.1）。写的时候先发 spec 评论、再发回复评论，判轮认的「最后一条 AI 评论」才是本轮那次。
+- **阶段标签**走 `story update label=`，多值用 `|` 分隔，**写完回读校验**（写成逗号会被当成一个新标签名）；标签名不存在时 TAPD 隐式创建，不用预建。
+- **建开发单**：`story add parent_id=<讨论单>` 建子需求，标签 `ready-for-agent` + 可选的「要审查」，优先级 `P0/P1 → 高、P2 → 中、P3/P4 → 低`（TAPD 只有三档）；正文 Markdown 直接交给 `description`（tapd-cli 会转 HTML）。
+- **依赖**落成原生前后置：直连 OpenAPI `POST /stories/save_time_relations`，**必须 form-encoded**（`relations[0][workitem_id]` / `[dst_workitem_id]` / `[src_field]=due` / `[dst_field]=begin` + `current_user`），JSON body 报 422。回查时逐个子需求读 `get_time_relative_stories`，前置必须是这批里的、且不能是讨论单自己。
+- `discuss_list` 靠标签而不是状态：贴了 `agent-discuss`、阶段标为空或 grilling / spec 才处理；ticketed 或摘掉 `agent-discuss` 就退出（TAPD 没有「打开 / 关闭」这个开关）。
 
 ---
 

@@ -155,7 +155,7 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
   **建单 / 贴标签 / 写依赖由脚本做**（Agent 不碰工单系统）；通过就写清单、阶段改为 `discuss:ticketed`，此后不再响应
 - 追问的 Agent 由 `source.mjs` 的 `DISCUSS` 指定
 
-这一套只在 GitHub 上有实现（`--template github`）；TAPD 的讨论流程还没做，`--template tapd` 里是报「尚未实现」的占位桩（TODO F4）。
+两个工单源都实现了：GitHub 的 spec 写进正文的机器区域、标记是评论末尾的 HTML 注释；TAPD 的 spec 发成一条 `kind=spec` 评论、标记是评论末尾一行纯文本（TAPD 会把 HTML 注释剥掉）。
 
 改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `REVIEW` / `VERIFY` / `ROUNDS` / `PUSH`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY`）；
 开发 / 审查 / 验证修正的提示词在 `.workflow/prompts/dev.md` / `review.md` / `fix.md`（模板文件，升级会覆盖）；

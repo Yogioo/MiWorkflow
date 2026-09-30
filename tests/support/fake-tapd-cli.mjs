@@ -40,7 +40,18 @@ if (entity === 'story' && action === 'list') {
   if (params.id) rows = rows.filter((s) => String(s.id) === params.id);
   if (params.owner) rows = rows.filter((s) => String(s.owner ?? '').includes(params.owner));
   if (params.label) rows = rows.filter((s) => String(s.label ?? '').split('|').includes(params.label));
+  if (params.parent_id) rows = rows.filter((s) => String(s.parent_id ?? '') === params.parent_id);
   save(); out({ status: 1, data: page(rows).map((s) => ({ Story: s })), info: 'success' });
+} else if (entity === 'story' && action === 'add') {
+  const maxId = state.stories.reduce((m, s) => { const v = BigInt(String(s.id).replace(/\D/g, '') || '0'); return v > m ? v : m; }, 0n);
+  const s = {
+    id: String(maxId + 1n), name: params.name ?? '', label: params.label ?? '',
+    priority: params.priority_label ?? '', priority_label: params.priority_label ?? '',
+    description: params.description ?? '', status: 'open', owner: '',
+    workspace_id: params.workspace_id ?? '1000', parent_id: params.parent_id ?? '0'
+  };
+  state.stories.push(s);
+  save(); out({ status: 1, data: { Story: s }, info: 'success' });
 } else if (entity === 'story' && action === 'update') {
   const s = state.stories.find((x) => String(x.id) === params.id);
   if (!s) die(`story not found: ${params.id}`);

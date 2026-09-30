@@ -499,20 +499,25 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
   TAPD 侧补 4 个报失败的占位桩（`scripts/discuss_{list,view,post,check}.mjs`，同 #20 的先例）+ `source.mjs` 的 `DISCUSS = null`，
   让 `init --template tapd` 拿到自洽的一份（有 `discuss` 任务也有它的脚本，跑起来是「尚未实现」而不是「找不到脚本」）；Step 2 用真实现替换占位。
   已 `init` 过的项目不回头同步，用 `init --upgrade` 或重 init（§15）。
-- ⏳ **Step 2** TAPD 讨论脚本（`templates/tapd/scripts/discuss_*.mjs`）；**Step 3** 同一套场景 × 两家假工单源；**Step 4** 文档 + 真项目跑一整条。
-- **待拍板**：D1 拆单由谁建、D3 标记形态、D5 建单细节归谁（证据见下）。
+- ✅ **Step 2 接口与两家实现**：
+  - **2a** 接口改规范形状：`discuss_view` / `discuss_post` 出规范形态；`discuss_check` → **`tickets_create`**（Agent 只交 `data.tickets` 结构，建单 / 贴标签 / 写依赖 / 回查全在脚本里）；`prompts/tickets.md` 改写。GitHub 行为不变（spec 仍在正文区域、标记仍是 HTML 注释）。
+  - **2b** TAPD 实现：`scripts/_discuss.mjs`（标记用评论末尾一行纯文本、spec 落成 `kind=spec` 评论、标签回读校验、依赖走表单 `save_time_relations`、`story add parent_id=` 建子需求）+ 四个 `discuss_*` 脚本，替掉 Step 1 的占位桩。契约测试：`tests/template-tapd-discuss.test.mjs`。
+  - 212 测试全绿。
+- ⏳ **Step 3** 同一套场景 × 两家假工单源（把 `template-github-discuss.test.mjs` 的场景抽成 `discuss-scenarios.mjs`，两家各跑一遍）；**Step 4** 文档 + 真 TAPD 项目跑一整条。
+- **已拍板**（Step 2 按这个做的）：**D1** 拆单一律由脚本建（Agent 不碰工单系统）；**D3** 标记形态按工单源各自选（GitHub 用评论末尾的 HTML 注释，TAPD 用纯文本）；**D5** 建单细节（标签分隔、优先级映射、依赖写法、图片）全归脚本。
 
 以下为搁置前的分析，已按 Step 0 实测结果改写：
 
-- **AI 标记**（D3，待拍板）：✅ 实测——TAPD **会剥掉 HTML 注释**（`<!-- miworkflow:discuss … -->` 写完回读就没了），
+- **AI 标记**（D3，已定：按源各自选形态）：✅ 实测——TAPD **会剥掉 HTML 注释**（`<!-- miworkflow:discuss … -->` 写完回读就没了），
   GitHub 那套不能照搬；带 `<` 的 Markdown **仍按 Markdown 转换**（不会误判成 HTML 模式）。四种候选**都原样存活**：
-  纯文本行 `<p>[miworkflow:discuss …]</p>`、`<sub>` 包裹、`<details>` 折叠、`<span data-mw-discuss="…">`（属性也保留、肉眼不可见）。
+  纯文本行、`<sub>` 包裹、`<details>` 折叠、`<span data-mw-discuss="…">`（属性也保留、肉眼不可见）。
+  **最终**：GitHub 仍用 HTML 注释（人看不见），TAPD 用纯文本一行（坏了看得见）。
 - **spec 放哪**（D2）：①「写进描述」**排除**——✅ 实测 `story update description=` **不幂等**，每次写入外包一层 `<p>`，写两次变 `<p><p><p>…`。
   剩②发成一条带标记的 AI 评论（最新一条就是当前 spec）与③ Wiki 页面 + 评论链接。
-- **拆单**（D1，待拍板）：✅ 实测 `story add parent_id=` 能建**子需求**（项目已在用，一个父单下 20 个子单）、`story list parent_id=` 能回查；
+- **拆单**（D1，已定：脚本建）：✅ 实测 `story add parent_id=` 能建**子需求**（项目已在用，一个父单下 20 个子单）、`story list parent_id=` 能回查；
   ✅ 写前后置依赖要直连 OpenAPI `stories/save_time_relations`，**必须 form-encoded**（`relations[0][workitem_id]` 等，JSON 报 422），删用 `relation_ids[0]`。
-  硬理由：这些 `tapd-cli` **完全没封装**，Agent 自己做不到 → 倾向「Agent 产出结构化清单、脚本建单 + 写依赖」（F1 末尾的重新审视）。
-  开发单清单可写成一条 AI 评论（TAPD 页面上子需求列表本身也能看进度），机器读的是 `parent_id`。
+  硬理由：这些 `tapd-cli` **完全没封装**，Agent 自己做不到 → 「Agent 只交结构、脚本建单 + 写依赖」。
+  ✅ 另测：`story add/update description=` 也会把 Markdown 转成 HTML（所以提示词给的 Markdown 正文可以原样交给 `description`）。
 - **阶段**：仍用标签（`discuss:grilling` / `discuss:spec` / `discuss:ticketed`）；✅ 实测标签名**写入即隐式创建**，不用先在项目里建好；清空用 `label=`。
 - **配额**：✅ 实测个人令牌 2000/日（测试时剩 1794）；讨论单每个周期都要读评论算哈希，是配额大头；按修改时间粗筛后只读有变化的单。
 

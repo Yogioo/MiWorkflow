@@ -123,7 +123,7 @@ export function tapdJson(argv, opts = {}) {
 // ── OpenAPI ───────────────────────────────────────────────────────────────
 // 读评论等要直接调：`tapd-cli comment list` 会把评论的 HTML 全部剥掉。
 // $TAPD_API_ENDPOINT + Authorization: Bearer $TAPD_TOKEN；测试经 TAPD_API_ENDPOINT 指到本地假服务。
-export async function openApi(pathname, { query = {}, method = 'GET', body, timeoutMs = 30_000 } = {}) {
+export async function openApi(pathname, { query = {}, method = 'GET', body, form, timeoutMs = 30_000 } = {}) {
   const endpoint = process.env.TAPD_API_ENDPOINT;
   const token = process.env.TAPD_TOKEN;
   if (!endpoint) throw new Error('缺环境变量 TAPD_API_ENDPOINT');
@@ -133,7 +133,11 @@ export async function openApi(pathname, { query = {}, method = 'GET', body, time
   for (const [k, v] of Object.entries(query)) if (v != null) url.searchParams.set(k, String(v));
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
   let payload;
-  if (body !== undefined) {
+  if (form !== undefined) {
+    // `stories/save_time_relations` 这类接口只认表单扁平写法（`relations[0][workitem_id]`），JSON body 报 422（TODO F4.1）
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    payload = new URLSearchParams(form).toString();
+  } else if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
     payload = JSON.stringify(body);
   }
@@ -153,6 +157,30 @@ export async function openApi(pathname, { query = {}, method = 'GET', body, time
     throw e;
   }
   return checkPayload(firstJson(text, what), what);
+}
+
+// ── 需求/评论小工具 ───────────────────────────────────────────────────────
+// 标签是多值、用 | 分隔（写逗号会被当成一个新标签名，所以写完要回读校验）
+export const labelsOf = (story) => String(story?.label ?? '').split('|').map((l) => l.trim()).filter(Boolean);
+
+// 全部评论，按时间从早到晚；翻页取完，不截断。
+// 读评论必须直接调 OpenAPI：`tapd-cli comment list` 会把评论的 HTML 全剥掉（图片、表格、列表都没了）。
+const COMMENT_PAGE = 200;
+export async function commentsOf(workspace, id) {
+  const seen = new Map();
+  for (let page = 1; ; page++) {
+    const r = await openApi('/comments', {
+      query: { workspace_id: workspace || undefined, entry_type: 'stories', entry_id: id, limit: COMMENT_PAGE, page }
+    });
+    const rows = (Array.isArray(r.data) ? r.data : []).map((x) => x?.Comment).filter(Boolean);
+    let fresh = 0;
+    for (const c of rows) {
+      const key = String(c.id ?? `${c.created}|${c.author}|${c.description}`);
+      if (!seen.has(key)) { seen.set(key, c); fresh++; }
+    }
+    if (rows.length < COMMENT_PAGE || !fresh) break;
+  }
+  return [...seen.values()].sort((a, b) => String(a.created ?? '').localeCompare(String(b.created ?? '')));
 }
 
 // ── HTML → Markdown ───────────────────────────────────────────────────────

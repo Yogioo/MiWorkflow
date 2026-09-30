@@ -3,7 +3,7 @@
 // 独立进程跑：被测脚本常用 spawnSync 起，同进程的服务会被堵住。
 // 每个请求记一行 { method, url, auth } 到 <状态文件>.openapi.jsonl。
 import http from 'node:http';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 
 const [stateFile, token] = process.argv.slice(2);
 const send = (res, code, v) => {
@@ -37,7 +37,36 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && url.pathname === '/stories/get_time_relative_stories') {
     if ((state.fail ?? []).includes('relations')) return send(res, 500, { status: 0, info: 'boom' });
     const rows = (state.relations ?? []).filter((r) => r.workitem_id === q.story_id || r.dst_workitem_id === q.story_id);
-    return send(res, 200, { status: 1, data: rows.map((r) => ({ TimeRelation: r })), info: 'success' });
+    return send(res, 200, { status: 1, data: rows.map((r) => ({ WorkitemTimeRelation: r })), info: 'success' });
+  }
+  // 写依赖：只认表单扁平写法（`relations[0][workitem_id]` 等），JSON body 报 422（真接口如此，TODO F4.1）
+  if (req.method === 'POST' && url.pathname === '/stories/save_time_relations') {
+    let raw = '';
+    req.on('data', (d) => { raw += d; });
+    req.on('end', () => {
+      if (!/^application\/x-www-form-urlencoded/.test(req.headers['content-type'] ?? '')) {
+        return send(res, 422, { status: 422, info: 'invalid or empty parameter relations or relation_ids' });
+      }
+      const form = new URLSearchParams(raw);
+      const made = [];
+      for (let i = 0; ; i++) {
+        const from = form.get(`relations[${i}][workitem_id]`);
+        if (!from) break;
+        made.push({
+          id: String(1152360842001000000 + (state.relations?.length ?? 0) + i + 1),
+          workspace_id: form.get('workspace_id') ?? '', workitem_type: 'story', workitem_id: from,
+          src_field: form.get(`relations[${i}][src_field]`) ?? '',
+          dst_workspace_id: form.get('workspace_id') ?? '', dst_workitem_type: 'story',
+          dst_workitem_id: form.get(`relations[${i}][dst_workitem_id]`) ?? '',
+          dst_field: form.get(`relations[${i}][dst_field]`) ?? '', relation_type: 'after', lag_time: '0'
+        });
+      }
+      const next = JSON.parse(readFileSync(stateFile, 'utf8'));
+      next.relations = [...(next.relations ?? []), ...made];
+      writeFileSync(stateFile, JSON.stringify(next, null, 2));
+      send(res, 200, { status: 1, data: null, info: 'success' });
+    });
+    return;
   }
   // 工作流结束状态：state.lastSteps = { 状态键: 中文名 }；没给就当接口不可用
   if (req.method === 'GET' && url.pathname === '/workflows/last_steps') {

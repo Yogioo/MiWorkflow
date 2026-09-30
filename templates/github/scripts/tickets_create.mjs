@@ -5,49 +5,11 @@
 //     problems 非空 = 没建好（可能部分建出来了），不写清单、不改阶段，由人处理。
 import { main, readStdin, emit } from './_lib.mjs';
 import { runGh, runGhWithLabels, hasLabel, labelName, parseTaskList, issueNumber, refOf } from './_gh.mjs';
+import { normalizeTickets, orderTickets, findCycle } from './_tickets.mjs';
 
 const READY = 'ready-for-agent';
 const REVIEW = 'needs-review';
 const LIST_LIMIT = 1000;
-
-// 依赖顺序：被依赖的先建。成环或指向不认识的 key 就报错，什么都不建
-function order(tickets) {
-  const byKey = new Map(tickets.map((t) => [t.key, t]));
-  const problems = [];
-  for (const t of tickets) {
-    for (const k of t.blockedBy ?? []) {
-      if (!byKey.has(k)) problems.push(`开发单 ${t.key} 依赖了不认识的 key：${k}`);
-      if (k === t.key) problems.push(`开发单 ${t.key} 依赖了自己`);
-    }
-  }
-  const state = new Map();
-  const out = [];
-  const stack = [];
-  const visit = (t) => {
-    if (state.get(t.key) === 'done') return true;
-    if (state.get(t.key) === 'open') {
-      problems.push(`开发单互相依赖成环：${[...stack.slice(stack.indexOf(t.key)), t.key].join(' → ')}`);
-      return false;
-    }
-    state.set(t.key, 'open');
-    stack.push(t.key);
-    for (const k of t.blockedBy ?? []) {
-      const dep = byKey.get(k);
-      if (dep && !visit(dep)) return false;
-    }
-    stack.pop();
-    state.set(t.key, 'done');
-    out.push(t);
-    return true;
-  };
-  for (const t of tickets) if (!visit(t)) break;
-  return { ordered: problems.length ? [] : out, problems: [...new Set(problems)] };
-}
-
-const priorityOf = (raw) => {
-  const m = /^P([0-4])$/i.exec(String(raw ?? '').trim());
-  return m ? `P${m[1]}` : 'P2';
-};
 
 // `## Parent` 标题下第一行非空内容里的 #N，或 `Parent: #N`
 function parentOf(body) {
@@ -62,22 +24,9 @@ await main(async () => {
   const parent = issueNumber(args.parentId);
   const repoArg = args.repo ? ['--repo', args.repo] : [];
   const raw = Array.isArray(args.tickets) ? args.tickets : [];
-  if (!raw.length) throw new Error('tickets 要是非空数组');
+  const tickets = normalizeTickets(raw);
 
-  const tickets = raw.map((t, i) => ({
-    key: String(t?.key ?? `t${i + 1}`),
-    title: String(t?.title ?? '').trim(),
-    body: String(t?.body ?? '').trim(),
-    priority: priorityOf(t?.priority),
-    review: t?.review === true,
-    blockedBy: (Array.isArray(t?.blockedBy) ? t.blockedBy : []).map(String)
-  }));
-  const bad = tickets.filter((t) => !t.title);
-  if (bad.length) throw new Error(`开发单缺 title：${bad.map((t) => t.key).join('、')}`);
-  const dup = tickets.map((t) => t.key).filter((k, i, a) => a.indexOf(k) !== i);
-  if (dup.length) throw new Error(`开发单 key 重了：${[...new Set(dup)].join('、')}`);
-
-  const { ordered, problems } = order(tickets);
+  const { ordered, problems } = orderTickets(tickets);
   if (problems.length) {
     emit({ status: 'ok', say: `开发单结构有问题，没建：${problems.length} 个`, data: { tickets: [], problems } });
     return;
@@ -135,27 +84,3 @@ await main(async () => {
     data: { tickets: out, problems: check }
   });
 });
-
-function findCycle(deps) {
-  const state = new Map();
-  const stack = [];
-  const visit = (n) => {
-    if (state.get(n) === 'done') return null;
-    if (state.get(n) === 'open') return [...stack.slice(stack.indexOf(n)), n];
-    state.set(n, 'open');
-    stack.push(n);
-    for (const d of deps.get(n) ?? []) {
-      if (d === n) continue;
-      const c = visit(d);
-      if (c) return c;
-    }
-    stack.pop();
-    state.set(n, 'done');
-    return null;
-  };
-  for (const n of deps.keys()) {
-    const c = visit(n);
-    if (c) return c;
-  }
-  return null;
-}

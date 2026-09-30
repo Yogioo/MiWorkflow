@@ -323,7 +323,8 @@ test('init --template github：共用 + GitHub 两部分都复制进来', () => 
   const home = path.join(dir, '.workflow');
   for (const f of ['config.mjs', 'tasks/dev.mjs', 'scripts/_lib.mjs', 'scripts/git_commit.mjs', 'scripts/run_cmd.mjs',
     'prompts/dev.md', 'prompts/review.md', 'prompts/fix.md',
-    'source.mjs', 'tasks/discuss.mjs', 'scripts/_gh.mjs', 'scripts/ticket_ready.mjs', 'scripts/discuss_list.mjs', 'prompts/grilling.md']) {
+    'source.mjs', 'tasks/discuss.mjs', 'scripts/_gh.mjs', 'scripts/ticket_ready.mjs', 'scripts/discuss_list.mjs',
+    'scripts/tickets_create.mjs', 'scripts/_tickets.mjs', 'prompts/grilling.md']) {
     assert.ok(existsSync(path.join(home, f)), f);
   }
   assert.ok(!existsSync(path.join(home, 'tasks', 'github_dev.mjs')));
@@ -340,7 +341,8 @@ test('init --template tapd：共用 + TAPD 两部分都复制进来，不带 Git
   const home = path.join(dir, '.workflow');
   for (const f of ['config.mjs', 'tasks/dev.mjs', 'scripts/_lib.mjs', 'prompts/dev.md',
     'source.mjs', 'scripts/_tapd.mjs', 'scripts/ticket_ready.mjs', 'scripts/ticket_view.mjs', 'scripts/ticket_mark.mjs',
-    'tasks/discuss.mjs', 'scripts/discuss_list.mjs', 'scripts/discuss_view.mjs', 'scripts/discuss_post.mjs', 'scripts/discuss_check.mjs']) {
+    'tasks/discuss.mjs', 'scripts/discuss_list.mjs', 'scripts/discuss_view.mjs', 'scripts/discuss_post.mjs',
+    'scripts/_discuss.mjs', 'scripts/tickets_create.mjs', 'scripts/_tickets.mjs']) {
     assert.ok(existsSync(path.join(home, f)), f);
   }
   assert.ok(!existsSync(path.join(home, 'scripts', '_gh.mjs')));
