@@ -1,9 +1,13 @@
 // 工单源接口 ticket_ready / ticket_view / ticket_mark 的契约测试（GitHub 实现，假 gh）。脚手架在 tests/support/github-template.mjs。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setup, issue, issueState, labelsOf, comments, runScript } from './support/github-template.mjs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { setup, issue, issueState, labelsOf, comments, readState, runScript, spawnScript, fetchLog } from './support/github-template.mjs';
 
 const keys = (o) => Object.keys(o).sort();
+const PNG = '89504e470d0a1a0a00';
+const JPG = 'ffd8ffe000';
 
 test('ticket_ready：入 {}，出 ready / blocked；工单号是字符串，引用是 #N；按优先级 → 工单号排序', () => {
   const s = setup({
@@ -38,21 +42,77 @@ test('ticket_ready：入 {}，出 ready / blocked；工单号是字符串，引�
   assert.doesNotMatch(b.reason, /#2/, '勾上的依赖不算');
 });
 
-test('ticket_view：入 { id }，出 { id, ref, title, text }；text 带正文与全部评论', () => {
+test('ticket_view：入 { id }，出 { id, ref, title, file }；快照在本次运行日志目录下，带正文与全部评论', () => {
   const s = setup({ issues: [issue(7, { title: '读我', body: '正文内容' })] });
   runScript(s, 'ticket_mark', { id: '7', action: 'failed', comment: '上次挂了' });
 
-  const r = runScript(s, 'ticket_view', { id: '7' });
+  const r = runScript(s, 'ticket_view', { id: '7' }, { AGENTFLOW_RUN_ID: 'run-1' });
   assert.equal(r.status, 'ok', r.error);
-  assert.deepEqual(keys(r.data), ['id', 'ref', 'text', 'title']);
+  assert.deepEqual(keys(r.data), ['file', 'id', 'ref', 'title']);
   assert.equal(r.data.id, '7');
   assert.equal(r.data.ref, '#7');
   assert.equal(r.data.title, '读我');
-  assert.match(r.data.text, /正文内容/);
-  assert.match(r.data.text, /上次挂了/);
+  assert.equal(r.data.file, path.join(s.home, 'logs', 'run-1', 'tickets', '7', 'ticket.md'));
+  const md = readFileSync(r.data.file, 'utf8');
+  assert.match(md, /^# #7 读我/);
+  assert.match(md, /正文内容/);
+  assert.match(md, /上次挂了/);
+  assert.equal(fetchLog(s).length, 0, '没图就不发请求');
 
   assert.equal(runScript(s, 'ticket_view', {}).status, 'failed', '缺 id');
   assert.equal(runScript(s, 'ticket_view', { id: 'abc' }).status, 'failed', '工单号不对');
+});
+
+test('ticket_view：正文 + 评论里的图片下载到 images/、按魔数定扩展名、改写成相对路径；令牌不跟到重定向后的主机', () => {
+  const GH = 'https://github.com/user-attachments/assets/aaa';
+  const S3 = 'https://s3.example.com/signed?x=1';
+  const s = setup({
+    issues: [issue(3, { body: `看图 ![截图](${GH})\n再看 <img width="200" alt="界面" src="https://img.example.com/b.png">` })],
+    fetchRoutes: {
+      [GH]: { needsAuth: true, location: S3 },
+      [S3]: { bytes: PNG },
+      'https://img.example.com/b.png': { bytes: JPG },
+      'https://img.example.com/c.gif': { bytes: '4749463839' }
+    }
+  });
+  const st = readState(s);
+  st.issues[0].comments.push({ author: 'human', at: 't', body: `评论里的图 ![c](https://img.example.com/c.gif) 与重复的 ![again](${GH})` });
+  writeFileSync(s.stateFile, JSON.stringify(st));
+
+  const r = runScript(s, 'ticket_view', { id: '3' });
+  assert.equal(r.status, 'ok', r.error);
+  const dir = path.dirname(r.data.file);
+  const md = readFileSync(r.data.file, 'utf8');
+  assert.match(md, /!\[截图\]\(images\/1\.png\)/);
+  assert.match(md, /!\[界面\]\(images\/2\.jpg\)/, '扩展名看内容，不看 URL');
+  assert.match(md, /!\[c\]\(images\/3\.gif\)/);
+  assert.match(md, /!\[again\]\(images\/1\.png\)/, '同一张图只下一次');
+  assert.doesNotMatch(md, /https:\/\//);
+  assert.deepEqual(readdirSync(path.join(dir, 'images')).sort(), ['1.png', '2.jpg', '3.gif']);
+
+  const log = fetchLog(s);
+  assert.equal(log.find((l) => l.url === GH).auth, 'Bearer fake-token', 'github.com 带令牌');
+  assert.equal(log.find((l) => l.url === S3).auth, null, '令牌不发往重定向后的地址');
+  assert.ok(log.filter((l) => l.url !== GH).every((l) => l.auth === null));
+});
+
+test('ticket_view：超过 30 张只下 30 张并写明还有 N 张；单张下载失败留占位、整单照样成功', () => {
+  const urls = Array.from({ length: 32 }, (_, i) => `https://img.example.com/${i}.png`);
+  const routes = Object.fromEntries(urls.map((u) => [u, { bytes: PNG }]));
+  delete routes[urls[1]];
+  const s = setup({ issues: [issue(4, { body: urls.map((u) => `![](${u})`).join('\n') })], fetchRoutes: routes });
+
+  const r = spawnScript(s, 'ticket_view', { id: '4' });
+  assert.equal(r.out.status, 'ok', r.out.error);
+  const md = readFileSync(r.out.data.file, 'utf8');
+  assert.match(md, /还有 2 张图片未下载/);
+  assert.match(md, new RegExp(`图片未能下载：${urls[1].replace(/[.]/g, '\\.')}`));
+  assert.match(md, /!\[\]\(images\/29\.png\)/, '失败的那张不占编号');
+  assert.ok(md.includes(`![](${urls[31]})`), '超出的保留原链接');
+  assert.equal(fetchLog(s).length, 30);
+  assert.equal(readdirSync(path.join(path.dirname(r.out.data.file), 'images')).length, 29);
+  assert.match(r.stderr, /图片下载失败 .*1\.png：HTTP 404/);
+  assert.equal(r.stderr.trim().split('\n').length, 1, 'stderr 只一行');
 });
 
 test('ticket_mark：入 { id, action, comment?, sha? }；四种 action 按 GitHub 规则落标签 / 评论 / 关单', () => {

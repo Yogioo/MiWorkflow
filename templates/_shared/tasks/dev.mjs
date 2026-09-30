@@ -110,7 +110,7 @@ async function runTicket(t, ctx) {
   // 1. 开发
   const dev = await agent(devPrompt(t, root), {
     ...(DEV ? { agent: DEV } : {}),
-    inputs: { cwd: root, issue: t.text, choices: ['done', 'no_change'] }
+    inputs: { cwd: root, ticket: t.file, choices: ['done', 'no_change'] }
   });
   if (dev.status === 'need_human') return fail(t, `Agent 提问：${dev.reason}`, base, ctx);
   if (dev.status !== 'ok' || !['done', 'no_change'].includes(dev.choice)) {
@@ -127,7 +127,7 @@ async function runTicket(t, ctx) {
   // 3. 审查（有问题直接改）
   const rev = await agent(reviewPrompt(t, root, changed), {
     ...(REVIEWER ? { agent: REVIEWER } : {}),
-    inputs: { cwd: root, issue: t.text, changed, choices: ['clean', 'refined', 'reject'] }
+    inputs: { cwd: root, ticket: t.file, changed, choices: ['clean', 'refined', 'reject'] }
   });
   if (rev.status === 'need_human') return fail(t, `审查者提问：${rev.reason}`, base, ctx);
   if (rev.status !== 'ok' || !['clean', 'refined'].includes(rev.choice)) {
@@ -146,7 +146,7 @@ async function runTicket(t, ctx) {
       round++;
       const fix = await agent(fixPrompt(t, root, VERIFY, v.data?.tail), {
         ...(DEV ? { agent: DEV } : {}),
-        inputs: { cwd: root, issue: t.text, verify: VERIFY, output: v.data?.tail, choices: ['fixed', 'give_up'] }
+        inputs: { cwd: root, ticket: t.file, verify: VERIFY, output: v.data?.tail, choices: ['fixed', 'give_up'] }
       });
       if (fix.status !== 'ok' || fix.choice !== 'fixed') {
         return fail(t, `验证失败后放弃：${fix.reason}`, base, ctx);
@@ -223,7 +223,7 @@ const PROMPTS = {
   fix: fileURLToPath(new URL('../prompts/fix.md', import.meta.url))
 };
 
-// 一趟替换：填进去的值（工单正文、验证输出）里就算有 {{…}} 也不会再被替换
+// 一趟替换：填进去的值（快照路径、验证输出）里就算有 {{…}} 也不会再被替换
 function render(kind, vars) {
   return readFileSync(PROMPTS[kind], 'utf8').replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
 }
@@ -234,14 +234,14 @@ function commitText(t, kind) {
 }
 
 function devPrompt(t, root) {
-  return render('dev', { cwd: root, ticket: t.text, commit: commitText(t, 'dev') });
+  return render('dev', { cwd: root, ticket: t.file, commit: commitText(t, 'dev') });
 }
 
 function reviewPrompt(t, root, changed) {
   return render('review', {
     cwd: root,
     changed: changed.map((f) => `- ${f}`).join('\n'),
-    ticket: t.text,
+    ticket: t.file,
     commit: commitText(t, 'review')
   });
 }
@@ -251,7 +251,7 @@ function fixPrompt(t, root, verify, output) {
     cwd: root,
     verify: Array.isArray(verify) ? verify.join(' ') : verify,
     output: String(output ?? '').split('\n').slice(-60).join('\n'),
-    ticket: t.text,
+    ticket: t.file,
     commit: commitText(t, 'fix')
   });
 }

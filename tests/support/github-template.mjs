@@ -35,7 +35,9 @@ writeFileSync(FAKE_GH, [
   'const rest = [];',
   'for (let i = 2; i < argv.length; i++) { if (argv[i] === "--repo") { i++; continue; } rest.push(argv[i]); }',
   'const find = (x) => state.issues.find((i) => i.number === Number(x));',
-  'if (argv[0] === "label" && action === "create") {',
+  'if (argv[0] === "auth" && action === "token") {',
+  '  process.stdout.write("fake-token\\n");',
+  '} else if (argv[0] === "label" && action === "create") {',
   '  if (!Array.isArray(state.repoLabels)) state.repoLabels = [];',
   '  if (state.repoLabels.includes(rest[0])) die("label already exists");',
   '  state.repoLabels.push(rest[0]); save(state); out({ ok: true });',
@@ -77,7 +79,7 @@ writeFileSync(FAKE_AGENT, [
   'const planFile = process.env.FAKE_AGENT_PLAN;',
   'const plan = JSON.parse(readFileSync(planFile, "utf8"));',
   'const step = plan.shift();',
-  'writeFileSync(planFile + ".seen.jsonl", JSON.stringify({ goal: pkg.goal, session: pkg.inputs?.session, issue: pkg.inputs?.issue }) + "\\n", { flag: "a" });',
+  'writeFileSync(planFile + ".seen.jsonl", JSON.stringify({ goal: pkg.goal, session: pkg.inputs?.session, issue: pkg.inputs?.issue, ticket: pkg.inputs?.ticket }) + "\\n", { flag: "a" });',
   'writeFileSync(planFile, JSON.stringify(plan));',
   'if (step.file) writeFileSync(path.join(pkg.inputs.cwd, step.file.name), step.file.content);',
   'if (step.ghComment) {',
@@ -95,6 +97,24 @@ writeFileSync(FAKE_AGENT, [
   '  spawnSync("git", ["commit", "-qm", step.commit], { cwd: pkg.inputs.cwd });',
   '}',
   'process.stdout.write(JSON.stringify({ status: step.status ?? "ok", choice: step.choice, reason: step.reason ?? "", data: step.data ?? {}, ...(step.session ? { session: step.session } : {}) }));',
+  ''
+].join('\n'));
+
+// 假的 fetch：以 FAKE_FETCH_ROUTES 里的 JSON 为后端（url → { status, location?, bytes? }，没登记的 404），
+// 每次请求记一行 { url, auth } 到 FAKE_FETCH_ROUTES.log.jsonl。测试里不碰真网络。
+const FAKE_FETCH = path.join(TMP, 'fake-fetch.mjs');
+writeFileSync(FAKE_FETCH, [
+  "import { readFileSync, writeFileSync } from 'node:fs';",
+  'export default async function (url, init = {}) {',
+  '  const file = process.env.FAKE_FETCH_ROUTES;',
+  '  const auth = init.headers?.Authorization ?? init.headers?.authorization ?? null;',
+  '  writeFileSync(file + ".log.jsonl", JSON.stringify({ url, auth }) + "\\n", { flag: "a" });',
+  '  const r = JSON.parse(readFileSync(file, "utf8"))[url];',
+  '  if (!r) return new Response("not found", { status: 404 });',
+  '  if (r.needsAuth && !auth) return new Response("not found", { status: 404 });',
+  '  if (r.location) return new Response(null, { status: r.status ?? 302, headers: { location: r.location } });',
+  '  return new Response(Buffer.from(r.bytes ?? [], "hex"), { status: r.status ?? 200 });',
+  '}',
   ''
 ].join('\n'));
 
@@ -117,7 +137,7 @@ export const CONFIG = (verify, rounds, push) => [
 ].join('\n');
 
 // repoLabels：给了就只认这些仓库标签（贴没有的会报错，要先 gh label create）；不给 = 什么标签都能贴
-export function setup({ issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false } = {}) {
+export function setup({ issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {} } = {}) {
   const base = tmpDir();
   const root = path.join(base, 'repo');
   mkdirSync(root, { recursive: true });
@@ -157,6 +177,8 @@ export function setup({ issues = [], repoLabels, verify = '', rounds = 2, push =
   const planFile = path.join(base, 'agent-plan.json');
   writeFileSync(stateFile, JSON.stringify({ issues, ...(repoLabels ? { repoLabels } : {}) }, null, 2));
   writeFileSync(planFile, JSON.stringify([]));
+  const fetchFile = path.join(base, 'fetch-routes.json');
+  writeFileSync(fetchFile, JSON.stringify(fetchRoutes));
 
   const env = {
     AGENTFLOW_HOME: home,
@@ -164,10 +186,14 @@ export function setup({ issues = [], repoLabels, verify = '', rounds = 2, push =
     MIWORKFLOW_GH: FAKE_GH,
     FAKE_GH_STATE: stateFile,
     FAKE_AGENT_PLAN: planFile,
+    MIWORKFLOW_FETCH: FAKE_FETCH,
+    FAKE_FETCH_ROUTES: fetchFile,
     GIT_CEILING_DIRECTORIES: TMP
   };
-  return { base, root, home, stateFile, planFile, env };
+  return { base, root, home, stateFile, planFile, fetchFile, env };
 }
+
+export const fetchLog = (s) => { try { return readFileSync(`${s.fetchFile}.log.jsonl`, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
 
 export const plan = (s, steps) => writeFileSync(s.planFile, JSON.stringify(steps));
 export const seen = (s) => { try { return readFileSync(`${s.planFile}.seen.jsonl`, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
@@ -178,13 +204,17 @@ export const comments = (i) => (i.comments ?? []).map((c) => c.body).join('\n');
 export const labelsOf = (s, num) => labelNames(issueState(s, num));
 
 // 直接跑 .workflow/scripts/ 里的一个脚本（stdin JSON → stdout JSON），给工单脚本的契约测试用
-export function runScript(s, name, input = {}) {
+export function spawnScript(s, name, input = {}, env = {}) {
+  const base = { ...process.env };
+  delete base.AGENTFLOW_RUN_ID;
   const r = spawnSync(process.execPath, [path.join(s.home, 'scripts', `${name}.mjs`)], {
-    cwd: s.root, env: { ...process.env, ...s.env }, input: JSON.stringify(input), encoding: 'utf8'
+    cwd: s.root, env: { ...base, ...s.env, ...env }, input: JSON.stringify(input), encoding: 'utf8'
   });
   assert.equal(r.status, 0, r.stderr);
-  return JSON.parse(r.stdout);
+  return { out: JSON.parse(r.stdout), stderr: r.stderr };
 }
+
+export const runScript = (s, name, input = {}, env = {}) => spawnScript(s, name, input, env).out;
 
 export function cli(s, argv) {
   const base = { ...process.env };

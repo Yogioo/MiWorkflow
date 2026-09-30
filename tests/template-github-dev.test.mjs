@@ -38,6 +38,26 @@ test('GitHub 下三段提示词里的提交信息与兜底提交一致', () => {
   assert.equal(gitOut(['log', '-1', '--pretty=%b'], s.root), 'Closes #7');
 });
 
+test('Agent 的提示词与 inputs 里没有工单正文，只有快照路径；快照在本次运行的日志目录下', () => {
+  const s = setup({ issues: [issue(5, { title: '看快照', body: '独一无二的正文XYZ', labels: ['ready-for-agent'] })], push: true });
+  plan(s, [
+    { choice: 'done', reason: '做了', file: { name: 'note.txt', content: 'hi' } },
+    { choice: 'clean', reason: '没问题' }
+  ]);
+
+  const r = cli(s, ['dev']);
+  assert.equal(r.code, 0, r.stderr);
+  const calls = seen(s);
+  assert.equal(calls.length, 2);
+  for (const c of calls) {
+    assert.doesNotMatch(c.goal, /独一无二的正文XYZ/);
+    assert.equal(c.issue, undefined);
+    assert.match(c.ticket, /[\\/]logs[\\/][^\\/]+[\\/]tickets[\\/]5[\\/]ticket\.md$/);
+    assert.ok(c.goal.includes(c.ticket), '提示词里给的是快照路径');
+    assert.match(readFileSync(c.ticket, 'utf8'), /独一无二的正文XYZ/);
+  }
+});
+
 test('成功：认领 → 开发 → 审查 → 提交 → 关单（且推送）', () => {
   const s = setup({ issues: [issue(1, { title: '加个文件', labels: ['ready-for-agent'] })], push: true });
   plan(s, [

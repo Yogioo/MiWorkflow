@@ -5,7 +5,7 @@
 输出（末尾）：
 {{output}}
 
-工单：
+工单快照（Markdown：正文 + 全部评论，图片在同目录 images/ 下、用相对路径引用；先读完它再动手）：
 {{ticket}}
 
 直接改代码。修好了 choice=fixed；判断做不到 choice=give_up 并说明原因。

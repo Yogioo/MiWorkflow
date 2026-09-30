@@ -27,6 +27,19 @@ export async function main(handler) {
   }
 }
 
+// 按魔数定图片扩展名（有的图扩展名写 .png、内容其实是 jpeg，读图工具认内容）；认不出给 bin
+export function imageExt(buf) {
+  const b = Buffer.from(buf ?? []);
+  const at = (i, bytes) => bytes.every((v, k) => b[i + k] === v);
+  if (at(0, [0x89, 0x50, 0x4e, 0x47])) return 'png';
+  if (at(0, [0xff, 0xd8, 0xff])) return 'jpg';
+  if (at(0, [0x47, 0x49, 0x46, 0x38])) return 'gif';
+  if (at(0, [0x52, 0x49, 0x46, 0x46]) && at(8, [0x57, 0x45, 0x42, 0x50])) return 'webp';
+  if (at(0, [0x42, 0x4d])) return 'bmp';
+  if (/^\s*(<\?xml[^>]*>\s*)?<svg\b/i.test(b.subarray(0, 512).toString('utf8'))) return 'svg';
+  return 'bin';
+}
+
 // ── git ───────────────────────────────────────────────────────────────────
 export function git(argv, cwd) {
   return execFileSync('git', argv, {

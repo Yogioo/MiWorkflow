@@ -1,6 +1,8 @@
 // GitHub 工单源专用工具：gh 调用、issue / label 小工具。通用的 stdin/stdout、git 在 _lib.mjs。
 // 这是模板内容，复制进项目后归项目所有。
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 // ── gh ────────────────────────────────────────────────────────────────────
 // 不经 shell（Core §11）；网络类错误有限重试。
@@ -39,6 +41,40 @@ export function runGh(argv, opts = {}) {
     }
   }
 }
+
+// ── 图片下载 ───────────────────────────────────────────────────────────────
+// 私有仓库的 github.com/user-attachments/… 不带鉴权是 404；带 gh auth token 会 302 到 S3 预签名地址。
+// 重定向手动跟：令牌只发给 github.com，跟到别的主机就不带。
+// 测试 / 替换：设 MIWORKFLOW_FETCH 指向一个默认导出 fetch 的 JS 文件。
+const needsToken = (url) => new URL(url).hostname === 'github.com';
+
+export function ghToken() {
+  return runGh(['auth', 'token'], { retries: 0 }).trim();
+}
+
+export async function fetchImpl() {
+  const fake = process.env.MIWORKFLOW_FETCH;
+  return fake ? (await import(pathToFileURL(path.resolve(fake)).href)).default : fetch;
+}
+
+export async function downloadImage(url, { token, fetch: doFetch, maxHops = 5, timeoutMs = 30_000 }) {
+  let u = url;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    const headers = token && needsToken(u) ? { Authorization: `Bearer ${token}` } : {};
+    const res = await doFetch(u, { headers, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      if (!loc) throw new Error(`HTTP ${res.status} 没有 Location`);
+      u = new URL(loc, u).href;
+      continue;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+  throw new Error(`重定向超过 ${maxHops} 次`);
+}
+
+export const anyNeedsToken = (urls) => urls.some((u) => { try { return needsToken(u); } catch { return false; } });
 
 // ── issue / label 小工具 ──────────────────────────────────────────────────
 export const labelName = (label) =>
