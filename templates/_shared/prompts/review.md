@@ -13,4 +13,6 @@
 - 你做了修改或补充：choice=refined
 - 方向根本错了、应当放弃：choice=reject，并说明
 
+回帖稿：{{reply}}——有话对人说（提问、打回或放弃的理由）就用 Markdown 写进这个文件，由工作流发回工单；图片放同目录、用相对路径引用。没话说就别建它
+
 最后只回一段 JSON：{status, choice, reason, data}；choice 只能是 clean | refined | reject

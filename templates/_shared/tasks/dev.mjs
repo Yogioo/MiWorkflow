@@ -10,6 +10,7 @@
 //   miworkflow dev --confirm          每次发布（推送 + 关单）前 human 确认
 //   miworkflow dev --dry-run          只报会做哪些工单、哪些被挡住，不改工单、不改 git
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH } from '../config.mjs';
 import { commitMessage } from '../source.mjs';
@@ -107,16 +108,17 @@ async function runTicket(t, ctx) {
 
   const base = (await script('git_state', { cwd: root })).data.sha;
 
-  // 1. 开发
-  const dev = await agent(devPrompt(t, root), {
+  // 1. 开发（每次调 Agent 都分配一份新的回帖稿；失败时它写了就跟着评论发回工单）
+  let reply = nextReply(t);
+  const dev = await agent(devPrompt(t, root, reply), {
     ...(DEV ? { agent: DEV } : {}),
-    inputs: { cwd: root, ticket: t.file, choices: ['done', 'no_change'] }
+    inputs: { cwd: root, ticket: t.file, reply, choices: ['done', 'no_change'] }
   });
-  if (dev.status === 'need_human') return fail(t, `Agent 提问：${dev.reason}`, base, ctx);
+  if (dev.status === 'need_human') return fail(t, `Agent 提问：${dev.reason}`, base, ctx, reply);
   if (dev.status !== 'ok' || !['done', 'no_change'].includes(dev.choice)) {
-    return fail(t, `开发失败（${dev.choice}）：${dev.reason}`, base, ctx);
+    return fail(t, `开发失败（${dev.choice}）：${dev.reason}`, base, ctx, reply);
   }
-  if (dev.choice === 'no_change') return fail(t, `Agent 判断无需改动：${dev.reason}`, base, ctx);
+  if (dev.choice === 'no_change') return fail(t, `Agent 判断无需改动：${dev.reason}`, base, ctx, reply);
 
   // 2. 信 git，不信 Agent 自报
   const st = await script('git_state', { cwd: root, baseSha: base });
@@ -125,13 +127,14 @@ async function runTicket(t, ctx) {
   if (!changed.length) return fail(t, `Agent 报完成，但 git 看不到改动：${dev.reason}`, base, ctx);
 
   // 3. 审查（有问题直接改）
-  const rev = await agent(reviewPrompt(t, root, changed), {
+  reply = nextReply(t);
+  const rev = await agent(reviewPrompt(t, root, changed, reply), {
     ...(REVIEWER ? { agent: REVIEWER } : {}),
-    inputs: { cwd: root, ticket: t.file, changed, choices: ['clean', 'refined', 'reject'] }
+    inputs: { cwd: root, ticket: t.file, reply, changed, choices: ['clean', 'refined', 'reject'] }
   });
-  if (rev.status === 'need_human') return fail(t, `审查者提问：${rev.reason}`, base, ctx);
+  if (rev.status === 'need_human') return fail(t, `审查者提问：${rev.reason}`, base, ctx, reply);
   if (rev.status !== 'ok' || !['clean', 'refined'].includes(rev.choice)) {
-    return fail(t, `审查未通过（${rev.choice}）：${rev.reason}`, base, ctx);
+    return fail(t, `审查未通过（${rev.choice}）：${rev.reason}`, base, ctx, reply);
   }
 
   // 4. 验证（配了才跑）；不过就把输出交回 DEV 再改，最多 ROUNDS 轮
@@ -144,12 +147,13 @@ async function runTicket(t, ctx) {
         return fail(t, `验证不过（已重试 ${round} 轮）：${lastLines(v.data?.tail)}`, base, ctx);
       }
       round++;
-      const fix = await agent(fixPrompt(t, root, VERIFY, v.data?.tail), {
+      reply = nextReply(t);
+      const fix = await agent(fixPrompt(t, root, VERIFY, v.data?.tail, reply), {
         ...(DEV ? { agent: DEV } : {}),
-        inputs: { cwd: root, ticket: t.file, verify: VERIFY, output: v.data?.tail, choices: ['fixed', 'give_up'] }
+        inputs: { cwd: root, ticket: t.file, reply, verify: VERIFY, output: v.data?.tail, choices: ['fixed', 'give_up'] }
       });
       if (fix.status !== 'ok' || fix.choice !== 'fixed') {
-        return fail(t, `验证失败后放弃：${fix.reason}`, base, ctx);
+        return fail(t, `验证失败后放弃：${fix.reason}`, base, ctx, reply);
       }
     }
   }
@@ -199,7 +203,8 @@ async function notPublished(outcome, t, sha, ctx) {
 
 // 任何一步失败：回滚到起点，ticket_mark failed 并附原因（怎么落到工单上由工单源决定）
 // 回滚如果要丢掉提交，git_restore 会先备份成 ref——把那个 ref 写进评论，人才能捞回来（TODO B7）
-async function fail(t, reason, base, ctx) {
+// reply：刚结束那次 Agent 调用的回帖稿路径（写没写由 ticket_mark 看）
+async function fail(t, reason, base, ctx, reply) {
   const { script } = ctx;
   console.error(`✖ ${t.ref} ${reason}`);
   let note = '';
@@ -210,8 +215,16 @@ async function fail(t, reason, base, ctx) {
       console.error(`  回滚掉的提交备份在 ${r.data.backup}`);
     }
   }
-  await script('ticket_mark', { id: t.id, action: 'failed', comment: `${reason}${note}` });
+  await script('ticket_mark', { id: t.id, action: 'failed', comment: `${reason}${note}`, ...(reply ? { commentFile: reply } : {}) });
   return 'failed';
+}
+
+// 回帖稿放工单快照同目录：reply-1.md、reply-2.md …（图片也放这里，相对路径引用）
+const replies = new Map();
+function nextReply(t) {
+  const k = replies.get(t.file) ?? 0;
+  replies.set(t.file, k + 1);
+  return path.join(path.dirname(t.file), `reply-${k + 1}.md`);
 }
 
 const lastLines = (text, n = 5) => String(text ?? '').split('\n').filter(Boolean).slice(-n).join(' / ');
@@ -233,22 +246,24 @@ function commitText(t, kind) {
   return c.body ? `\`${c.message}\`，正文写一行 \`${c.body}\`` : `\`${c.message}\``;
 }
 
-function devPrompt(t, root) {
-  return render('dev', { cwd: root, ticket: t.file, commit: commitText(t, 'dev') });
+function devPrompt(t, root, reply) {
+  return render('dev', { cwd: root, ticket: t.file, reply, commit: commitText(t, 'dev') });
 }
 
-function reviewPrompt(t, root, changed) {
+function reviewPrompt(t, root, changed, reply) {
   return render('review', {
     cwd: root,
+    reply,
     changed: changed.map((f) => `- ${f}`).join('\n'),
     ticket: t.file,
     commit: commitText(t, 'review')
   });
 }
 
-function fixPrompt(t, root, verify, output) {
+function fixPrompt(t, root, verify, output, reply) {
   return render('fix', {
     cwd: root,
+    reply,
     verify: Array.isArray(verify) ? verify.join(' ') : verify,
     output: String(output ?? '').split('\n').slice(-60).join('\n'),
     ticket: t.file,

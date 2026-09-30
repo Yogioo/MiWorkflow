@@ -1,7 +1,7 @@
 // 工单源接口 ticket_ready / ticket_view / ticket_mark 的契约测试（GitHub 实现，假 gh）。脚手架在 tests/support/github-template.mjs。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setup, issue, issueState, labelsOf, comments, readState, runScript, spawnScript, fetchLog } from './support/github-template.mjs';
 
@@ -142,4 +142,48 @@ test('ticket_mark：入 { id, action, comment?, sha? }；四种 action 按 GitHu
 
   assert.equal(runScript(s, 'ticket_mark', { id: '3', action: 'nope' }).status, 'failed');
   assert.equal(runScript(s, 'ticket_mark', { action: 'claimed' }).status, 'failed', '缺 id');
+});
+
+test('ticket_mark commentFile：带图回帖稿 → gh 在回帖稿目录执行、--attach 与正文引用逐字一致；备份 ref 那句话保留', () => {
+  const s = setup({ issues: [issue(1)] });
+  const dir = path.join(s.base, 'tickets', '1');
+  mkdirSync(path.join(dir, 'images'), { recursive: true });
+  writeFileSync(path.join(dir, 'images', 'red.png'), Buffer.from(PNG, 'hex'));
+  writeFileSync(path.join(dir, 'blue.png'), Buffer.from(PNG, 'hex'));
+  const md = '看图：\n\n![红](images/red.png)\n<img alt="蓝" src="./blue.png">\n![外链](https://x.example/a.png)\n';
+  writeFileSync(path.join(dir, 'reply-1.md'), md);
+
+  const r = runScript(s, 'ticket_mark', { id: '1', action: 'failed', comment: '挂了\n（回滚掉的 1 笔提交备份在 refs/afk/backup/x：abc）', commentFile: path.join(dir, 'reply-1.md') });
+  assert.equal(r.status, 'ok', r.error);
+  const st = readState(s);
+  assert.equal(st.versionChecks, 1);
+  const [c] = st.issues[0].comments;
+  assert.equal(path.resolve(c.cwd), path.resolve(dir), 'gh 的 cwd 是回帖稿目录');
+  assert.deepEqual(c.attach, ['images/red.png', './blue.png']);
+  assert.equal(c.body, `afk failed：挂了\n（回滚掉的 1 笔提交备份在 refs/afk/backup/x：abc）\n\n${md}`);
+});
+
+test('ticket_mark commentFile：不带图不查版本；gh 版本过低 → 图片换成降级文案、say 提示升级、评论照发', () => {
+  const s = setup({ issues: [issue(1), issue(2)] });
+  const st0 = readState(s); st0.ghVersion = '2.97.0'; writeFileSync(s.stateFile, JSON.stringify(st0));
+  const dir = path.join(s.base, 'r');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, 'plain.md'), '只有字');
+  writeFileSync(path.join(dir, 'red.png'), Buffer.from(PNG, 'hex'));
+  writeFileSync(path.join(dir, 'img.md'), '看 ![红](red.png) 这里');
+
+  assert.equal(runScript(s, 'ticket_mark', { id: '1', action: 'failed', comment: 'a', commentFile: path.join(dir, 'plain.md') }).status, 'ok');
+  assert.equal(readState(s).versionChecks ?? 0, 0, '不带图不查版本');
+  assert.equal(issueState(s, 1).comments[0].body, 'afk failed：a\n\n只有字');
+
+  const r = runScript(s, 'ticket_mark', { id: '2', action: 'failed', comment: 'b', commentFile: path.join(dir, 'img.md') });
+  assert.equal(r.status, 'ok', r.error);
+  assert.match(r.say, /2\.97\.0.*升级 gh/);
+  const [c] = issueState(s, 2).comments;
+  assert.deepEqual(c.attach, []);
+  assert.equal(c.body, 'afk failed：b\n\n看 （图片未上传：red.png） 这里');
+  assert.deepEqual(labelsOf(s, 2), ['afk-failed']);
+
+  assert.equal(runScript(s, 'ticket_mark', { id: '1', action: 'failed', comment: 'c', commentFile: path.join(dir, 'none.md') }).status, 'ok');
+  assert.equal(issueState(s, 1).comments.at(-1).body, 'afk failed：c', '没写回帖稿就退回一句话');
 });
