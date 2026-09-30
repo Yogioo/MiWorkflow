@@ -1,18 +1,18 @@
-// GitHub 开发工作流：把就绪 issue 逐个「认领 → 开发 → 审查 → 验证 → 提交 → 关单」。
-// 人是把 issue 贴上 ready-for-agent 标签；失败就回滚 + 贴评论 + afk-failed，等人看完摘标签重新入队。
+// 开发工作流：把就绪工单逐个「认领 → 开发 → 审查 → 验证 → 提交 → 关单」。
+// 只通过工单源接口 ticket_ready / ticket_view / ticket_mark 碰工单系统，不知道背后是哪家（入队、标记的规则见各工单源的脚本）。
+// 失败就回滚 + 贴评论 + 标记失败，等人看完再重新入队。
 //
 // 用法：
 //   miworkflow dev                    按队列一直跑到空
 //   miworkflow dev --max 3            最多做 3 个
 //   miworkflow dev --max-failures 1   连续失败 1 次就停（默认 3）
-//   miworkflow dev --issue 42         只做 #42（不看标签和依赖，人点名就跑）
+//   miworkflow dev --issue 42         只做工单 42（不看入队和依赖，人点名就跑）
 //   miworkflow dev --confirm          每次发布（推送 + 关单）前 human 确认
-//   miworkflow dev --dry-run          改 GitHub / git 的脚本只报会做什么
+//   miworkflow dev --dry-run          只报会做哪些工单、哪些被挡住，不改工单、不改 git
 import { fileURLToPath } from 'node:url';
 import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH } from '../config.mjs';
-import { LABELS } from '../source.mjs';
 
-export const title = 'GitHub 开发：认领 issue → 开发 → 审查 → 验证 → 提交 → 关单';
+export const title = '开发：认领工单 → 开发 → 审查 → 验证 → 提交 → 关单';
 
 // .workflow/ 的上一级 = 项目根
 const PROJECT = fileURLToPath(new URL('../..', import.meta.url));
@@ -21,7 +21,7 @@ export default async function ({ script, agent, human, args }) {
   const max = args.max ? Number(args.max) : Infinity;
   const maxFailures = args['max-failures'] ? Number(args['max-failures']) : 3;
   const only = args.issue ? String(args.issue) : null;
-  const ctx = { script, agent, human, args, labels: LABELS };
+  const ctx = { script, agent, human, args };
 
   // 开跑前工作区必须干净，免得把人的改动混进提交或被回滚掉
   const pre = await script('git_state', { cwd: PROJECT });
@@ -30,21 +30,22 @@ export default async function ({ script, agent, human, args }) {
   const root = pre.data.root || PROJECT;
   ctx.root = root;
 
-  // --dry-run：只报「今天会做哪几个 issue」，不叫 Agent、不改 GitHub、不改 git。
-  // （写脚本自己也支持 dryRun，但那挡不住 Agent 改文件，所以这里直接不进流程。）
+  // --dry-run：只报「今天会做哪几张工单、哪些被挡住」，不叫 Agent、不改工单、不改 git。
+  // （ticket_mark 自己也支持 dryRun，但那挡不住 Agent 改文件，所以这里直接不进流程。）
   // --dry-run 不进 args（§5），从 env 读。
   if (process.env.AGENTFLOW_DRY_RUN === '1') {
     if (only) {
-      const v = await script('gh_issue_view', { number: only });
-      console.log(v.status === 'ok' ? `干跑：会做 #${only} ${v.data.title}` : `干跑：读不到 #${only}：${v.error}`);
+      const v = await script('ticket_view', { id: only });
+      console.log(v.status === 'ok' ? `干跑：会做 ${v.data.ref} ${v.data.title}` : `干跑：读不到工单 ${only}：${v.error}`);
     } else {
-      const r = await script('gh_ready', { labels: LABELS });
-      const list = r.status === 'ok' ? r.data.issues : [];
-      console.log(list.length
-        ? `干跑：就绪 ${list.length} 个：${list.map((i) => `#${i.number}(P${i.priority})`).join('、')}`
+      const r = await script('ticket_ready', {});
+      const { ready = [], blocked = [] } = r.status === 'ok' ? r.data : {};
+      console.log(ready.length
+        ? `干跑：就绪 ${ready.length} 个：${ready.map((t) => `${t.ref}(P${t.priority})`).join('、')}`
         : `干跑：队列空${r.status === 'ok' ? '' : `（列不出来：${r.error}）`}`);
+      for (const b of blocked) console.log(`干跑：被挡住 ${b.ref}：${b.reason}`);
     }
-    console.log('干跑：不改 GitHub、不改 git、不叫 Agent');
+    console.log('干跑：不改工单、不改 git、不叫 Agent');
     return;
   }
 
@@ -58,80 +59,77 @@ export default async function ({ script, agent, human, args }) {
     if (failures >= maxFailures) { stop = `连续失败 ${failures} 次`; break; }
     if (only && done + failures > 0) break;
 
-    const issue = await pick(only, ctx);
-    if (!issue) { stop = '队列空'; break; }
+    const t = await pick(only, ctx);
+    if (!t) { stop = '队列空'; break; }
 
-    const outcome = await runIssue(issue, ctx);
+    const outcome = await runTicket(t, ctx);
     if (outcome === 'done') { done++; failures = 0; }
     else if (outcome === 'push_failed') {
       pushStopped = true;
-      stop = `推送失败（issue #${issue.number}）：本地提交保留，留给人处理`;
+      stop = `推送失败（工单 ${t.ref}）：本地提交保留，留给人处理`;
       break;
     } else if (outcome === 'unpushed') {
       pushStopped = true;
-      stop = `未推送（PUSH=false，issue #${issue.number}）：本地提交保留，留给人处理`;
+      stop = `未推送（PUSH=false，工单 ${t.ref}）：本地提交保留，留给人处理`;
       break;
     } else { failures++; }
   }
 
   console.log(`本轮结束：完成 ${done} 个，失败 ${failures} 个；${stop}`);
-  if (failures > 0) throw new Error(`本轮有 ${failures} 个 issue 失败（停止原因：${stop}）`);
+  if (failures > 0) throw new Error(`本轮有 ${failures} 个工单失败（停止原因：${stop}）`);
   if (pushStopped) throw new Error(stop);
 }
 
-// 挑下一个要做的 issue：--issue 直接读那个；否则列就绪队列取第一个
+// 挑下一张要做的工单：--issue 直接读那张；否则列就绪队列取第一张
 async function pick(only, ctx) {
   const { script } = ctx;
-  if (only) {
-    const v = await script('gh_issue_view', { number: only });
-    if (v.status !== 'ok') throw new Error(`读 issue #${only} 失败：${v.error}`);
-    return v.data;
-  }
-  const r = await script('gh_ready', { labels: ctx.labels });
-  if (r.status !== 'ok') throw new Error(`列就绪 issue 失败：${r.error}`);
-  if (!r.data.issues.length) return null;
-  const v = await script('gh_issue_view', { number: r.data.issues[0].number });
-  if (v.status !== 'ok') throw new Error(`读 issue #${r.data.issues[0].number} 失败：${v.error}`);
+  const id = only ?? await (async () => {
+    const r = await script('ticket_ready', {});
+    if (r.status !== 'ok') throw new Error(`列就绪工单失败：${r.error}`);
+    return r.data.ready[0]?.id ?? null;
+  })();
+  if (id === null) return null;
+  const v = await script('ticket_view', { id });
+  if (v.status !== 'ok') throw new Error(`读工单 ${id} 失败：${v.error}`);
   return v.data;
 }
 
-// 一个 issue 走完全程；返回 'done' | 'failed' | 'push_failed' | 'unpushed'
-async function runIssue(issue, ctx) {
+// 一张工单走完全程；返回 'done' | 'failed' | 'push_failed' | 'unpushed'
+async function runTicket(t, ctx) {
   const { script, agent, human, args, root } = ctx;
-  const num = issue.number;
 
-  if ((await script('gh_issue_mark', { number: num, action: 'claimed', labels: ctx.labels })).status !== 'ok') {
-    console.error(`#${num} 认领失败`);
+  if ((await script('ticket_mark', { id: t.id, action: 'claimed' })).status !== 'ok') {
+    console.error(`${t.ref} 认领失败`);
     return 'failed';
   }
 
   const base = (await script('git_state', { cwd: root })).data.sha;
 
   // 1. 开发
-  const dev = await agent(devPrompt(issue, root), {
+  const dev = await agent(devPrompt(t, root), {
     ...(DEV ? { agent: DEV } : {}),
-    inputs: { cwd: root, issue: issue.text, choices: ['done', 'no_change'] }
+    inputs: { cwd: root, issue: t.text, choices: ['done', 'no_change'] }
   });
-  if (dev.status === 'need_human') return fail(num, `Agent 提问：${dev.reason}`, base, ctx);
+  if (dev.status === 'need_human') return fail(t, `Agent 提问：${dev.reason}`, base, ctx);
   if (dev.status !== 'ok' || !['done', 'no_change'].includes(dev.choice)) {
-    return fail(num, `开发失败（${dev.choice}）：${dev.reason}`, base, ctx);
+    return fail(t, `开发失败（${dev.choice}）：${dev.reason}`, base, ctx);
   }
-  if (dev.choice === 'no_change') return fail(num, `Agent 判断无需改动：${dev.reason}`, base, ctx);
+  if (dev.choice === 'no_change') return fail(t, `Agent 判断无需改动：${dev.reason}`, base, ctx);
 
   // 2. 信 git，不信 Agent 自报
   const st = await script('git_state', { cwd: root, baseSha: base });
-  if (st.status !== 'ok') return fail(num, `看不了改动：${st.error}`, base, ctx);
+  if (st.status !== 'ok') return fail(t, `看不了改动：${st.error}`, base, ctx);
   const changed = st.data.changed;
-  if (!changed.length) return fail(num, `Agent 报完成，但 git 看不到改动：${dev.reason}`, base, ctx);
+  if (!changed.length) return fail(t, `Agent 报完成，但 git 看不到改动：${dev.reason}`, base, ctx);
 
   // 3. 审查（有问题直接改）
-  const rev = await agent(reviewPrompt(issue, root, changed), {
+  const rev = await agent(reviewPrompt(t, root, changed), {
     ...(REVIEWER ? { agent: REVIEWER } : {}),
-    inputs: { cwd: root, issue: issue.text, changed, choices: ['clean', 'refined', 'reject'] }
+    inputs: { cwd: root, issue: t.text, changed, choices: ['clean', 'refined', 'reject'] }
   });
-  if (rev.status === 'need_human') return fail(num, `审查者提问：${rev.reason}`, base, ctx);
+  if (rev.status === 'need_human') return fail(t, `审查者提问：${rev.reason}`, base, ctx);
   if (rev.status !== 'ok' || !['clean', 'refined'].includes(rev.choice)) {
-    return fail(num, `审查未通过（${rev.choice}）：${rev.reason}`, base, ctx);
+    return fail(t, `审查未通过（${rev.choice}）：${rev.reason}`, base, ctx);
   }
 
   // 4. 验证（配了才跑）；不过就把输出交回 DEV 再改，最多 ROUNDS 轮
@@ -141,15 +139,15 @@ async function runIssue(issue, ctx) {
       const v = await script('run_cmd', { cmd: VERIFY, cwd: root }, { timeoutMs: 1_800_000 });
       if (v.status === 'ok') break;
       if (round >= ROUNDS) {
-        return fail(num, `验证不过（已重试 ${round} 轮）：${lastLines(v.data?.tail)}`, base, ctx);
+        return fail(t, `验证不过（已重试 ${round} 轮）：${lastLines(v.data?.tail)}`, base, ctx);
       }
       round++;
-      const fix = await agent(fixPrompt(issue, root, VERIFY, v.data?.tail), {
+      const fix = await agent(fixPrompt(t, root, VERIFY, v.data?.tail), {
         ...(DEV ? { agent: DEV } : {}),
-        inputs: { cwd: root, issue: issue.text, verify: VERIFY, output: v.data?.tail, choices: ['fixed', 'give_up'] }
+        inputs: { cwd: root, issue: t.text, verify: VERIFY, output: v.data?.tail, choices: ['fixed', 'give_up'] }
       });
       if (fix.status !== 'ok' || fix.choice !== 'fixed') {
-        return fail(num, `验证失败后放弃：${fix.reason}`, base, ctx);
+        return fail(t, `验证失败后放弃：${fix.reason}`, base, ctx);
       }
     }
   }
@@ -157,50 +155,50 @@ async function runIssue(issue, ctx) {
   // 5. 带 --confirm 才找人点头；不带就无人值守。
   // 注意：提交是本地的（Agent 已经提交过，或下面会补），这道门卡的是「发布」——推送 + 关单。
   if (args.confirm) {
-    const h = await human(`#${num} 改动就绪（提交已在本地），推送并关单？`);
-    if (h.status !== 'ok') return fail(num, '人工拒绝提交', base, ctx);
+    const h = await human(`${t.ref} 改动就绪（提交已在本地），推送并关单？`);
+    if (h.status !== 'ok') return fail(t, '人工拒绝提交', base, ctx);
   }
 
   // 6. 提交 + 推送：Agent 一般已经自己提交了（提示词要求的），这里兜底；已提交就用当前 HEAD 走推送。
   const c = await script('git_commit', {
-    message: `#${num} ${issue.title}`,
-    body: `Closes #${num}`,
+    message: `${t.ref} ${t.title}`,
+    body: `Closes ${t.ref}`,
     push: PUSH,
     cwd: root
   });
   if (c.status !== 'ok') {
     // 推送失败：本地提交保留，不关单、保留 in-progress、整轮停下
-    if (c.data?.committed) return notPublished('push_failed', num, c.data.sha, ctx);
-    return fail(num, `提交失败：${c.error}`, base, ctx);
+    if (c.data?.committed) return notPublished('push_failed', t, c.data.sha, ctx);
+    return fail(t, `提交失败：${c.error}`, base, ctx);
   }
 
   // 提交成功但没推送（PUSH=false）：跟推送失败同款语义——没发布就不算做完
-  if (c.data.pushed === false) return notPublished('unpushed', num, c.data.sha, ctx);
+  if (c.data.pushed === false) return notPublished('unpushed', t, c.data.sha, ctx);
 
   // 7. 关单
-  const marked = await script('gh_issue_mark', { number: num, action: 'done', sha: c.data.sha, labels: ctx.labels });
+  const marked = await script('ticket_mark', { id: t.id, action: 'done', sha: c.data.sha });
   if (marked.status !== 'ok') {
     // 已经提交推送出去了，回滚反而更糟；留着让人看
-    console.error(`#${num} 已提交但关单失败：${marked.error}`);
+    console.error(`${t.ref} 已提交但关单失败：${marked.error}`);
     return 'failed';
   }
 
-  console.log(`✔ #${num} ${issue.title}（${c.data.sha.slice(0, 7)}）`);
+  console.log(`✔ ${t.ref} ${t.title}（${c.data.sha.slice(0, 7)}）`);
   return 'done';
 }
 
 // 提交成功但没发布（PUSH=false 或推送失败）：评论注明未推送、保留 in-progress、不关单，整轮停下留给人处理
-async function notPublished(outcome, num, sha, ctx) {
-  await ctx.script('gh_issue_mark', { number: num, action: 'unpushed', sha, labels: ctx.labels });
-  console.error(`✖ #${num} 本地提交（未推送）：${String(sha ?? '').slice(0, 7)}，issue 保持 OPEN`);
+async function notPublished(outcome, t, sha, ctx) {
+  await ctx.script('ticket_mark', { id: t.id, action: 'unpushed', sha });
+  console.error(`✖ ${t.ref} 本地提交（未推送）：${String(sha ?? '').slice(0, 7)}，工单保持打开`);
   return outcome;
 }
 
 // 任何一步失败：回滚到起点，摘 in-progress、贴 afk-failed + 评论原因，保留 ready-for-agent
 // 回滚如果要丢掉提交，git_restore 会先备份成 ref——把那个 ref 写进评论，人才能捞回来（TODO B7）
-async function fail(num, reason, base, ctx) {
+async function fail(t, reason, base, ctx) {
   const { script } = ctx;
-  console.error(`✖ #${num} ${reason}`);
+  console.error(`✖ ${t.ref} ${reason}`);
   let note = '';
   if (base) {
     const r = await script('git_restore', { sha: base, cwd: ctx.root });
@@ -209,7 +207,7 @@ async function fail(num, reason, base, ctx) {
       console.error(`  回滚掉的提交备份在 ${r.data.backup}`);
     }
   }
-  await script('gh_issue_mark', { number: num, action: 'failed', comment: `${reason}${note}`, labels: ctx.labels });
+  await script('ticket_mark', { id: t.id, action: 'failed', comment: `${reason}${note}` });
   return 'failed';
 }
 
@@ -227,7 +225,7 @@ function devPrompt(issue, root) {
     '',
     '要求：',
     '- 直接改工作目录里的代码，把 issue 做出来；改完自己检查一遍，别留半成品',
-    `- 做完自己提交：\`git add -A && git commit -m '#${issue.number} ${issue.title}'\`，正文写一行 \`Closes #${issue.number}\``,
+    `- 做完自己提交：\`git add -A && git commit -m '${issue.ref} ${issue.title}'\`，正文写一行 \`Closes ${issue.ref}\``,
     '- 不要 git push：推送与关单由工作流负责（提交信息按上面的格式；忘了提交也没关系，工作流会替你补一笔）',
     '- issue 不需要任何改动（已经满足，或信息不足无法判断）时，choice 用 no_change，reason 说明原因',
     '- 需要人补充信息才能继续时，status 用 need_human，reason 写你要问的问题',
@@ -248,7 +246,7 @@ function reviewPrompt(issue, root, changed) {
     issue.text,
     '',
     '看实际改动（git diff 等），审查：是否正确、是否真的解决了 issue、有没有引入问题。有问题就直接改。',
-    `- 你改了就直接提交，信息用：\`#${issue.number} 审查修正：<一句话>\`；不要 git push（推送与关单由工作流负责）`,
+    `- 你改了就直接提交，信息用：\`${issue.ref} 审查修正：<一句话>\`；不要 git push（推送与关单由工作流负责）`,
     '- 审查后你认为干净：choice=clean',
     '- 你做了修改或补充：choice=refined',
     '- 方向根本错了、应当放弃：choice=reject，并说明',
@@ -270,7 +268,7 @@ function fixPrompt(issue, root, verify, output) {
     issue.text,
     '',
     '直接改代码。修好了 choice=fixed；判断做不到 choice=give_up 并说明原因。',
-    `- 你改了就直接提交，信息用：\`#${issue.number} 验证不过修正：<一句话>\`；不要 git push（推送与关单由工作流负责）`,
+    `- 你改了就直接提交，信息用：\`${issue.ref} 验证不过修正：<一句话>\`；不要 git push（推送与关单由工作流负责）`,
     '',
     '最后只回一段 JSON：{status, choice, reason, data}；choice 只能是 fixed | give_up'
   ].join('\n');

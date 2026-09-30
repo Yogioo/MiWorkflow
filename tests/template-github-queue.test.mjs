@@ -75,3 +75,18 @@ test('--dry-run → 只报会做哪个 issue，不叫 Agent、不改盘', () => 
   assert.equal(gitOut(['log', '-1', '--pretty=%s'], s.root), 'init');
   assert.equal(gitOut(['status', '--porcelain'], s.root), '', '干跑不弄脏工作区');
 });
+
+test('--dry-run → 被依赖挡住的工单连同原因一起列出', () => {
+  const s = setup({
+    issues: [
+      issue(1, { title: '前置' }),
+      issue(2, { title: '被挡', body: '- [ ] #1', labels: ['ready-for-agent'] })
+    ]
+  });
+  plan(s, []);
+
+  const r = cli(s, ['dev', '--dry-run']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /队列空/);
+  assert.match(r.stdout, /被挡住 #2：.*#1/);
+});

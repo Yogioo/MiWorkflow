@@ -66,3 +66,45 @@ export function parseTaskList(body) {
 
 export const commentAuthor = (c) =>
   typeof c?.author === 'string' ? c.author : (c?.author?.login ?? '');
+
+// GitHub 的工单引用：#N
+export const refOf = (number) => `#${number}`;
+
+// 工单号（字符串）→ issue 号；不是正整数就报错
+export function issueNumber(id) {
+  const s = String(id ?? '').trim().replace(/^#/, '');
+  if (!/^\d+$/.test(s) || Number(s) <= 0) throw new Error(`工单号不对：${id}`);
+  return Number(s);
+}
+
+// 读一个 issue：正文 + 全部评论（按时间，不截断）+ 拼好给 Agent 看的文本。ticket_view 与 gh_discuss_view 共用
+export function viewIssue(number, repoArg = []) {
+  const raw = runGh([
+    'issue', 'view', String(number),
+    '--json', 'number,title,body,labels,comments', ...repoArg
+  ]);
+  const issue = JSON.parse(raw);
+
+  const comments = (issue.comments ?? []).map((c) => ({
+    author: commentAuthor(c),
+    at: c.createdAt ?? '',
+    body: c.body ?? ''
+  }));
+
+  // 人补充的说明、上次失败留下的评论，执行端都要能看到
+  const text = [
+    `# ${refOf(issue.number)} ${issue.title}`,
+    '',
+    issue.body ?? '',
+    ...comments.map((c) => `\n---\n@${c.author} 评论（${c.at}）：\n${c.body}`)
+  ].join('\n');
+
+  return {
+    number: Number(issue.number),
+    title: issue.title ?? '',
+    body: issue.body ?? '',
+    comments,
+    text,
+    labels: (issue.labels ?? []).map(labelName)
+  };
+}

@@ -179,6 +179,15 @@ export const labelNames = (i) => i.labels.map((l) => l.name);
 export const comments = (i) => (i.comments ?? []).map((c) => c.body).join('\n');
 export const labelsOf = (s, num) => labelNames(issueState(s, num));
 
+// 直接跑 .workflow/scripts/ 里的一个脚本（stdin JSON → stdout JSON），给工单脚本的契约测试用
+export function runScript(s, name, input = {}) {
+  const r = spawnSync(process.execPath, [path.join(s.home, 'scripts', `${name}.mjs`)], {
+    cwd: s.root, env: { ...process.env, ...s.env }, input: JSON.stringify(input), encoding: 'utf8'
+  });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+
 export function cli(s, argv) {
   const base = { ...process.env };
   for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_AGENT_CMD', 'AGENTFLOW_AGENT', 'AGENTFLOW_DRY_RUN', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES']) {

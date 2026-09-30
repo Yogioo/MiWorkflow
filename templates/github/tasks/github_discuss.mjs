@@ -55,7 +55,7 @@ export default async function ({ script, agent, args }) {
   let handled = 0;
   for (const item of r.data.issues) {
     if (handled >= max) break;
-    const v = await script('gh_issue_view', { number: item.number });
+    const v = await script('gh_discuss_view', { number: item.number });
     if (v.status !== 'ok') { console.error(`✖ 读 #${item.number} 失败：${v.error}`); continue; }
     const issue = v.data;
     const hash = humanHash(issue);
