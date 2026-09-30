@@ -333,6 +333,26 @@ test('init --template github：共用 + GitHub 两部分都复制进来', () => 
   assert.doesNotMatch(again.stdout, /^\s+\+ /m, '重复 init 一个文件都不新建');
 });
 
+test('init --template tapd：共用 + TAPD 两部分都复制进来，不带 GitHub 的', () => {
+  const dir = tmpDir();
+  const r = cli(['init', '--template', 'tapd'], { cwd: dir });
+  assert.equal(r.code, 0, r.stderr);
+  const home = path.join(dir, '.workflow');
+  for (const f of ['config.mjs', 'tasks/dev.mjs', 'scripts/_lib.mjs', 'prompts/dev.md',
+    'source.mjs', 'scripts/_tapd.mjs', 'scripts/ticket_ready.mjs', 'scripts/ticket_view.mjs', 'scripts/ticket_mark.mjs']) {
+    assert.ok(existsSync(path.join(home, f)), f);
+  }
+  assert.ok(!existsSync(path.join(home, 'scripts', '_gh.mjs')));
+  assert.match(readFileSync(path.join(home, 'source.mjs'), 'utf8'), /WORKSPACE_ID/);
+
+  const again = cli(['init', '--template', 'tapd'], { cwd: dir });
+  assert.equal(again.code, 0, again.stderr);
+  assert.doesNotMatch(again.stdout, /^\s+\+ /m, '重复 init 一个文件都不新建');
+
+  const bad = cli(['init', '--template', '__nope'], { cwd: dir });
+  assert.match(bad.stderr, /可选：[^\n]*tapd/, '模板菜单出现 TAPD');
+});
+
 // ── new ───────────────────────────────────────────────────────────────────
 
 test('new：建传参骨架，能直接跑；已存在不覆盖', () => {
