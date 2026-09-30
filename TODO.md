@@ -13,7 +13,8 @@
 4. ✅ **C3 首个工作流：GitHub 开发**（`templates/github/`，已实现并用假 gh / 假 Agent / 临时 git 仓库测了 10 条路径）
 5. ✅ **讨论单 + 循环运行 + 会话**（spec #6，开发单 #7–#12，由 `github_dev` 自己开发完）
 6. ✅ **F 工单源无关 + TAPD**（见下文 F，2026-09-30 已拍板；✅ F2 已实现（#13–#19），✅ F3 TAPD 开发已实现（#20–#26，真 TAPD 项目实测项见 F6）；F4 搁置）
-7. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
+7. **G 审查分级**（见下文 G，2026-09-30 已拍板，待实现；汇总审查 G3 搁置）
+8. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
 B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项目专用的（如 Unity 跑测试）。
 
@@ -531,6 +532,56 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 - TAPD 源码关联关键字的写法（`commitMessage` 要用）——F3 已按 `--story=… --user=…` 实现，待真 TAPD 项目实测
 - 每日配额够不够 `--every 5m`——待真 TAPD 项目实测
 - TAPD「结束类状态」能否按工作流取到——F3 已按 `workflows/last_steps` / `status_map` 实现、取不到退回 `END_STATUSES`，待真 TAPD 项目实测
+
+## G. 审查分级：简单单不起审查 Agent（2026-09-30 提出，同日拍板）
+
+**起因**：`dev` 每张单都固定「DEV → REVIEWER → VERIFY」。很多开发单是简单需求，DEV 自测 + `VERIFY` 就够，
+REVIEWER 那次完整的 Agent 调用（还要重读项目）是白花的开销。
+
+### G1. 结论
+
+- **加标签才审**：一个「要审查」的机器标签（暂名 `needs-review`，跟 `afk-claimed` 等一样放各家 `source.mjs`，可改）。
+  - 拆单 Agent 在 `prompts/tickets.md` 里给地基单（被别的单依赖的）、改公共接口 / 共享模块这类单贴上
+  - 人写单时也可以手动贴
+- **没标签 = 不审**：DEV 完成后直接进 `VERIFY` → 提交。注意人直接写的单（含目前全部 TAPD 单）也没这个标签，同样默认不审——已知并接受
+- **DEV 只能升级、不能降级**：DEV 的 `choices` 改为 `done` / `done_review` / `no_change`；
+  选 `done_review` 就起 REVIEWER，原因写 `reason`（进日志）。贴了标签的单 DEV 选 `done` 也照审
+  - 走 `choice` 而不是让 Agent 调命令贴标签（开发流程里 Agent 不碰工单系统；失败回滚时标签不会跟着回滚）
+  - 也不走 `data` 键值对（`data` 不校验，写错键名会被静默当成不升级；`choice` 不在列表里会判失败）
+  - `dev.md` 写明必须升级的情形：改了公共接口、共享模块、配置 / 数据格式的默认值，删改了已有行为——列具体情形，不写一句「影响大就选它」
+- **`config.mjs` 加 `REVIEW`**：`'auto'`（默认，按上面的标签 + 升级）/ `'always'`（每单都审，即现在的行为）
+
+### G2. 实现清单（改 `templates/`，本仓库 `.workflow/` 不回头同步，见 F5 末条）
+
+- `templates/_shared/config.mjs`：`REVIEW` 常量
+- 两家 `source.mjs`：「要审查」标签名；`ticket_view` 出参加 `review`（布尔，这张单有没有该标签），F2 表与 `Core.md` §15 同步
+- `templates/_shared/tasks/dev.mjs`：`needReview = REVIEW === 'always' || t.review || dev.choice === 'done_review'`，否则跳过第 3 步
+- `templates/_shared/prompts/dev.md`：`done_review` 的含义与必须升级的情形；不审的单自测是唯一保证，要补测试、自己跑通
+- `templates/github/prompts/tickets.md`：什么单贴「要审查」标签
+- 测试（`dev-scenarios.mjs`，两家各跑一遍）：没标签跳过审查 / 有标签照审 / `done_review` 升级起审查 / 有标签 + `done` 仍审 / `REVIEW='always'`
+- README / `Core.md` / `SKILL.md` 同步口径
+
+### G3. 汇总审查（**搁置**，G1 跑一阵再看要不要）
+
+一个 spec 的开发单全部交付后，统一审查一次，兜住被跳过的单、看单张审查看不到的跨单问题（接口不一致、重复实现、spec 验收条件漏了）。
+当时的设想，留作记录：
+- 挂在 `github_discuss` 上，阶段 `discuss:ticketed` 之后加 `discuss:reviewed`；开发单清单全部 `afk-delivered` / 已关单就起 REVIEWER
+- 输入：spec + 各开发单快照 + 这批提交（按提交信息里的工单引用 `git log --grep` 收集）
+- 提交已推送、中间可能夹着别人的提交，只能**向前修**：能修就提交审查修正；修不了就评论讨论单 + 拆补丁开发单或标记给人
+- TAPD 讨论流程（F4）搁置、开发单没有父单，这一条只能先在 GitHub 上做
+
+### G4. 拍板记录
+
+| 议题 | 结论 |
+|---|---|
+| 按 diff 规模决定审不审 | **不做**：改一行也可能影响很大，影响取决于谁依赖这段代码，diff 里看不出来 |
+| 谁定默认值 | 拆单 Agent（看得到整个 spec 与依赖，不是开发者本人，不多花一次调用） |
+| DEV 的角色 | 只能升级（`done_review`），不能降级 |
+| 独立路由 Agent | 不做：要看清影响就得看调用方，已经是半个审查，省不了多少 |
+| 没标签的单 | 不审（含人写的单与 TAPD 单），靠 DEV 自测 + `VERIFY` + 升级 |
+| `VERIFY` 为空时强制审查 | 不做 |
+| `REVIEW` 常量 | 做：`'auto'` / `'always'` |
+| 汇总审查 | 搁置（G3） |
 
 ## E. 来自 MiCan 的经验（先不做，写明什么时候做）
 
