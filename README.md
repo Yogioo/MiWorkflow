@@ -155,7 +155,16 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
   **建单 / 贴标签 / 写依赖由脚本做**（Agent 不碰工单系统）；通过就写清单、阶段改为 `discuss:ticketed`，此后不再响应
 - 追问的 Agent 由 `source.mjs` 的 `DISCUSS` 指定
 
-两个工单源都实现了：GitHub 的 spec 写进正文的机器区域、标记是评论末尾的 HTML 注释；TAPD 的 spec 发成一条 `kind=spec` 评论、标记是评论末尾一行纯文本（TAPD 会把 HTML 注释剥掉）。
+两个工单源都实现了，流程与提示词共用，差异全在 `scripts/` 里。TAPD（`--template tapd`）跟 GitHub 不一样的地方：
+
+- **spec 发成一条评论**，末尾标记带 `kind=spec`；当前 spec 是最新那条 `kind=spec` 评论，不写需求描述——`story update description=` 不幂等，每写一次外层多包一层 `<p>`
+- **AI 记账标记是评论末尾一行纯文本** `[miworkflow:discuss hash=… seen=… …]`，人看得见；TAPD 会把评论里的 HTML 注释整个剥掉，GitHub 那套用不了
+- **开发单建成讨论单的子需求**（`story add parent_id=`），贴 `ready-for-agent`（要审查的再贴 `needs-review`），依赖落成 TAPD 原生的前后置关系（前置的结束 → 后置的开始）；
+  优先级 `P0`/`P1` 都落成「高」、`P2` 落成「中」、`P3`/`P4` 落成「低」（TAPD 只有高 / 中 / 低三档，同档内不再细分）。建完回查子需求、标签与依赖，对不上就不改阶段、交人处理
+- **TAPD 没有「关单」**（需求状态由人验收后自己流转），讨论单靠阶段标签 `discuss:ticketed` 或摘掉 `agent-discuss` 退出队列
+- **阶段标签不用预建**：`discuss:grilling` / `discuss:spec` / `discuss:ticketed` 第一次写入时 TAPD 隐式建出来；多个标签用 `|` 分隔写入，写完回读校验
+
+GitHub 这边：spec 写进正文末尾的机器区域，标记是评论末尾的 HTML 注释（人看不见），开发单是普通 issue，依赖写在正文的 `## Blocked by`，优先级原样贴 `P0`–`P4` 标签。
 
 改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `REVIEW` / `VERIFY` / `ROUNDS` / `PUSH`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY`）；
 开发 / 审查 / 验证修正的提示词在 `.workflow/prompts/dev.md` / `review.md` / `fix.md`（模板文件，升级会覆盖）；
