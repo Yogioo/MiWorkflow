@@ -1,8 +1,9 @@
 // github_discuss 模板的端到端测试：进入、带标记追问、哈希判轮、竞态补发、改正文、失败不重试、--max。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
-import { setup, plan, issue, issueState, labelsOf, readState, cli } from './support/github-template.mjs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { setup, plan, issue, issueState, labelsOf, readState, seen, cli } from './support/github-template.mjs';
 
 const MARK = /<!-- miworkflow:discuss hash=[0-9a-f]+ -->/;
 const ask = (comment) => ({ choice: 'ask', data: { comment } });
@@ -91,4 +92,64 @@ test('--max 限处理张数，逐张按号处理', () => {
   assert.equal(bodies(s, 1).length, 1);
   assert.equal(bodies(s, 2).length, 1);
   assert.equal(bodies(s, 3).length, 0);
+});
+
+const says = (s) => readdirSync(path.join(s.home, 'logs')).filter((f) => f.endsWith('.jsonl'))
+  .flatMap((f) => readFileSync(path.join(s.home, 'logs', f), 'utf8').trim().split('\n').map((l) => JSON.parse(l).say ?? ''));
+
+test('续会话：标记记下 cli 与会话号，下一轮续上只喂增量（新评论、正文变化）', () => {
+  const s = setup({ issues: [issue(1, { labels: ['agent-discuss'], body: '原始正文' })] });
+  plan(s, [{ ...ask('第一问'), session: 'S1' }]);
+  run(s);
+  assert.match(bodies(s, 1)[0], /<!-- miworkflow:discuss hash=[0-9a-f]+ cli=cmd session=S1 body=[0-9a-f]+ -->$/);
+  assert.equal(seen(s)[0].session, undefined);
+  assert.match(seen(s)[0].goal, /原始正文/);
+
+  reply(s, 1, '人的新回复');
+  plan(s, [{ ...ask('第二问'), session: 'S1' }]);
+  run(s);
+  const second = seen(s)[1];
+  assert.equal(second.session, 'S1');
+  assert.match(second.goal, /人的新回复/);
+  assert.doesNotMatch(second.goal, /原始正文|第一问/, '只喂增量');
+
+  edit(s, (st) => { st.issues[0].body = '改过的正文'; });
+  plan(s, [{ ...ask('第三问'), session: 'S1' }]);
+  run(s);
+  const third = seen(s)[2];
+  assert.equal(third.session, 'S1');
+  assert.match(third.goal, /正文改成了：\n改过的正文/);
+  assert.doesNotMatch(third.goal, /人的新回复/);
+});
+
+test('续会话返回 session_not_found → 改为重放完整正文 + 全部评论，say 写明「续不上，改为重放」', () => {
+  const s = setup({ issues: [issue(1, { labels: ['agent-discuss'], body: '原始正文' })] });
+  plan(s, [{ ...ask('第一问'), session: 'S1' }]);
+  run(s);
+  reply(s, 1, '人的新回复');
+  plan(s, [{ status: 'failed', choice: 'session_not_found', reason: 'cmd 续不上会话 S1' }, { ...ask('重放后的追问'), session: 'S2' }]);
+  run(s);
+  const [, resumed, replay] = seen(s);
+  assert.equal(resumed.session, 'S1');
+  assert.equal(replay.session, undefined);
+  assert.match(replay.goal, /原始正文/);
+  assert.match(replay.goal, /第一问/);
+  assert.match(replay.goal, /人的新回复/);
+  assert.ok(says(s).some((x) => x.includes('续不上，改为重放')));
+  assert.match(bodies(s, 1)[2], /重放后的追问[\s\S]*session=S2/);
+});
+
+test('标记里没有会话号（上一轮 CLI 不交回）→ 直接重放', () => {
+  const s = setup({ issues: [issue(1, { labels: ['agent-discuss'], body: '原始正文' })] });
+  plan(s, [ask('第一问')]);
+  run(s);
+  assert.match(bodies(s, 1)[0], MARK);
+  reply(s, 1, '人的新回复');
+  plan(s, [ask('第二问')]);
+  run(s);
+  const second = seen(s)[1];
+  assert.equal(second.session, undefined);
+  assert.match(second.goal, /原始正文/);
+  assert.match(second.goal, /第一问/);
+  assert.match(second.goal, /人的新回复/);
 });

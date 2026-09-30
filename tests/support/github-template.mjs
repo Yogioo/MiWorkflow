@@ -71,6 +71,7 @@ writeFileSync(FAKE_AGENT, [
   'const planFile = process.env.FAKE_AGENT_PLAN;',
   'const plan = JSON.parse(readFileSync(planFile, "utf8"));',
   'const step = plan.shift();',
+  'writeFileSync(planFile + ".seen.jsonl", JSON.stringify({ goal: pkg.goal, session: pkg.inputs?.session }) + "\\n", { flag: "a" });',
   'writeFileSync(planFile, JSON.stringify(plan));',
   'if (step.file) writeFileSync(path.join(pkg.inputs.cwd, step.file.name), step.file.content);',
   'if (step.ghComment) {',
@@ -82,7 +83,7 @@ writeFileSync(FAKE_AGENT, [
   '  spawnSync("git", ["add", "-A"], { cwd: pkg.inputs.cwd });',
   '  spawnSync("git", ["commit", "-qm", step.commit], { cwd: pkg.inputs.cwd });',
   '}',
-  'process.stdout.write(JSON.stringify({ status: step.status ?? "ok", choice: step.choice, reason: step.reason ?? "", data: step.data ?? {} }));',
+  'process.stdout.write(JSON.stringify({ status: step.status ?? "ok", choice: step.choice, reason: step.reason ?? "", data: step.data ?? {}, ...(step.session ? { session: step.session } : {}) }));',
   ''
 ].join('\n'));
 
@@ -159,6 +160,7 @@ export function setup({ issues = [], verify = '', rounds = 2, push = false, dirt
 }
 
 export const plan = (s, steps) => writeFileSync(s.planFile, JSON.stringify(steps));
+export const seen = (s) => { try { return readFileSync(`${s.planFile}.seen.jsonl`, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
 export const readState = (s) => JSON.parse(readFileSync(s.stateFile, 'utf8'));
 export const issueState = (s, num) => readState(s).issues.find((i) => i.number === num);
 export const labelNames = (i) => i.labels.map((l) => l.name);
