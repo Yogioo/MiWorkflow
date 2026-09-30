@@ -415,6 +415,9 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 
 ### F3. TAPD 开发流程（`dev` 接 TAPD）
 
+进度：#20 已搭骨架——`templates/tapd/`（`source.mjs`、`scripts/_tapd.mjs`、三个 `ticket_*` 占位报 failed），
+假 `tapd-cli` / 假 OpenAPI 在 `tests/support/`（`tapd-fakes.mjs`），`init --template tapd` 可用。
+
 照抄对象：afk-run 的 TAPD 源 `C:\projects\agent-skills\skills\afk-run\scripts\task-sources\tapd.mjs`（`createTapdSource`）
 与测试 `tests/afk-run/tapd.test.mjs`（经 afk-watch 调用；afk-watch 本身不含 TAPD 实现）。调用方式照它：`execFileSync` 起 `tapd-cli`、不经 shell，瞬时错误最多重试 2 次。
 
