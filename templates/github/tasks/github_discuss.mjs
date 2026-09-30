@@ -1,6 +1,9 @@
 // GitHub 讨论单：人给 issue 贴 agent-discuss，AI 就在评论区按 prompts/grilling.md 逐轮追问；人回复后下一次运行接着问。
 // 人回复 /spec，AI 按 prompts/spec.md 把 spec 写进正文末尾的 spec 标记区域（人写的原文留在上面），阶段改为 discuss:spec；
 // 之后 spec 阶段的评论（或再次 /spec）都当作对 spec 的修改意见，AI 只重写 spec 区域。spec 不贴 ready-for-agent。
+// spec 阶段人回复 /tickets（别的阶段不生效，当普通评论），AI 按 prompts/tickets.md 用 gh 建开发单；随后脚本回查
+// （Parent 指向本单的开发单，标签与依赖能被开发队列解析）：通过就在正文末尾追加开发单任务列表、阶段改为 discuss:ticketed，
+// 此后不再响应（人把阶段改回 discuss:spec 即恢复）；不通过就评论说明问题，不自动修，阶段不变。讨论单由人来关。
 // GitHub 评论串是唯一事实来源，会话只是缓存；讨论期间 Agent 对仓库只读。
 // 会话号记在 AI 评论的标记里（cli=、session=，适配器交回了才记），不存本地文件：
 // 同一 CLI 能续上就只喂 AI 上次发言之后的新评论与正文变化；标记里没有会话号就重放完整正文 + 全部评论；
@@ -20,22 +23,28 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DISCUSS } from '../config.mjs';
 
-export const title = 'GitHub 讨论单：agent-discuss → 评论区逐轮追问 → /spec 写入正文';
+export const title = 'GitHub 讨论单：agent-discuss → 评论区逐轮追问 → /spec 写入正文 → /tickets 建开发单';
 
 const PROJECT = fileURLToPath(new URL('../..', import.meta.url));
 const PROMPTS = {
   grilling: fileURLToPath(new URL('../prompts/grilling.md', import.meta.url)),
-  spec: fileURLToPath(new URL('../prompts/spec.md', import.meta.url))
+  spec: fileURLToPath(new URL('../prompts/spec.md', import.meta.url)),
+  tickets: fileURLToPath(new URL('../prompts/tickets.md', import.meta.url))
 };
 const ENTER = 'agent-discuss';
 const GRILLING = 'discuss:grilling';
 const SPEC = 'discuss:spec';
+const TICKETED = 'discuss:ticketed';
 // 标记必须在评论末尾：人引用 AI 评论时标记落在中间，不能把人的评论当成 AI 的。
 const MARK = /<!--\s*miworkflow:discuss\s+hash=([0-9a-f]+)((?:\s+\w+=\S+?)*)\s*-->\s*$/;
 const SPEC_BEGIN = '<!-- miworkflow:spec:begin -->';
 const SPEC_END = '<!-- miworkflow:spec:end -->';
 const SPEC_AREA = /<!--\s*miworkflow:spec:begin\s*-->([\s\S]*?)<!--\s*miworkflow:spec:end\s*-->/g;
 const SPEC_CMD = /^\/spec(?![\w-])/i;
+const TICKETS_CMD = /^\/tickets(?![\w-])/i;
+const TICKETS_BEGIN = '<!-- miworkflow:tickets:begin -->';
+const TICKETS_END = '<!-- miworkflow:tickets:end -->';
+const TICKETS_AREA = /<!--\s*miworkflow:tickets:begin\s*-->[\s\S]*?<!--\s*miworkflow:tickets:end\s*-->/g;
 
 export default async function ({ script, agent, args }) {
   const max = args.max === undefined ? Infinity : Number(args.max);
@@ -54,7 +63,13 @@ export default async function ({ script, agent, args }) {
     if (hash === last?.hash) continue;
 
     handled++;
-    const mode = hasLabel(issue, SPEC) || freshHuman(issue, last).some((c) => SPEC_CMD.test(c.body.trim())) ? 'spec' : 'grilling';
+    const fresh = freshHuman(issue, last);
+    const mode = hasLabel(issue, SPEC) && fresh.some((c) => TICKETS_CMD.test(c.body.trim())) ? 'tickets'
+      : hasLabel(issue, SPEC) || fresh.some((c) => SPEC_CMD.test(c.body.trim())) ? 'spec' : 'grilling';
+    if (mode === 'tickets') {
+      await ticketsRound(issue, last, hash, agent, script);
+      continue;
+    }
     if (mode === 'spec') {
       if (!hasLabel(issue, SPEC) || hasLabel(issue, GRILLING)) {
         await script('gh_discuss_post', { number: issue.number, addLabel: SPEC, ...(hasLabel(issue, GRILLING) ? { removeLabel: GRILLING } : {}) });
@@ -106,7 +121,36 @@ async function askRound(issue, last, agent, mode) {
   return { ok: true, cli, session, text };
 }
 
-const CONTRACT = { grilling: { choice: 'ask', key: 'comment' }, spec: { choice: 'spec', key: 'spec' } };
+// Agent 建完开发单后不信它自报：脚本回查 GitHub 上的实际结果。
+async function ticketsRound(issue, last, hash, agent, script) {
+  const out = await askRound(issue, last, agent, 'tickets');
+  const mark = marker(hash, humanComments(issue).length, out.cli, out.session, bodyHash(issue));
+  const post = { number: issue.number };
+  let line;
+  if (!out.ok) {
+    post.body = `这一轮建开发单失败：${out.reason}\n\n回复 /tickets 重试。\n\n${mark}`;
+    line = `✖ #${issue.number} 失败：${out.reason}`;
+  } else {
+    const c = await script('gh_tickets_check', { parent: issue.number });
+    const problems = c.status === 'ok' ? c.data.problems : [`回查失败：${c.error}`];
+    if (problems.length) {
+      post.body = `开发单回查不通过，没有改阶段，请修好后回复 /tickets 再回查：\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\n${mark}`;
+      line = `✖ #${issue.number} 开发单回查不通过：${problems.length} 个问题`;
+    } else {
+      const list = c.data.tickets.map((t) => `- [ ] #${t.number}`).join('\n');
+      post.setBody = withTickets(issue.body, `## 开发单\n\n${list}`);
+      post.addLabel = TICKETED;
+      post.removeLabel = SPEC;
+      post.body = `已建开发单 ${c.data.tickets.map((t) => `#${t.number}`).join('、')}，清单见正文；阶段改为 ${TICKETED}，AI 不再响应评论（改回 ${SPEC} 即恢复）。讨论单请人来关。\n\n${mark}`;
+      line = `✔ #${issue.number} 已建开发单 ${c.data.tickets.length} 张`;
+    }
+  }
+  const p = await script('gh_discuss_post', post);
+  if (p.status !== 'ok') console.error(`✖ #${issue.number} 回写失败：${p.error}`);
+  else console.log(line);
+}
+
+const CONTRACT = { grilling: { choice: 'ask', key: 'comment' }, spec: { choice: 'spec', key: 'spec' }, tickets: { choice: 'tickets', key: 'tickets' } };
 
 const contractLine = (mode) => {
   const { choice, key } = CONTRACT[mode];
@@ -136,15 +180,21 @@ const hasLabel = (issue, name) => issue.labels.some((l) => l.toLowerCase() === n
 
 const isAi = (c) => MARK.test(c.body ?? '');
 
-// 人写的原文：正文去掉 spec 区域
-const humanBody = (body) => String(body ?? '').replace(SPEC_AREA, '').trimEnd();
+// 人写的原文：正文去掉 spec 区域与开发单区域
+const humanBody = (body) => String(body ?? '').replace(SPEC_AREA, '').replace(TICKETS_AREA, '').trimEnd();
+
+const ticketsOf = (body) => [...String(body ?? '').matchAll(TICKETS_AREA)].map((m) => m[0]).pop() ?? null;
+
+const specArea = (body) => { const s = specOf(body); return s === null ? null : `${SPEC_BEGIN}\n${s}\n${SPEC_END}`; };
+
+const withTickets = (body, list) => [humanBody(body), specArea(body), `${TICKETS_BEGIN}\n${list}\n${TICKETS_END}`].filter(Boolean).join('\n\n');
 
 function specOf(body) {
   const m = [...String(body ?? '').matchAll(SPEC_AREA)];
   return m.length ? m[m.length - 1][1].trim() : null;
 }
 
-const withSpec = (body, spec) => [humanBody(body), `${SPEC_BEGIN}\n${spec}\n${SPEC_END}`].filter(Boolean).join('\n\n');
+const withSpec = (body, spec) => [humanBody(body), `${SPEC_BEGIN}\n${spec}\n${SPEC_END}`, ticketsOf(body)].filter(Boolean).join('\n\n');
 
 const humanComments = (issue) => issue.comments.filter((c) => !isAi(c));
 
@@ -183,21 +233,22 @@ const issueText = (issue) => [
 ].join('\n');
 
 function specSection(issue, mode) {
-  if (mode !== 'spec') return [];
+  if (mode === 'grilling') return [];
   const cur = specOf(issue.body);
+  if (mode === 'tickets') return ['', `讨论单号：#${issue.number}`, '', '要拆的 spec（正文 spec 区域）：', cur ?? '（正文里没有 spec，按上面的讨论拆）'];
   return cur === null ? ['', '正文里还没有 spec，按上面的讨论写一份。'] : ['', '当前 spec（正文 spec 区域），按人的新评论修改：', cur];
 }
 
 // 续会话只喂 AI 上次发言之后的新评论与正文变化；spec 阶段额外带上写法与当前 spec。
 function deltaPrompt(issue, last, mode) {
   return [
-    ...(mode === 'spec' ? [readFileSync(PROMPTS.spec, 'utf8').trim(), ''] : []),
+    ...(mode !== 'grilling' ? [readFileSync(PROMPTS[mode], 'utf8').trim(), ''] : []),
     `issue #${issue.number} 自你上次发言之后的新内容：`,
     ...(last.body !== bodyHash(issue) ? ['', '正文改成了：', humanBody(issue.body)] : []),
     ...freshHuman(issue, last).map((c) => `\n---\n@${c.author} 评论（${c.at}）：\n${c.body}`),
     ...specSection(issue, mode),
     '',
-    mode === 'spec' ? '按上面的写法交回完整 spec。' : '按前面的规则接着追问。',
+    { spec: '按上面的写法交回完整 spec。', tickets: '按上面的写法建开发单。', grilling: '按前面的规则接着追问。' }[mode],
     contractLine(mode)
   ].join('\n');
 }

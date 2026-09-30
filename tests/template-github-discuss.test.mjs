@@ -236,3 +236,68 @@ test('AI 思考期间人发的 /spec（排在 AI 评论之前）下一次运行�
   assert.equal(SPEC_AREA.exec(bodyOf(s, 1))[1], '第一版');
   assert.deepEqual(labelsOf(s, 1), ['agent-discuss', 'discuss:spec']);
 });
+
+const tickets = (text, ghCreate) => ({ choice: 'tickets', data: { tickets: text }, ghCreate });
+const devTicket = (n, parent, { labels = ['ready-for-agent', 'P1'], blocked = [] } = {}) => issue(n, {
+  labels, body: `## Parent\n\n#${parent}\n\n## What to build\n\n做 ${n}\n\n## Blocked by\n\n${blocked.map((b) => `- [ ] #${b}`).join('\n') || '无'}`
+});
+const specIssue = () => issue(1, { labels: ['agent-discuss', 'discuss:spec'], body: '原文\n\n<!-- miworkflow:spec:begin -->\n规格\n<!-- miworkflow:spec:end -->' });
+
+test('/tickets 回查通过：正文追加开发单任务列表、阶段改为 ticketed；之后不再响应，改回 spec 恢复', () => {
+  const s = setup({ issues: [specIssue()] });
+  reply(s, 1, '/tickets');
+  plan(s, [tickets('建了 #2 #3', [devTicket(2, 1), devTicket(3, 1, { blocked: [2] })])]);
+  run(s);
+  assert.match(seen(s)[0].goal, /把 spec 拆成开发单[\s\S]*讨论单号：#1[\s\S]*规格/);
+  const body = issueState(s, 1).body;
+  assert.match(body, /^原文/);
+  assert.match(body, /<!-- miworkflow:spec:begin -->\n规格/);
+  assert.match(body, /## 开发单\n\n- \[ \] #2\n- \[ \] #3/);
+  assert.deepEqual(labelsOf(s, 1), ['agent-discuss', 'discuss:ticketed']);
+  assert.equal(issueState(s, 1).state, 'OPEN');
+  assert.match(bodies(s, 1).at(-1), /已建开发单 #2、#3[\s\S]*discuss:ticketed/);
+  assert.match(bodies(s, 1).at(-1), MARK);
+
+  reply(s, 1, '还有个想法');
+  plan(s, []);
+  run(s);
+  assert.equal(seen(s).length, 1, 'ticketed 阶段不响应');
+
+  edit(s, (st) => { st.issues[0].labels = [{ name: 'agent-discuss' }, { name: 'discuss:spec' }]; });
+  plan(s, [{ choice: 'spec', data: { spec: '新规格' } }]);
+  run(s);
+  assert.equal(seen(s).length, 2, '改回 spec 恢复响应');
+  const after = issueState(s, 1).body;
+  assert.match(after, /新规格/);
+  assert.match(after, /- \[ \] #2\n- \[ \] #3/, '改写 spec 保留开发单清单');
+});
+
+test('/tickets 回查不通过：带标记评论说明问题，阶段不变、不自动重试', () => {
+  const s = setup({ issues: [specIssue()] });
+  reply(s, 1, '/tickets');
+  plan(s, [tickets('建了', [devTicket(2, 1, { labels: ['P1'] }), devTicket(3, 1, { labels: ['ready-for-agent'], blocked: [1] })])]);
+  const before = issueState(s, 1).body;
+  run(s);
+  const last = bodies(s, 1).at(-1);
+  assert.match(last, /回查不通过/);
+  assert.match(last, /#2 没贴 ready-for-agent/);
+  assert.match(last, /#3 优先级标签/);
+  assert.match(last, /#3 的任务列表引用了讨论单 #1/);
+  assert.match(last, MARK);
+  assert.deepEqual(labelsOf(s, 1), ['agent-discuss', 'discuss:spec']);
+  assert.equal(issueState(s, 1).body, before);
+
+  plan(s, []);
+  run(s);
+  assert.equal(seen(s).length, 1, '不自动重试');
+});
+
+test('/tickets 只在 spec 阶段生效：grilling 阶段当普通评论追问', () => {
+  const s = setup({ issues: [issue(1, { labels: ['agent-discuss', 'discuss:grilling'] })] });
+  reply(s, 1, '/tickets');
+  plan(s, [ask('接着问')]);
+  run(s);
+  assert.doesNotMatch(seen(s)[0].goal, /把 spec 拆成开发单/);
+  assert.match(bodies(s, 1).at(-1), /接着问/);
+  assert.deepEqual(labelsOf(s, 1), ['agent-discuss', 'discuss:grilling']);
+});
