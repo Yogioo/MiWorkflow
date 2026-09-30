@@ -1,4 +1,5 @@
-// 工单源接口：改工单状态。GitHub 实现：认领（claimed）/ 完成关单（done）/ 未推送留人处理（unpushed）/ 失败待人看（failed）。
+// 工单源接口：改工单状态。GitHub 实现：认领（claimed）/ 完成关单（done）/ 未推送留人处理（unpushed）/ 失败待人看（failed）/
+// Agent 连接失败释放（released：摘认领、不贴失败、保留 ready）。
 // 标签取自 source.mjs 的 LABELS；要贴的标签仓库里没有时先 `gh label create` 再贴，建不出来就明确报错。
 // 入：{ id, action, commentFile?, comment?, sha?, repo?, dryRun? }；commentFile 是回帖稿（failed 时跟在 comment 那句话后面发，
 // 用 gh issue comment --body-file --attach 上传其中引用的本地图片，见文件末尾）
@@ -51,8 +52,14 @@ await main(async () => {
       add(LABELS.failed),
       remove(LABELS.claimed)
     ];
+  } else if (action === 'released') {
+    // Agent 基础设施故障：摘认领、不贴失败、保留 ready，下轮自动重做
+    plan = [
+      ['issue', 'comment', n, '--body', releasedComment(args.comment), ...repoArg],
+      remove(LABELS.claimed)
+    ];
   } else {
-    throw new Error(`不认识的 action：${action}（claimed / done / unpushed / failed）`);
+    throw new Error(`不认识的 action：${action}（claimed / done / unpushed / failed / released）`);
   }
 
   const desc = plan.map((a) => a.join(' '));
@@ -84,9 +91,13 @@ await main(async () => {
     }
   }
 
-  const label = { claimed: '认领', done: '完成关单', unpushed: '记录未推送', failed: '标记失败' }[action];
+  const label = { claimed: '认领', done: '完成关单', unpushed: '记录未推送', failed: '标记失败', released: '释放（下轮重做）' }[action];
   emit({ status: 'ok', say: `${ref} ${label}${reply?.warn ? `；${reply.warn}` : ''}`, data: { id: n, ref, did: desc } });
 });
+
+function releasedComment(comment) {
+  return `Agent 连接失败，已回滚并释放，下轮重做：${String(comment ?? '').slice(0, 900)}`;
+}
 
 // 回帖稿：Agent 写的 Markdown，图片放同目录、用相对路径引用。没写（文件不在或是空的）就返回 null，退回一句话评论。
 // 有本地图片才查 gh 版本；低于 GH_ATTACH_MIN（或图片不在）就把引用换成「（图片未上传：<路径>）」，评论照发。

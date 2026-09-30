@@ -75,7 +75,8 @@ writeFileSync(FAKE_GH, [
   ''
 ].join('\n'));
 
-// 假的 Agent：按 FAKE_AGENT_PLAN 数组逐次回话；step.file 时往 inputs.cwd 写文件；step.commit 时自己提交（模拟「Agent 先提交了」）
+// 假的 Agent：按 FAKE_AGENT_PLAN 数组逐次回话；step.file 时往 inputs.cwd 写文件；step.commit 时自己提交（模拟「Agent 先提交了」）；
+// step.crash 时什么都不吐直接非 0 退出（模拟进程被杀）
 const FAKE_AGENT = path.join(TMP, 'fake-agent.mjs');
 writeFileSync(FAKE_AGENT, [
   "import { readFileSync, writeFileSync } from 'node:fs';",
@@ -89,6 +90,7 @@ writeFileSync(FAKE_AGENT, [
   'const step = plan.shift();',
   'writeFileSync(planFile + ".seen.jsonl", JSON.stringify({ goal: pkg.goal, session: pkg.inputs?.session, issue: pkg.inputs?.issue, ticket: pkg.inputs?.ticket, reply: pkg.inputs?.reply }) + "\\n", { flag: "a" });',
   'writeFileSync(planFile, JSON.stringify(plan));',
+  'if (step.crash) process.exit(1);',
   'if (step.file) writeFileSync(path.join(pkg.inputs.cwd, step.file.name), step.file.content);',
   'if (step.reply) writeFileSync(pkg.inputs.reply, step.reply);',
   'if (step.ghComment) {',
@@ -136,17 +138,19 @@ export const issue = (number, { title = `issue ${number}`, body = `做 ${number}
   number, title, body, labels: labels.map((name) => ({ name })), state, comments: []
 });
 
-export const CONFIG = (verify, rounds, push) => [
+export const CONFIG = (verify, rounds, push, retryDelays = [0, 0]) => [
   'export const DEV = null;',
   'export const REVIEWER = null;',
   `export const VERIFY = ${JSON.stringify(verify)};`,
   `export const ROUNDS = ${rounds};`,
   `export const PUSH = ${push};`,
+  `export const AGENT_RETRY_DELAYS = ${JSON.stringify(retryDelays)};`,
   ''
 ].join('\n');
 
 // repoLabels：给了就只认这些仓库标签（贴没有的会报错，要先 gh label create）；不给 = 什么标签都能贴
-export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {} } = {}) {
+// retryDelays：Agent 基础设施故障的重试间隔，测试里缺省 [0, 0]（不真等）
+export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {}, retryDelays = [0, 0] } = {}) {
   const base = tmpDir();
   const root = path.join(base, 'repo');
   mkdirSync(root, { recursive: true });
@@ -155,7 +159,7 @@ export function setup({ source = 'github', issues = [], repoLabels, verify = '',
   mkdirSync(home, { recursive: true });
   for (const t of templatesOf(source)) cpSync(t, home, { recursive: true });
   const withPush = push || remoteAhead;
-  writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush));
+  writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush, retryDelays));
   writeFileSync(path.join(home, '.gitignore'), 'logs/\n');
 
   git(['init', '-q', '--initial-branch=main'], root);

@@ -18,3 +18,8 @@ export const ROUNDS = 2;
 // false 与「推送失败」同款语义：没发布就不算做完——不关单、保留 afk-claimed、整轮停下，
 // 本地提交保留，评论注明「本地提交（未推送）」，留给人处理。
 export const PUSH = true;
+
+// Agent 根本没跑完（CLI 起不来 / 非 0 退出 / 没回话，或被杀掉什么都没吐）时，隔多久重试同一步（毫秒）。
+// 缺省重试 2 次：30 秒、2 分钟；空数组 = 不重试。重试完还不行：回滚、释放工单（不贴 afk-failed）、整轮停下。
+// 超时（agents/agent_cli.mjs 的 2 小时上限）与没配 Agent 不重试。
+export const AGENT_RETRY_DELAYS = [30_000, 120_000];

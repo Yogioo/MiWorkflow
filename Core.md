@@ -750,7 +750,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 |---|---|---|
 | `ticket_ready` | `{}` | `{ ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] }`（已排序：优先级 → 工单号） |
 | `ticket_view` | `{ id }` | `{ id, ref, title, file }`：写出**工单快照** |
-| `ticket_mark` | `{ id, action, commentFile?, comment?, sha? }` | `action` = `claimed` / `done` / `failed` / `unpushed` |
+| `ticket_mark` | `{ id, action, commentFile?, comment?, sha? }` | `action` = `claimed` / `done` / `failed` / `unpushed` / `released`（Agent 连接失败：摘认领、不贴失败、保留入队，下轮重做） |
 
 - **工单快照**（读）：正文 + 全部评论转成 Markdown，写到 `logs/<runId>/tickets/<id>/ticket.md`，图片下到同目录 `images/`、相对路径引用；Agent 的 `inputs` 只给路径，自己读。
 - **回帖稿**（写）：`dev` 每次调 Agent 前分配 `logs/<runId>/tickets/<id>/reply-<n>.md`；Agent 有话对人说就写进去（图片放同目录、相对路径），`ticket_mark` 收 `commentFile` 传图发评论；没写就退回一句话的 `comment`。

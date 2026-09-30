@@ -165,6 +165,80 @@ export function defineDevScenarios(src) {
     assert.ok(view(1).comments.some((c) => c.includes('afk-backup')));
   });
 
+  const INFRA = { status: 'failed', choice: 'agent_cli_failed', reason: 'socket hang up' };
+  const assertReleased = (t) => {
+    assert.equal(t.closed, false);
+    assert.deepEqual(t.labels, READY, '释放：摘 afk-claimed、不贴 afk-failed、保留 ready');
+    assert.ok(t.comments.some((c) => c.includes('Agent 连接失败')), t.comments.join('\n'));
+  };
+
+  scenario('Agent 连不上 → 退避重试成功：开发 / 审查各挂一次，开发重试前回到起点，照常完成', {
+    tickets: [{ key: 1, title: '加个文件', labels: READY }], push: true
+  }, (s, view) => {
+    plan(s, [
+      { ...INFRA, file: { name: 'half.txt', content: 'x' }, commit: `${src.commitPrefix(1)}半成品` },
+      { choice: 'done', reason: '做完', file: { name: 'note.txt', content: 'hi' } },
+      INFRA,
+      { choice: 'clean', reason: '没问题' }
+    ]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(seen(s).length, 4);
+    assertDelivered(view(1));
+    assert.ok(!view(1).labels.includes('afk-failed'));
+    assert.ok(!existsSync(path.join(s.root, 'half.txt')), '开发重试前回到了起点');
+    assert.ok(existsSync(path.join(s.root, 'note.txt')));
+    assert.match(r.stderr, /第 1 次重试.*socket hang up/);
+  });
+
+  scenario('Agent 一直连不上 → 重试用完：回滚 + 备份 ref + 释放工单、不挑下一张、退出码非 0', {
+    tickets: [{ key: 1, labels: READY }, { key: 2, labels: READY }]
+  }, (s, view) => {
+    plan(s, [
+      { ...INFRA, file: { name: 'half.txt', content: 'x' }, commit: `${src.commitPrefix(1)}半成品` },
+      INFRA, INFRA, INFRA, INFRA
+    ]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 1);
+    assert.equal(seen(s).length, 3, '缺省重试 2 次');
+    assertReleased(view(1));
+    assert.ok(view(1).comments.some((c) => c.includes('socket hang up') && c.includes('afk-backup')));
+    assert.equal(gitOut(['log', '-1', '--pretty=%s'], s.root), 'init');
+    assert.ok(!existsSync(path.join(s.root, 'half.txt')));
+    const refs = gitOut(['for-each-ref', '--format=%(refname)', 'refs/afk-backup'], s.root).split('\n').filter(Boolean);
+    assert.ok(refs.length >= 1);
+    assert.deepEqual(view(2).labels, READY, '主循环停下，不挑下一张');
+    assert.match(r.stderr + r.stdout, /Agent 连接失败（工单 [^）]+）：已回滚并释放，下轮重做/);
+  });
+
+  scenario('没配 Agent / 超时 → 不重试，直接释放并停下', {
+    tickets: [{ key: 1, labels: READY }, { key: 2, labels: READY }]
+  }, (s, view) => {
+    plan(s, [{ status: 'failed', choice: 'agent_unavailable', reason: '未配置 Agent：设 AGENTFLOW_AGENT' }]);
+    let r = cli(s, ['dev']);
+    assert.equal(r.code, 1);
+    assert.equal(seen(s).length, 1);
+    assertReleased(view(1));
+    assert.ok(view(1).comments.some((c) => c.includes('未配置 Agent')));
+    assert.deepEqual(view(2).labels, READY);
+
+    plan(s, [{ status: 'failed', choice: 'agent_cli_failed', reason: 'cursor 超时（7200 秒），已结束进程' }, INFRA]);
+    r = cli(s, ['dev']);
+    assert.equal(r.code, 1);
+    assert.equal(seen(s).length, 2, '超时不重试');
+    assertReleased(view(1));
+  });
+
+  scenario('Agent 进程什么都没吐（空 stdout）→ 按连不上重试；AGENT_RETRY_DELAYS 为空就不重试', {
+    tickets: [{ key: 1, labels: READY }], retryDelays: []
+  }, (s, view) => {
+    plan(s, [{ crash: true }]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 1);
+    assert.equal(seen(s).length, 1);
+    assertReleased(view(1));
+  });
+
   scenario('回帖稿带进失败评论：一句话在前、回帖稿在后', { tickets: [{ key: 1, labels: READY }] }, (s, view) => {
     plan(s, [{ status: 'need_human', choice: 'ask', reason: '要接口文档', reply: '## 问题\n\n接口文档在哪？' }]);
     const r = cli(s, ['dev']);

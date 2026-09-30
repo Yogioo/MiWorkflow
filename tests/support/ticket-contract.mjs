@@ -54,8 +54,8 @@ export function defineTicketContract(src) {
     assert.equal(runScript(s, 'ticket_view', {}).status, 'failed', '缺 id');
   });
 
-  contract('ticket_mark：入 { id, action, comment?, sha? }，出 { did, id, ref }；四种 action 的机器标签一致', {
-    tickets: [1, 2, 3].map((key) => ({ key, labels: READY }))
+  contract('ticket_mark：入 { id, action, comment?, sha? }，出 { did, id, ref }；五种 action 的机器标签一致', {
+    tickets: [1, 2, 3, 4].map((key) => ({ key, labels: READY }))
   }, (s, view) => {
     const mark = (key, input) => runScript(s, 'ticket_mark', { id: src.id(key), ...input });
 
@@ -79,6 +79,12 @@ export function defineTicketContract(src) {
     assert.equal(mark(3, { action: 'failed', comment: '原因' }).status, 'ok');
     assert.deepEqual(view(3).labels, [...READY, 'afk-failed']);
     assert.ok(view(3).comments.some((c) => c.includes('原因')));
+
+    mark(4, { action: 'claimed' });
+    assert.equal(mark(4, { action: 'released', comment: 'socket hang up' }).status, 'ok');
+    assert.deepEqual(view(4).labels, READY, 'released 摘认领、不贴失败、保留 ready');
+    assert.equal(view(4).closed, false);
+    assert.ok(view(4).comments.some((c) => c.includes('Agent 连接失败') && c.includes('socket hang up')));
 
     assert.equal(mark(3, { action: 'nope' }).status, 'failed');
     assert.equal(runScript(s, 'ticket_mark', { action: 'claimed' }).status, 'failed', '缺 id');

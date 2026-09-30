@@ -109,6 +109,14 @@ issue 约定（机器标签名在 `source.mjs` 的 `LABELS` 里可改；仓库�
 推送失败不关单、整轮停下，本地提交保留，留给人处理。`PUSH = false`（只本地提交）同款语义：
 没发布就不算做完——评论注明「本地提交（未推送）：<sha>」、不关单、保留 `afk-claimed`、整轮停下。
 
+失败分两类：
+
+- **业务失败**（Agent 说不行）：`need_human`、`no_change`、审查 `reject`、验证放弃或不过、输出不合契约等，照上面回滚 + 贴 `afk-failed` + 评论。
+- **Agent 没跑完**（基础设施故障）：CLI 起不来 / 非 0 退出 / 没回话（`agent_cli_failed`），或进程被杀什么都没吐（空输出的 `agent_invalid_json`）。
+  按 `config.mjs` 的 `AGENT_RETRY_DELAYS`（缺省 30 秒、2 分钟，空数组 = 不重试）重试同一步，开发重试前先回到本轮起点；
+  还不行，或没配 Agent（`agent_unavailable`）、超时，就回滚（提交先备份成 `refs/afk-backup/*`）、摘 `afk-claimed`、**不贴** `afk-failed`、
+  评论「Agent 连接失败，已回滚并释放，下轮重做：<原因>」，整轮立即停下（退出码非 0，不计入 `--max-failures`），下一轮自动重做。
+
 Agent 不直接碰 GitHub：认领 / 读单 / 标记全由 `.workflow/scripts/` 里的 `ticket_ready` / `ticket_view` / `ticket_mark` 做。
 读单读的是**工单快照**（正文 + 全部评论转成的 Markdown，图片下到旁边，在 `.workflow/logs/<runId>/tickets/<id>/`）；
 Agent 要对人说的话（提问、不改的理由、失败原因）写进**回帖稿**（同目录的 `reply-<n>.md`，可带图），由脚本发成评论。
@@ -157,7 +165,8 @@ miworkflow dev                         # 把就绪需求逐个做完；--issue <
 - 工单引用写成 `story <需求ID>`；提交信息按 `source.mjs` 的 `commitMessage`（先用 `--story=<需求ID> --user=<评论人> <标题>`，源码关联写法待实测）
 
 **完成不关单**：做完贴 `afk-delivered`、摘 `afk-claimed`、发评论（`ready-for-agent` 留着，有机器标签就不再入队），需求状态不动——人验收后自己在 TAPD 里流转状态。
-失败、未推送的处理与 GitHub 相同（失败保留 `ready-for-agent`、贴 `afk-failed`；未推送保留 `afk-claimed`、评论注明本地提交）。
+失败、未推送的处理与 GitHub 相同（失败保留 `ready-for-agent`、贴 `afk-failed`；未推送保留 `afk-claimed`、评论注明本地提交）；
+失败分类也相同：Agent 没跑完就退避重试，还不行回滚、撤 `afk-claimed`、不贴 `afk-failed`、评论后整轮停下（不关单、不改状态），下轮重做。
 工单快照里的图片经 `tapd-cli attachment get-image` 下载；回帖稿的图逐张 `upload-image` 后随评论发出。
 
 ## 内核仓库

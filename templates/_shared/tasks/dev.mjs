@@ -1,6 +1,7 @@
 // 开发工作流：把就绪工单逐个「认领 → 开发 → 审查 → 验证 → 提交 → 关单」。
 // 只通过工单源接口 ticket_ready / ticket_view / ticket_mark 碰工单系统，不知道背后是哪家（入队、标记的规则见各工单源的脚本）。
 // 失败就回滚 + 贴评论 + 标记失败，等人看完再重新入队。
+// Agent 根本没跑完（基础设施故障）不算工单失败：退避重试，还不行就回滚、释放工单（不贴失败）、整轮停下，下轮重做。
 //
 // 用法：
 //   miworkflow dev                    按队列一直跑到空
@@ -9,10 +10,11 @@
 //   miworkflow dev --issue 42         只做工单 42（不看入队和依赖，人点名就跑）
 //   miworkflow dev --confirm          每次发布（推送 + 关单）前 human 确认
 //   miworkflow dev --dry-run          只报会做哪些工单、哪些被挡住，不改工单、不改 git
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH } from '../config.mjs';
+import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, AGENT_RETRY_DELAYS } from '../config.mjs';
 import { commitMessage } from '../source.mjs';
 
 export const title = '开发：认领工单 → 开发 → 审查 → 验证 → 提交 → 关单';
@@ -55,6 +57,7 @@ export default async function ({ script, agent, human, args }) {
   let done = 0;
   let failures = 0;
   let pushStopped = false;
+  let infraStopped = false;
   let stop = '队列空';
 
   for (;;) {
@@ -75,12 +78,17 @@ export default async function ({ script, agent, human, args }) {
       pushStopped = true;
       stop = `未推送（PUSH=false，工单 ${t.ref}）：本地提交保留，留给人处理`;
       break;
+    } else if (outcome === 'infra_failed') {
+      // 不计入 failures（--max-failures 只管业务失败）；接着挑下一张多半也连不上，直接停
+      infraStopped = true;
+      stop = `Agent 连接失败（工单 ${t.ref}）：已回滚并释放，下轮重做`;
+      break;
     } else { failures++; }
   }
 
   console.log(`本轮结束：完成 ${done} 个，失败 ${failures} 个；${stop}`);
   if (failures > 0) throw new Error(`本轮有 ${failures} 个工单失败（停止原因：${stop}）`);
-  if (pushStopped) throw new Error(stop);
+  if (pushStopped || infraStopped) throw new Error(stop);
 }
 
 // 挑下一张要做的工单：--issue 直接读那张；否则列就绪队列取第一张
@@ -97,9 +105,9 @@ async function pick(only, ctx) {
   return v.data;
 }
 
-// 一张工单走完全程；返回 'done' | 'failed' | 'push_failed' | 'unpushed'
+// 一张工单走完全程；返回 'done' | 'failed' | 'push_failed' | 'unpushed' | 'infra_failed'
 async function runTicket(t, ctx) {
-  const { script, agent, human, args, root } = ctx;
+  const { script, human, args, root } = ctx;
 
   if ((await script('ticket_mark', { id: t.id, action: 'claimed' })).status !== 'ok') {
     console.error(`${t.ref} 认领失败`);
@@ -110,10 +118,13 @@ async function runTicket(t, ctx) {
 
   // 1. 开发（每次调 Agent 都分配一份新的回帖稿；失败时它写了就跟着评论发回工单）
   let reply = nextReply(t);
-  const dev = await agent(devPrompt(t, root, reply), {
+  // 重试前回到本轮起点，免得在半成品上续写；那时备份掉的提交也要写进释放评论
+  let saved = '';
+  const dev = await callAgent(ctx, devPrompt(t, root, reply), {
     ...(DEV ? { agent: DEV } : {}),
     inputs: { cwd: root, ticket: t.file, reply, choices: ['done', 'no_change'] }
-  });
+  }, async () => { saved += await rollback(base, ctx); });
+  if (dev.infra) return release(t, dev.infra, base, ctx, saved);
   if (dev.status === 'need_human') return fail(t, `Agent 提问：${dev.reason}`, base, ctx, reply);
   if (dev.status !== 'ok' || !['done', 'no_change'].includes(dev.choice)) {
     return fail(t, `开发失败（${dev.choice}）：${dev.reason}`, base, ctx, reply);
@@ -128,10 +139,11 @@ async function runTicket(t, ctx) {
 
   // 3. 审查（有问题直接改）
   reply = nextReply(t);
-  const rev = await agent(reviewPrompt(t, root, changed, reply), {
+  const rev = await callAgent(ctx, reviewPrompt(t, root, changed, reply), {
     ...(REVIEWER ? { agent: REVIEWER } : {}),
     inputs: { cwd: root, ticket: t.file, reply, changed, choices: ['clean', 'refined', 'reject'] }
   });
+  if (rev.infra) return release(t, rev.infra, base, ctx, saved);
   if (rev.status === 'need_human') return fail(t, `审查者提问：${rev.reason}`, base, ctx, reply);
   if (rev.status !== 'ok' || !['clean', 'refined'].includes(rev.choice)) {
     return fail(t, `审查未通过（${rev.choice}）：${rev.reason}`, base, ctx, reply);
@@ -148,10 +160,11 @@ async function runTicket(t, ctx) {
       }
       round++;
       reply = nextReply(t);
-      const fix = await agent(fixPrompt(t, root, VERIFY, v.data?.tail, reply), {
+      const fix = await callAgent(ctx, fixPrompt(t, root, VERIFY, v.data?.tail, reply), {
         ...(DEV ? { agent: DEV } : {}),
         inputs: { cwd: root, ticket: t.file, reply, verify: VERIFY, output: v.data?.tail, choices: ['fixed', 'give_up'] }
       });
+      if (fix.infra) return release(t, fix.infra, base, ctx, saved);
       if (fix.status !== 'ok' || fix.choice !== 'fixed') {
         return fail(t, `验证失败后放弃：${fix.reason}`, base, ctx, reply);
       }
@@ -205,19 +218,58 @@ async function notPublished(outcome, t, sha, ctx) {
 // 回滚如果要丢掉提交，git_restore 会先备份成 ref——把那个 ref 写进评论，人才能捞回来（TODO B7）
 // reply：刚结束那次 Agent 调用的回帖稿路径（写没写由 ticket_mark 看）
 async function fail(t, reason, base, ctx, reply) {
-  const { script } = ctx;
   console.error(`✖ ${t.ref} ${reason}`);
-  let note = '';
-  if (base) {
-    const r = await script('git_restore', { sha: base, cwd: ctx.root });
-    if (r.data?.lost?.length) {
-      note = `\n（回滚掉的 ${r.data.lost.length} 笔提交备份在 ${r.data.backup}：${r.data.lost.map((l) => l.split(' ')[0]).join(' ')}）`;
-      console.error(`  回滚掉的提交备份在 ${r.data.backup}`);
-    }
-  }
-  await script('ticket_mark', { id: t.id, action: 'failed', comment: `${reason}${note}`, ...(reply ? { commentFile: reply } : {}) });
+  const note = await rollback(base, ctx);
+  await ctx.script('ticket_mark', { id: t.id, action: 'failed', comment: `${reason}${note}`, ...(reply ? { commentFile: reply } : {}) });
   return 'failed';
 }
+
+// Agent 基础设施故障重试用完（或不该重试）：回滚到起点，ticket_mark released——摘认领、不贴失败、保留入队，下轮重做
+// saved：重试时已经回滚备份过的提交备注
+async function release(t, reason, base, ctx, saved = '') {
+  console.error(`✖ ${t.ref} Agent 连接失败：${reason}`);
+  const note = saved + await rollback(base, ctx);
+  await ctx.script('ticket_mark', { id: t.id, action: 'released', comment: `${reason}${note}` });
+  return 'infra_failed';
+}
+
+// 回滚到起点；丢掉的提交已由 git_restore 备份成 ref，返回写进评论的那句备注（没丢提交就是空串）
+async function rollback(base, ctx) {
+  if (!base) return '';
+  const r = await ctx.script('git_restore', { sha: base, cwd: ctx.root });
+  if (!r.data?.lost?.length) return '';
+  console.error(`  回滚掉的提交备份在 ${r.data.backup}`);
+  return `\n（回滚掉的 ${r.data.lost.length} 笔提交备份在 ${r.data.backup}：${r.data.lost.map((l) => l.split(' ')[0]).join(' ')}）`;
+}
+
+// 调 Agent：区分「Agent 说不行」（原样交回，照旧走 fail）和「Agent 根本没跑完」（基础设施故障）。
+// 后者按 AGENT_RETRY_DELAYS 退避重试同一步（beforeRetry 给开发用来先回到起点）；
+// 用完或不该重试就交回 { ...结果, infra: 原因首句 }，由调用方 release。
+async function callAgent(ctx, goal, opts, beforeRetry) {
+  for (let i = 0; ; i++) {
+    const r = await ctx.agent(goal, opts);
+    const kind = infraKind(r);
+    if (!kind) return r;
+    const why = firstLine(r.reason) || r.choice;
+    if (kind === 'stop' || i >= AGENT_RETRY_DELAYS.length) return { ...r, infra: why };
+    const wait = AGENT_RETRY_DELAYS[i];
+    console.error(`  Agent 没跑完，第 ${i + 1} 次重试（等 ${Math.round(wait / 1000)} 秒）：${why}`);
+    await sleep(wait);
+    if (beforeRetry) await beforeRetry();
+    if (opts.inputs?.reply) rmSync(opts.inputs.reply, { force: true });
+  }
+}
+
+// 'retry'：连不上 / 崩了 / 被杀了什么都没吐；'stop'：没配 Agent、超时（重试也白搭）；null：Agent 自己给的结论
+const TIMEOUT_RE = /超时（\d+ 秒）/;
+function infraKind(r) {
+  if (r.choice === 'agent_unavailable') return 'stop';
+  if (r.choice === 'agent_cli_failed') return TIMEOUT_RE.test(String(r.reason ?? '')) ? 'stop' : 'retry';
+  if (r.choice === 'agent_invalid_json' && !String(r.data?.stdout ?? '').trim()) return 'retry';
+  return null;
+}
+
+const firstLine = (text) => String(text ?? '').split('\n').map((l) => l.trim()).find(Boolean)?.split(/(?<=[。！？.!?])\s*/)[0] ?? '';
 
 // 回帖稿放工单快照同目录：reply-1.md、reply-2.md …（图片也放这里，相对路径引用）
 const replies = new Map();

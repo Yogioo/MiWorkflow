@@ -1,6 +1,7 @@
 // 工单源接口：改工单状态。TAPD 实现：认领（claimed）/ 完成（done）/ 未推送留人处理（unpushed）/ 失败待人看（failed）。
 // 「完成」不关单、不改状态和处理人（属于人和策划的流程）：撤 claimed、贴 delivered、评论提交号。
-// failed 保留 ready（人摘掉 failed 就重新入队）；unpushed 只评论、保留 claimed。
+// failed 保留 ready（人摘掉 failed 就重新入队）；unpushed 只评论、保留 claimed；
+// released（Agent 连接失败）撤 claimed、不贴 failed、保留 ready，下轮自动重做。
 // 标签多值用 | 分隔（写逗号不报错，TAPD 会把整串建成一个新标签），每次写完经 `story list` 回读，不对就判失败。
 // 要发评论却缺评论人时，在动标签之前就报错。
 // 入：{ id, action, commentFile?, comment?, sha?, dryRun? }；commentFile 是回帖稿（跟在那句话后面发，
@@ -41,8 +42,11 @@ await main(async () => {
     add = [LABELS.failed];
     remove = [LABELS.claimed];
     head = `afk failed：${String(args.comment ?? '').slice(0, 900)}`;
+  } else if (action === 'released') {
+    remove = [LABELS.claimed];
+    head = `Agent 连接失败，已回滚并释放，下轮重做：${String(args.comment ?? '').slice(0, 900)}`;
   } else {
-    throw new Error(`不认识的 action：${action}（claimed / done / unpushed / failed）`);
+    throw new Error(`不认识的 action：${action}（claimed / done / unpushed / failed / released）`);
   }
   if (head !== null && !COMMENTER && !args.dryRun) {
     throw new Error('缺评论人：设 TAPD_NPC_ROLE 或 source.mjs 的 COMMENTER（在改标签之前报错，工单未被改动）');
@@ -88,7 +92,7 @@ await main(async () => {
     await verifyComment(workspace, id, String(r.data?.Comment?.id ?? ''), body, uploaded);
   }
 
-  const label = { claimed: '认领', done: '标记完成（不关单）', unpushed: '记录未推送', failed: '标记失败' }[action];
+  const label = { claimed: '认领', done: '标记完成（不关单）', unpushed: '记录未推送', failed: '标记失败', released: '释放（下轮重做）' }[action];
   emit({ status: 'ok', say: `${ref} ${label}${warn ? `；${warn}` : ''}`, data: { id, ref, did } });
 });
 

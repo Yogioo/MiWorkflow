@@ -424,6 +424,10 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 - 完成不关单：只贴 `afk-delivered`，状态流转留给人验收；工单引用写全 ID `story <需求ID>`（界面短 ID 跨项目会重）
 - 提交信息先按 `--story=<需求ID> --user=<评论人> <标题>`，源码关联写法未实测
 - 端到端与契约测试用假 `tapd-cli` + 假 OpenAPI，跟 GitHub 同一套场景（#25）；真项目只测过读单与回帖稿全链路（见 F6）
+- ✅ #27（2026-09-30，起因：本机代理断了，#23、#24 被当工单失败回滚 + 贴 `afk-failed`）：`dev` 区分 Agent 基础设施故障——
+  `agent_cli_failed`（超时除外）/ 空 stdout 的 `agent_invalid_json` 按 `AGENT_RETRY_DELAYS` 退避重试（开发重试前先回起点），
+  用完或 `agent_unavailable` / 超时就回滚、`ticket_mark released`（摘认领、不贴失败、保留 ready）、整轮停下，不计入 `--max-failures`。
+  待做：Agent 静默超时（N 分钟无事件就杀，要改 `agents/runners/`）
 
 进度：#20 已搭骨架——`templates/tapd/`（`source.mjs`、`scripts/_tapd.mjs`、三个 `ticket_*` 占位报 failed），
 假 `tapd-cli` / 假 OpenAPI 在 `tests/support/`（`tapd-fakes.mjs`），`init --template tapd` 可用。
