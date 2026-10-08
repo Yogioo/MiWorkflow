@@ -12,7 +12,7 @@
 3. ✅ **C2 运行期 Agent 适配器**（已实现并用三家真 CLI 实测，见 `Core.md` §10.1）
 4. ✅ **C3 首个工作流：GitHub 开发**（`templates/github/`，已实现并用假 gh / 假 Agent / 临时 git 仓库测了 10 条路径）
 5. ✅ **讨论单 + 循环运行 + 会话**（spec #6，开发单 #7–#12，由 `github_dev` 自己开发完）
-6. ✅ **F 工单源无关 + TAPD**（见下文 F，2026-09-30 已拍板；✅ F2 已实现（#13–#19），✅ F3 TAPD 开发已实现（#20–#26，真 TAPD 项目实测项见 F6）；F4 TAPD 讨论流程 Step 0–3 已实现（#29），Step 4 文档已同步、真项目实测待人（#30））
+6. ✅ **F 工单源无关 + TAPD**（见下文 F，2026-09-30 已拍板；✅ F2 已实现（#13–#19），✅ F3 TAPD 开发已实现（#20–#26，真 TAPD 项目实测项见 F6）；F4 TAPD 讨论流程已实现（Step 0–3 #29，Step 4 文档 #31、真项目实测 #30 通过））
 7. ✅ **G 审查分级**（见下文 G，2026-09-30 已拍板并实现；汇总审查 G3 搁置）
 7.1 ✅ **H beads 工单源**（2026-10-08，`templates/beads/`：开发流程三个 `ticket_*` + 讨论流程四个脚本，按 `bd` 1.1.2 实测写、真 `bd` 各冒烟过一轮；
    开发 / 讨论的共用场景与契约测试多跑一家假 `bd`。实测踩到的坑：`bd list` 缺省 50 条、`bd show` 不带评论且依赖形状跟 `list` 不同、
@@ -508,7 +508,7 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
     `dev` / `ticket_ready` 还没做：常驻时用 `--every 10m` 这一档（空转一次 1 次请求）
 - 假 `tapd-cli`：照 afk-run 测试的做法（`node fake.mjs` + 状态 JSON 文件），注入点照 `MIWORKFLOW_GH` 用 `MIWORKFLOW_TAPD`
 
-### F4. TAPD 讨论流程（**开工**，2026-09-30；Step 0–3 已做，Step 4 文档已同步 / 真项目实测待人）
+### F4. TAPD 讨论流程（✅ 已完成：2026-09-30 开工，2026-10-08 真项目实测通过）
 
 开工时先做两件事：① 按 F1 末尾重新审视「拆单由谁建」，与回帖稿的做法对齐；
 ② 把 F2 挪过来的讨论侧接口（`tk_discuss_list` / `tk_post` / `tk_create_tickets`、AI 标记与 spec 的编码归脚本）重新过一遍。
@@ -526,8 +526,8 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
   - **2b** TAPD 实现：`scripts/_discuss.mjs`（标记用评论末尾一行纯文本、spec 落成 `kind=spec` 评论、标签回读校验、依赖走表单 `save_time_relations`、`story add parent_id=` 建子需求）+ 四个 `discuss_*` 脚本，替掉 Step 1 的占位桩。契约测试：`tests/template-tapd-discuss.test.mjs`。
   - 212 测试全绿。
 - ✅ **Step 3** 同一套场景 × 两家假工单源（把 `template-github-discuss.test.mjs` 的场景抽成 `discuss-scenarios.mjs`，两家各跑一遍）（#29，240 测试全绿）。
-- ⏳ **Step 4**：✅ 文档已同步（#31：README「讨论单」一节补 TAPD 用法与差异；`SKILL.md` 只讲写任务，不涉及讨论流程，不动）；
-  ⏳ 真 TAPD 项目跑一整条**待人**（#30，人工单，不进机器队列），要盯的点见 F4.1 的「Step 4 实测」表。
+- ✅ **Step 4**：✅ 文档已同步（#31：README「讨论单」一节补 TAPD 用法与差异；`SKILL.md` 只讲写任务，不涉及讨论流程，不动）；
+  ✅ 真 TAPD 项目跑一整条（#30，人工单，2026-10-08 人工实测通过），要盯的点见 F4.1 的「Step 4 实测」表。
 - **开单约定**（#30 翻车后定）：别把「Agent 能做的」和「只有人能做的」塞一张单。真项目实测 / 要人工回帖 / 要凭证的活，
   单独开一张**不带 `ready-for-agent`** 的单，或者直接写进 TODO 当 checklist；混在一起时 Agent 做到人工那步只能 `need_human`，整张单回滚，前面的工时白费。
 - **已拍板**（Step 2 按这个做的）：**D1** 拆单一律由脚本建（Agent 不碰工单系统）；**D3** 标记形态按工单源各自选（GitHub 用评论末尾的 HTML 注释，TAPD 用纯文本）；**D5** 建单细节（标签分隔、优先级映射、依赖写法、图片）全归脚本。
@@ -576,22 +576,22 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 
 **没测**：F3 的 `--story=<需求ID> --user=<评论人>` 源码关联关键字（要真提交进 TAPD 绑定的仓库，单独排期）。
 
-**Step 4 实测**（#30，人工跑；真项目里建一张测试讨论单贴 `agent-discuss`，一路跑到 `discuss:ticketed`；结果直接填进表）：
+**Step 4 实测**（#30，人工跑；真项目里建一张测试讨论单贴 `agent-discuss`，一路跑到 `discuss:ticketed`；2026-10-08 人工实测全部通过）：
 
 | # | 要盯的点 | 怎么看 | 结果 |
 |---|---|---|---|
-| S1 | `discuss_list` 捞得到讨论单：贴 `agent-discuss`、阶段标签为空 / grilling / spec 的进队列 | `miworkflow discuss` 的 `say` 列出这张单 | 待测 |
-| S2 | 首轮追问后贴上 `discuss:grilling`（标签第一次用，隐式建出） | 需求详情的标签；项目标签列表里多出这个名字 | 待测 |
-| S3 | AI 评论末尾那行纯文本标记 `[miworkflow:discuss hash=… seen=…]` 回读完整（没被剥、没被转义） | 评论原文；下一轮 `discuss_view` 的 `ai: true` | 待测 |
-| S4 | 人不回复时下一轮不重复追问（哈希判轮）；人回复后接着问 | 连跑两次 `discuss`，再回一条评论跑一次 | 待测 |
-| S5 | `/spec` 后发出一条 `kind=spec` 评论，**需求描述不被改**；阶段改为 `discuss:spec` | 描述前后对比；评论标记里有 `kind=spec` | 待测 |
-| S6 | spec 阶段再提意见，AI 发新的 `kind=spec` 评论，`discuss_view` 取的是最新那条 | 两条 spec 评论，看下一轮 Agent 拿到的 spec | 待测 |
-| S7 | `/tickets` 建出子需求：`parent_id` 指向讨论单、贴 `ready-for-agent`（要审查的带 `needs-review`）、正文是 Markdown 转的 HTML | 讨论单的子需求列表；子需求详情 | 待测 |
-| S8 | 优先级映射：`P0`/`P1` → 高、`P2` → 中、`P3`/`P4` → 低 | 子需求的优先级字段 | 待测 |
-| S9 | 依赖落成原生前后置关系（前置结束 → 后置开始），`dev` 的 `ticket_ready` 认得出（前置没完成的不就绪） | 子需求的「前后置」页签；跑一次 `miworkflow dev` 看跳过原因 | 待测 |
-| S10 | 回查通过后阶段改为 `discuss:ticketed`，之后 `discuss` 不再捞它；摘掉 `agent-discuss` 也能让它退出 | 再跑 `discuss`，`say` 里没有这张单 | 待测 |
-| S11 | 一轮失败时发一条写明原因的评论，回复任意内容即重试 | 人为制造失败（如断开 Agent） | 待测 |
-| S12 | 配额：一整条跑下来的调用次数，按修改时间粗筛是否生效 | `story list with_usage=1` 前后对比 | 待测 |
+| S1 | `discuss_list` 捞得到讨论单：贴 `agent-discuss`、阶段标签为空 / grilling / spec 的进队列 | `miworkflow discuss` 的 `say` 列出这张单 | ✅ 通过 |
+| S2 | 首轮追问后贴上 `discuss:grilling`（标签第一次用，隐式建出） | 需求详情的标签；项目标签列表里多出这个名字 | ✅ 通过 |
+| S3 | AI 评论末尾那行纯文本标记 `[miworkflow:discuss hash=… seen=…]` 回读完整（没被剥、没被转义） | 评论原文；下一轮 `discuss_view` 的 `ai: true` | ✅ 通过 |
+| S4 | 人不回复时下一轮不重复追问（哈希判轮）；人回复后接着问 | 连跑两次 `discuss`，再回一条评论跑一次 | ✅ 通过 |
+| S5 | `/spec` 后发出一条 `kind=spec` 评论，**需求描述不被改**；阶段改为 `discuss:spec` | 描述前后对比；评论标记里有 `kind=spec` | ✅ 通过 |
+| S6 | spec 阶段再提意见，AI 发新的 `kind=spec` 评论，`discuss_view` 取的是最新那条 | 两条 spec 评论，看下一轮 Agent 拿到的 spec | ✅ 通过 |
+| S7 | `/tickets` 建出子需求：`parent_id` 指向讨论单、贴 `ready-for-agent`（要审查的带 `needs-review`）、正文是 Markdown 转的 HTML | 讨论单的子需求列表；子需求详情 | ✅ 通过 |
+| S8 | 优先级映射：`P0`/`P1` → 高、`P2` → 中、`P3`/`P4` → 低 | 子需求的优先级字段 | ✅ 通过 |
+| S9 | 依赖落成原生前后置关系（前置结束 → 后置开始），`dev` 的 `ticket_ready` 认得出（前置没完成的不就绪） | 子需求的「前后置」页签；跑一次 `miworkflow dev` 看跳过原因 | ✅ 通过 |
+| S10 | 回查通过后阶段改为 `discuss:ticketed`，之后 `discuss` 不再捞它；摘掉 `agent-discuss` 也能让它退出 | 再跑 `discuss`，`say` 里没有这张单 | ✅ 通过 |
+| S11 | 一轮失败时发一条写明原因的评论，回复任意内容即重试 | 人为制造失败（如断开 Agent） | ✅ 通过 |
+| S12 | 配额：一整条跑下来的调用次数，按修改时间粗筛是否生效 | `story list with_usage=1` 前后对比 | ✅ 通过 |
 
 测完清理：测试讨论单、子需求与评论没有删除命令，需人在 TAPD 里手删；前后置关系用 `delete_time_relations` 删。
 
@@ -603,7 +603,7 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 1. **F2 在 GitHub 上成形**：模板拆 `_shared` + `github`、`init` 改组合；`github_dev` → `dev`；`gh_ready / gh_issue_view / gh_issue_mark` → `ticket_*`；
    `source.mjs` + `commitMessage`；工单号字符串 + `ref`；DEV / REVIEWER / FIX 提示词进 `prompts/`；机器标签统一；工单快照 + 回帖稿（`gh --attach`）
 2. **F3 TAPD 开发**：`templates/tapd/` 的 `ticket_*` + `source.mjs` + 前后置依赖；假 `tapd-cli` 测试；在一个真 TAPD 项目里实测一轮
-3. F4：Step 0–3 已做（2026-09-30，Step 3 #29）；Step 4 文档已同步（#31）、真项目实测待人（#30），见 F4
+3. ✅ F4：Step 0–3 已做（2026-09-30，Step 3 #29）；Step 4 文档已同步（#31）、真项目实测通过（#30，2026-10-08），见 F4
 
 - 测试：开发流程的端到端测试改成「同一套场景 × 两家假工单源」各跑一遍（接口一致就该都绿）；
   另给 `ticket_*` 脚本各自一套契约测试（同样的入参，两家交回同样形状）
