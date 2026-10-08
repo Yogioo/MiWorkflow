@@ -190,6 +190,36 @@ test('index.html：agent 过程渲染成人话，原始 / 流式事件折叠且�
   assert.ok(out.length < 60_000, `原始事件不该整段塞进 HTML（events.jsonl 会上到 10MB）：${out.length}`);
 });
 
+test('index.html：并行工具调用里没返回的那条标出来，步骤结束后改标「没返回」', () => {
+  const ctx = loadPage();
+  const render = vm.runInContext('renderEvents', ctx);
+  const t0 = Date.now() - 13 * 60_000;
+  const items = [
+    { kind: 'tool', callId: 'b', phase: 'start', t: t0, toolName: 'bash', args: { command: 'find / -name x' } },
+    { kind: 'tool', callId: 'u', phase: 'start', t: t0, toolName: 'run_tests', args: {} },
+    { kind: 'tool', callId: 'u', phase: 'done', t: t0 + 1000, toolName: 'run_tests', result: { text: 'started' } }
+  ];
+  const live = render({ open: true, items, done: false });
+  const bash = live.split('</div>').find((s) => s.includes('find / -name x'));
+  assert.match(bash, /进行中 · 已 13 分/, '还在等的那条带「进行中」和已等多久');
+  const tests = live.split('</div>').find((s) => s.includes('run_tests'));
+  assert.ok(!tests.includes('进行中'), '返回了的不标');
+  assert.match(render({ open: true, items, done: true }), /没返回/, '步骤已结束还没 done 的标「没返回」');
+});
+
+test('index.html：步骤进行中，过程底部一行说清此刻在跑命令还是在等模型', () => {
+  const ctx = loadPage();
+  const render = vm.runInContext('renderEvents', ctx);
+  const t0 = Date.now() - 42_000;
+  const start = { kind: 'tool', callId: 'b', phase: 'start', t: t0, toolName: 'bash', args: { command: 'dotnet build' } };
+  const done = { kind: 'tool', callId: 'b', phase: 'done', t: t0, toolName: 'bash', result: { text: 'ok' } };
+  const raw = { kind: 'raw', t: Date.now() - 7_000, payload: {} };
+
+  assert.match(render({ open: true, items: [start, raw], done: false }), /evt-now[^>]*>在跑 bash dotnet build · 已 42 秒/);
+  assert.match(render({ open: true, items: [start, done, raw], done: false }), /evt-now[^>]*>等模型中 · 距上次动作 7 秒/);
+  assert.ok(!render({ open: true, items: [start, done, raw], done: true }).includes('evt-now'), '步骤结束就不显示');
+});
+
 test('index.html：默认收缩，手动状态优先于全局默认（§13.6）', () => {
   const ctx = loadPage();
   const isOpen = (seq) => vm.runInContext('isOpen', ctx)({ seq });

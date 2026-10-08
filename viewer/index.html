@@ -51,6 +51,9 @@
   .evt-body .l-res, .evt-body .l-thinking, .evt-body .evt-none { color:var(--dim); }
   .evt-body .l-thinking { font-style:italic; }
   .evt-body .l-error { color:var(--bad); }
+  .evt-body .l-pending { color:var(--wait); }
+  .evt-body .evt-now { margin-top:6px; color:var(--run); font-size:12px; }
+  .evt-body .evt-now.running { color:var(--wait); }
   .evt-body details { color:var(--dim); margin-top:4px; }
   .evt-body summary { cursor:pointer; font-size:11.5px; }
   .evt-body pre, .sec-b pre { margin:4px 0 0; padding:6px 8px; background:var(--bg); border:1px solid var(--line);
@@ -113,6 +116,10 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 const time = (iso) => iso ? new Date(iso).toLocaleTimeString('zh-CN', { hour12:false }) : '';
+const since = (t) => {
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分';
+};
 
 let runs = [];
 let tasksKey = '';   // 任务列表没变就不重画，免得冲掉输入框里的参数
@@ -307,9 +314,11 @@ function foldEvents(items) {
       const hit = byCall.get(key);
       if (ev.phase === 'done' && hit) {
         if (ev.result !== undefined) hit.result = ev.result;
+        hit.pending = false;
         continue;
       }
-      const line = { kind: 'tool', toolName: ev.toolName ?? 'tool', args: ev.args, result: ev.phase === 'done' ? ev.result : undefined };
+      const done = ev.phase === 'done';
+      const line = { kind: 'tool', toolName: ev.toolName ?? 'tool', args: ev.args, result: done ? ev.result : undefined, pending: !done, startAt: ev.t };
       byCall.set(key, line);
       lines.push(line);
     } else if (kind === 'assistant' || kind === 'thinking' || kind === 'error') {
@@ -351,7 +360,11 @@ function renderEvents(st) {
   const html = lines.map((l) => {
     if (l.kind === 'tool') {
       const res = l.result !== undefined ? resultBrief(l.result) : '';
-      return `<div class="line">· ${esc(l.toolName)} ${esc(argBrief(l.args))}`
+      // 并行调用时最后一行未必是卡住的那条：没等到 done 的单独标出来
+      const wait = !l.pending ? ''
+        : st.done ? '<span class="pill">没返回</span>'
+        : `<span class="pill running">进行中${l.startAt ? ' · 已 ' + since(l.startAt) : ''}</span>`;
+      return `<div class="line${l.pending ? ' l-pending' : ''}">· ${esc(l.toolName)} ${esc(argBrief(l.args))}${wait}`
         + (res ? `<div class="line l-res">→ ${esc(res)}</div>` : '') + '</div>';
     }
     if (l.kind === 'assistant') return `<div class="line">» ${esc(clip(l.text, 2000))}</div>`;
@@ -360,7 +373,21 @@ function renderEvents(st) {
   }).join('');
   const rest = (Array.isArray(st.items) ? st.items : [])
     .filter((ev) => !['tool', 'assistant', 'thinking', 'error'].includes(String(ev?.kind ?? 'raw')));
-  return html + foldedHtml(rest, folded);
+  return html + (st.done ? '' : nowLine(st.items, lines)) + foldedHtml(rest, folded);
+}
+
+// 进行中的步骤：此刻在跑命令，还是在等模型（命令大多几十毫秒就完，大部分时间花在模型上）
+function nowLine(items, lines) {
+  const running = lines.filter((l) => l.kind === 'tool' && l.pending);
+  if (running.length) {
+    const l = running[0];
+    const more = running.length > 1 ? `（另有 ${running.length - 1} 条）` : '';
+    const age = l.startAt ? ' · 已 ' + since(l.startAt) : '';
+    return `<div class="evt-now running">在跑 ${esc(l.toolName)} ${esc(argBrief(l.args))}${age}${more}</div>`;
+  }
+  let t;
+  for (let i = items.length - 1; i >= 0 && t == null; i--) t = items[i]?.t;
+  return `<div class="evt-now">等模型中${t ? ' · 距上次动作 ' + since(t) : ''}</div>`;
 }
 
 // ── 展开后的三段：输入 / 输出 / 执行（§13.6）──
