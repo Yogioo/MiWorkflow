@@ -42,7 +42,9 @@ miworkflow init                  # 建 .workflow/，并往项目根 AGENTS.md �
 miworkflow new fix_tests         # 建任务骨架 .workflow/tasks/fix_tests.mjs
 miworkflow fix_tests --filter login   # 跑；项目里任意子目录都行，往上找 .workflow/
 miworkflow fix_tests --every 5m  # 常驻循环：每轮一次全新的 run，间隔从上轮结束算（30s / 5m / 1h）；Ctrl+C 退出
-miworkflow view                  # 网页：点「运行」、看每一步、点「通过 / 拒绝」
+miworkflow stop fix_tests        # 另开终端停它：做完手头这一单再停（循环也不再起下一轮）
+miworkflow stop fix_tests --now  # 立刻强关：杀整棵进程树，半路的改动原样留给人收拾
+miworkflow view                  # 网页：点「运行」、看每一步、点「通过 / 拒绝」、点「做完这单停 / 立刻强关」
 miworkflow skill                 # 打印写任务的完整说明（给 AI 看）
 ```
 
@@ -63,11 +65,13 @@ miworkflow skill                 # 打印写任务的完整说明（给 AI 看�
 ```js
 export const title = '跑测试，挂了就修';
 
-export default async function ({ script, agent, human, args }) {
+export default async function ({ script, agent, human, args, stopping }) {
   const r = await script('run_tests', { filter: args.filter });
   // ...
 }
 ```
+
+`stopping()` 告诉任务有没有人敲了 `miworkflow stop <task>`：逐个处理一批东西的任务在「做完一个、挑下一个之前」查它，查到就收尾返回。
 
 ### 接上 Agent
 
@@ -96,6 +100,7 @@ miworkflow dev                         # 把就绪 issue 逐个做完
 miworkflow dev --issue 42              # 只做 #42（不看标签和依赖，人点名就跑）
 miworkflow dev --max 3                 # 最多 3 个；--max-failures 1 连续失败就停
 miworkflow dev --confirm               # 每次提交（+ 推送 + 关单）前 human 确认；--dry-run 只报会做什么
+miworkflow stop dev                    # 手头这张单做完（提交、关单）就停，不再挑下一张；--now 立刻强关
 miworkflow init --upgrade              # 内核模板更新后跟上（项目配置保留，旧文件有备份）
 ```
 

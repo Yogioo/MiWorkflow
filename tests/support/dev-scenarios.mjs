@@ -178,6 +178,24 @@ export function defineDevScenarios(src) {
     assert.deepEqual(view(2).labels, READY, '排队的工单不碰');
   });
 
+  scenario('miworkflow stop dev：手头这张单照常做完、标记完成，不再挑下一张', {
+    tickets: [{ key: 1, labels: READY }, { key: 2, labels: READY }], push: true
+  }, (s, view) => {
+    plan(s, [
+      { choice: 'done', reason: '做完', file: { name: 'one.txt', content: '1' }, miworkflow: ['stop', 'dev'] },
+      { choice: 'clean', reason: '没问题' }
+    ]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 0, r.stderr);
+    assertDelivered(view(1));
+    assert.ok(existsSync(path.join(s.root, 'one.txt')));
+    assert.equal(seen(s).length, 2, '只做了第一张单的开发 + 审查');
+    assert.deepEqual(view(2).labels, READY, '停下了，不挑下一张');
+    assert.match(r.stderr, /已请求停止：dev 做完手头这一单就停/, '假 Agent 把 miworkflow stop 的输出打在 stderr');
+    assert.match(r.stdout, /本轮结束：完成 1 个，失败 0 个；收到停止请求/);
+    assert.ok(!existsSync(path.join(s.home, 'logs', 'dev.stop')), '请求用完就删');
+  });
+
   scenario('依赖挡住 → 不认领、不调 Agent；--dry-run 列出挡住原因', {
     tickets: [{ key: 1, title: '前置' }, { key: 2, title: '后续', labels: READY, deps: [1] }]
   }, (s, view) => {

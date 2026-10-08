@@ -15,7 +15,7 @@
   子 run 会写进父 run 的同一个 JSONL，把父 run 的记录搅乱（`Core.md` §12）。
   要单独验证就退出父 run、在干净 shell 里跑；确实要嵌套，就显式换 `AGENTFLOW_HOME`，别让子 run 继承 `AGENTFLOW_RUN_ID`。
 - **改内核，`node --test` 必须全绿。** 测试在 `tests/`。零依赖，只用 Node 内置模块，不加 npm 依赖。
-- **`run.mjs` 是唯一入口**（`init` / `new` / `view` / `skill` 是保留字）；`core.mjs` 放三个原语。
+- **`run.mjs` 是唯一入口**（`init` / `new` / `view` / `skill` / `stop` 是保留字）；`core.mjs` 放三个原语。
   `agents/`、`viewer/`、`templates/`、`examples/` 是外部工具、模板与示例，不是内核（§16）。
 - **内核仓库不放 `tasks/`、`scripts/`。** 沉淀跟着业务项目走（`Core.md` §3、§16）；`examples/` 自己是一个 HOME，只作参考。
 - **日志是 JSONL，每条带 `say`**（§12、§13.1）。`say` 只能由动作结果翻译出来，不许在任务里手写。

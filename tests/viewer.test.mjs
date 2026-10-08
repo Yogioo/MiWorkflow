@@ -21,6 +21,14 @@ writeFileSync(path.join(HOME, 'tasks', 'echo.mjs'), [
   ''
 ].join('\n'));
 writeFileSync(path.join(HOME, 'tasks', 'untitled.mjs'), 'export default async function () {}\n');
+// 一直做到被要求停（POST /api/stop 用）
+writeFileSync(path.join(HOME, 'tasks', 'wait.mjs'), [
+  "export const title = '等停';",
+  'export default async function ({ stopping }) {',
+  '  for (let i = 0; i < 600 && !stopping(); i++) await new Promise((r) => setTimeout(r, 50));',
+  '}',
+  ''
+].join('\n'));
 
 let server;
 let base;
@@ -50,7 +58,42 @@ const post = (url, body) => fetch(url, {
 
 test('GET /api/tasks：列任务与 title，没 title 就用文件名', async () => {
   const list = await (await fetch(`${base}/api/tasks`)).json();
-  assert.deepEqual(list, [{ name: 'echo', title: '回显 who' }, { name: 'untitled', title: 'untitled' }]);
+  assert.deepEqual(list, [{ name: 'echo', title: '回显 who' }, { name: 'untitled', title: 'untitled' }, { name: 'wait', title: '等停' }]);
+});
+
+test('POST /api/stop：在跑的任务做完手头这一单就停，回 run.mjs stop 的话；没在跑也说一声；坏任务名 400', async () => {
+  const { runId } = await (await post(`${base}/api/run`, { task: 'wait' })).json();
+  const lock = path.join(HOME, 'logs', 'wait.lock');
+  for (let i = 0; i < 100 && !existsSync(lock); i++) await sleep(50);
+  assert.ok(existsSync(lock), 'run 没起来');
+
+  const res = await post(`${base}/api/stop`, { task: 'wait' });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.match(body.message, /已请求停止：wait 做完手头这一单就停/);
+
+  const logFile = path.join(HOME, 'logs', `${runId}.jsonl`);
+  let last;
+  for (let i = 0; i < 100; i++) {
+    await sleep(100);
+    last = readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map(JSON.parse).at(-1);
+    if (last.primitive === 'run' && last.status !== 'running') break;
+  }
+  assert.equal(last?.status, 'ok', JSON.stringify(last));
+  assert.match(last.say, /收到停止请求/);
+
+  const idle = await (await post(`${base}/api/stop`, { task: 'wait', now: true })).json();
+  assert.match(idle.message, /wait 没在跑/);
+  assert.equal((await post(`${base}/api/stop`, { task: '../x' })).status, 400);
+});
+
+test('index.html：在跑的 run 上有「做完这单停 / 立刻强关」，强关先确认', () => {
+  const html = readFileSync(path.join(ROOT, 'viewer', 'index.html'), 'utf8');
+  assert.match(html, /做完这单停/);
+  assert.match(html, /立刻强关/);
+  assert.match(html, /\/api\/stop/);
+  assert.match(html, /if \(now && !confirm\(/);
 });
 
 test('POST /api/run：本机起任务，参数传进去，输出落 out.log', async () => {
@@ -326,7 +369,7 @@ test('GET /api/run/<id>/events/<n>：坏 id / 越界路径 → 400', async () =>
   assert.equal((await fetch(`${base}/api/run/evt-run/events/-1`)).status, 400);
 });
 
-test('POST /api/run：非本机请求 → 403', async (t) => {
+test('POST /api/run、/api/stop：非本机请求 → 403', async (t) => {
   const ip = Object.values(os.networkInterfaces()).flat()
     .find((i) => i && i.family === 'IPv4' && !i.internal)?.address;
   if (!ip) return t.skip('本机没有非回环 IPv4');
@@ -334,4 +377,6 @@ test('POST /api/run：非本机请求 → 403', async (t) => {
   const res = await post(`http://${ip}:${port}/api/run`, { task: 'echo', args: { who: '网页' } });
   assert.equal(res.status, 403);
   assert.deepEqual(await res.json(), { error: 'local_only' });
+  const stop = await post(`http://${ip}:${port}/api/stop`, { task: 'echo', now: true });
+  assert.equal(stop.status, 403, '强关也只收本机');
 });

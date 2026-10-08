@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// run.mjs — 唯一入口（§9）：miworkflow init | new <name> | view | skill | <task> [--key value]
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+// run.mjs — 唯一入口（§9）：miworkflow init | new <name> | view | skill | stop <task> | <task> [--key value]
+import {
+  appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync
+} from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -16,7 +18,7 @@ const SHARED = '_shared';
 const PROJECT_FILES = new Set(['config.mjs', 'source.mjs']);
 const ONE_LINE_EXPORT = /^(export const (\w+) = .*;)[ \t]*(?=\r?$)/gm;
 const SKILL = path.join(KERNEL, 'SKILL.md');
-const RESERVED = new Set(['init', 'new', 'view', 'skill']);
+const RESERVED = new Set(['init', 'new', 'view', 'skill', 'stop']);
 const NAME = /^[A-Za-z0-9_-]+$/;
 const USAGE = [
   'usage:',
@@ -25,6 +27,7 @@ const USAGE = [
   '  miworkflow new <name>                 建任务骨架 .workflow/tasks/<name>.mjs',
   '  miworkflow view                       起网页：看运行、审批、点运行',
   '  miworkflow skill                      打印写任务的完整说明（给 AI 看）',
+  '  miworkflow stop <task> [--now]        停任务：做完手头这一单再停；--now 立刻强关（杀整棵进程树）',
   '  miworkflow <task> [--key value]... [--yes] [--dry-run] [--every <30s|5m|1h>]'
 ].join('\n');
 
@@ -78,6 +81,7 @@ else if (cmd === 'view') {
   useHome();
   await import('./viewer/serve.mjs');
 } else if (cmd === 'skill') process.stdout.write(readFileSync(SKILL, 'utf8'));
+else if (cmd === 'stop') await stopTask(name, args.now === true);
 else if (every !== undefined) await loopTask(cmd, every);
 else await runTask(cmd, args);
 
@@ -316,7 +320,7 @@ function writeRootAgents(root) {
 // ── new ───────────────────────────────────────────────────────────────────
 function newTask(task) {
   if (!task || !NAME.test(task) || RESERVED.has(task)) {
-    fail('usage: miworkflow new <name>（字母、数字、_、-；不能叫 init / new / view / skill）');
+    fail('usage: miworkflow new <name>（字母、数字、_、-；不能叫 init / new / view / skill / stop）');
   }
   const home = findHome();
   if (!home || !isDir(home)) fail('找不到 .workflow/。先在项目里跑 miworkflow init');
@@ -345,12 +349,13 @@ function lockFile(HOME, task) {
   return path.join(HOME, 'logs', `${task}.lock`);
 }
 
-function readLock(file) {
+// 锁、循环标记、停止请求都是一小段 JSON
+function readJson(file) {
   try {
     const j = JSON.parse(readFileSync(file, 'utf8'));
     return j && typeof j === 'object' ? j : null;
   } catch {
-    return null; // 没有 / 半截 / 坏 JSON：都当拿不到锁信息，按陈锁处理
+    return null; // 没有 / 半截 / 坏 JSON：都当拿不到，锁按陈锁处理
   }
 }
 
@@ -376,7 +381,7 @@ function acquireLock(HOME, task, runId) {
       return { file, held: true, existing: null };
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
-      const existing = readLock(file);
+      const existing = readJson(file);
       if (existing && pidAlive(existing.pid)) return { file, held: false, existing };
       rmSync(file, { force: true }); // 陈锁 / 坏文件：删掉重抢（下一轮 wx 要么我拿到，要么别人拿到）
     }
@@ -395,7 +400,8 @@ function releaseLock(lock) {
 // ── 循环运行（§9）：--every <间隔> ──────────────────────────────────────────
 // 外层循环不是 run：不加载 core、不写日志、不拿锁。每一轮起一个子进程当全新的 run
 // （删掉 AGENTFLOW_RUN_ID / AGENTFLOW_TASK，子进程自己生成），间隔从上一轮结束算，所以不会自己重叠。
-// Ctrl-C 不拦：终端把信号发给整个前台进程组，外层和正在跑的 run 一起结束。
+// Ctrl-C 只顺手删掉循环标记：终端把信号发给整个前台进程组，外层和正在跑的 run 一起结束。
+// 循环在 logs/<task>.loop 记下 pid，miworkflow stop 靠它找到循环；收到停止请求就不再起下一轮（等的时候也照查）。
 function parseInterval(text) {
   const m = /^(\d+)([smh])$/.exec(text);
   const ms = m ? Number(m[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[m[2]] : 0;
@@ -408,10 +414,29 @@ async function loopTask(task, every) {
   const home = useHome();
   if (!existsSync(path.join(home, 'tasks', `${task}.mjs`))) fail(`task not found: ${task}（在 ${path.join(home, 'tasks')} 下找）`);
 
-  const env = { ...process.env };
+  const marker = loopFile(home, task);
+  const other = readJson(marker);
+  if (other && other.pid !== process.pid && pidAlive(other.pid)) {
+    // 同一任务只留一个循环：停止请求按任务找循环，两个就分不清
+    console.log(`${task} 已有循环在跑（pid ${other.pid}）`);
+    return;
+  }
+  writeJson(marker, { pid: process.pid, at: new Date().toISOString() });
+  const onSignal = (sig) => {
+    dropIfOwner(marker, process.pid);
+    process.removeListener(sig, onSignal);
+    process.kill(process.pid, sig);
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
+
+  const env = { ...process.env, AGENTFLOW_LOOP_PID: String(process.pid) };
   delete env.AGENTFLOW_RUN_ID;
   delete env.AGENTFLOW_TASK;
-  for (let round = 1; ; round++) {
+  const stopped = () => readJson(stopFile(home, task))?.loopPid === process.pid;
+  let round = 0;
+  while (!stopped()) {
+    round++;
     console.log(`[every ${every}] 第 ${round} 轮`);
     const code = await new Promise((resolve) => {
       const child = spawn(process.execPath, [fileURLToPath(import.meta.url), ...forward], { env, stdio: 'inherit' });
@@ -422,8 +447,143 @@ async function loopTask(task, every) {
       child.on('exit', (c, sig) => resolve(c ?? sig));
     });
     if (code !== 0) console.error(`[every ${every}] 第 ${round} 轮退出码 ${code}，继续`);
-    await new Promise((r) => setTimeout(r, ms));
+    for (const until = Date.now() + ms; Date.now() < until && !stopped();) {
+      await new Promise((r) => setTimeout(r, Math.min(500, until - Date.now())));
+    }
   }
+  rmSync(stopFile(home, task), { force: true });
+  dropIfOwner(marker, process.pid);
+  process.removeListener('SIGINT', onSignal);
+  process.removeListener('SIGTERM', onSignal);
+  console.log(`[every ${every}] 收到停止请求，跑了 ${round} 轮，退出`);
+}
+
+// ── 停止（§9）──────────────────────────────────────────────────────────────
+// 两种：默认「做完手头这一单再停」——写 logs/<task>.stop，任务用 stopping() 查，在自己定的边界停下；
+// 不查的任务就把这次跑完；--every 循环跑完这一轮不再起下一轮。--now 立刻强关：杀整棵进程树，
+// 替被杀的 run 补一条终态记录、删锁；停在半路的步骤留下什么（改动、外部状态）原样交给人收拾。
+// 按任务找目标：同一任务同时只有一个 run（任务锁）、一个循环（循环标记）。
+// 停止请求写明对准谁（runId / 循环 pid），过期的请求对不上任何新 run，不会误停。
+function stopFile(HOME, task) {
+  return path.join(HOME, 'logs', `${task}.stop`);
+}
+
+function loopFile(HOME, task) {
+  return path.join(HOME, 'logs', `${task}.loop`);
+}
+
+// 先写临时文件再改名：读的一方不会读到半个
+function writeJson(file, body) {
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(`${file}.tmp`, `${JSON.stringify(body)}\n`);
+  renameSync(`${file}.tmp`, file);
+}
+
+function dropIfOwner(file, pid) {
+  if (readJson(file)?.pid === pid) rmSync(file, { force: true });
+}
+
+// 这次 run 有没有被要求停：请求对准这个 runId，或对准它所在的 --every 循环
+function stopRequested(HOME, task, runId) {
+  const s = readJson(stopFile(HOME, task));
+  if (!s) return false;
+  return (s.runId != null && s.runId === runId)
+    || (s.loopPid != null && String(s.loopPid) === process.env.AGENTFLOW_LOOP_PID);
+}
+
+async function stopTask(task, now) {
+  if (!task || !NAME.test(task) || RESERVED.has(task)) fail('usage: miworkflow stop <task> [--now]');
+  const home = useHome();
+  const lock = readJson(lockFile(home, task));
+  const run = lock && pidAlive(lock.pid) ? lock : null;
+  const loopRec = readJson(loopFile(home, task));
+  const loop = loopRec && pidAlive(loopRec.pid) ? loopRec : null;
+  if (!run && !loop) {
+    rmSync(stopFile(home, task), { force: true }); // 没人认领的旧请求
+    console.log(`${task} 没在跑`);
+    return;
+  }
+
+  if (!now) {
+    writeJson(stopFile(home, task), { runId: run?.runId ?? null, loopPid: loop?.pid ?? null, at: new Date().toISOString() });
+    if (run) console.log(`已请求停止：${task} 做完手头这一单就停（pid ${run.pid}，run ${run.runId}）`);
+    if (loop) console.log(`--every 循环（pid ${loop.pid}）${run ? '这一轮跑完' : '马上'}退出，不再起下一轮`);
+    console.log(`要立刻强关：miworkflow stop ${task} --now`);
+    return;
+  }
+
+  for (const p of [loop?.pid, run?.pid]) if (p) killTree(p);
+  const left = await waitDead([loop?.pid, run?.pid].filter(Boolean));
+  if (left.length) fail(`没杀掉：pid ${left.join('、')}（可能没权限），锁和记录都没动`);
+  if (run) closeRun(home, task, run.runId);
+  if (run) dropIfOwner(lockFile(home, task), run.pid);
+  if (loop) dropIfOwner(loopFile(home, task), loop.pid);
+  rmSync(stopFile(home, task), { force: true });
+  if (loop) console.log(`已强关 ${task} 的 --every 循环（pid ${loop.pid}）`);
+  if (run) {
+    console.log(`已强关 ${task}（pid ${run.pid}，run ${run.runId}）`);
+    console.log('停在半路的步骤没有收尾：工作区可能留着改动、外部状态（比如工单标签）可能还是进行中，看这次运行的记录再收拾');
+  }
+}
+
+// 杀整棵进程树：Agent CLI 和它起的命令都在 run 下面。Windows 用 taskkill /T；其它平台用 ps 找出全部子孙
+function killTree(pid) {
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    } catch { /* 已经没了 */ }
+    return;
+  }
+  const kids = new Map();
+  try {
+    for (const line of execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' }).split('\n')) {
+      const [p, pp] = line.trim().split(/\s+/).map(Number);
+      if (p) kids.set(pp, [...(kids.get(pp) ?? []), p]);
+    }
+  } catch { /* 没有 ps：只杀根 */ }
+  const all = [pid];
+  for (let i = 0; i < all.length; i++) all.push(...(kids.get(all[i]) ?? []));
+  for (const p of all) {
+    try {
+      process.kill(p, 'SIGKILL');
+    } catch { /* 已经没了 */ }
+  }
+}
+
+async function waitDead(pids, ms = 5000) {
+  const until = Date.now() + ms;
+  while (pids.some(pidAlive) && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+  return pids.filter(pidAlive);
+}
+
+// 被杀的 run 自己写不了终态：照 core.log 的形状补一条 failed（进程已死，seq 接着日志里最大的往下排）
+function closeRun(HOME, task, runId) {
+  const file = path.join(HOME, 'logs', `${runId}.jsonl`);
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return; // 还没写第一行就被杀了
+  }
+  const rows = text.split('\n').filter(Boolean).map((l) => {
+    try { return JSON.parse(l); } catch { return {}; }
+  });
+  if (rows.some((r) => r.primitive === 'run' && r.status !== 'running')) return;
+  const title = rows.find((r) => r.primitive === 'run')?.title ?? task;
+  const row = {
+    runId,
+    task,
+    seq: Math.max(0, ...rows.map((r) => Number(r.seq) || 0)) + 1,
+    at: new Date().toISOString(),
+    gitSha: rows.findLast((r) => 'gitSha' in r)?.gitSha ?? null,
+    primitive: 'run',
+    status: 'failed',
+    title,
+    error: '被强行停止（miworkflow stop --now）',
+    say: `■ ${title} 被强行停止`
+  };
+  // 被杀时最后一行可能只写了半截：另起一行，别粘上去
+  appendFileSync(file, `${text.endsWith('\n') ? '' : '\n'}${JSON.stringify(row)}\n`);
 }
 
 // ── 跑任务 ────────────────────────────────────────────────────────────────
@@ -454,6 +614,10 @@ async function runTask(task, args = {}) {
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
 
+  // 停止请求（miworkflow stop <task>）：任务在自己定的边界查它，比如做完一张单再挑下一张之前
+  const runId = process.env.AGENTFLOW_RUN_ID;
+  const stopping = () => stopRequested(HOME, task, runId);
+
   let title = task;
   try {
     const mod = await import(pathToFileURL(taskFile).href);
@@ -461,8 +625,8 @@ async function runTask(task, args = {}) {
     log({ primitive: 'run', status: 'running', title, inputs: args, say: `▶ ${title}` });
     console.log(title); // 人类可见：这次运行在干什么（§13.3）
 
-    await mod.default({ script, agent, human, args });
-    log({ primitive: 'run', status: 'ok', title, say: `✔ ${title} 完成` });
+    await mod.default({ script, agent, human, args, stopping });
+    log({ primitive: 'run', status: 'ok', title, say: `✔ ${title} 完成${stopping() ? '（收到停止请求，停下了）' : ''}` });
   } catch (err) {
     const message = String(err?.message ?? err);
     log({ primitive: 'run', status: 'failed', title, error: message, say: `✖ ${title} 失败：${message}` });
@@ -471,6 +635,8 @@ async function runTask(task, args = {}) {
   } finally {
     process.removeListener('SIGINT', onSignal);
     process.removeListener('SIGTERM', onSignal);
+    // 对准这次 run 的请求到此用完；对准循环的留给循环收
+    if (readJson(stopFile(HOME, task))?.runId === runId && !process.env.AGENTFLOW_LOOP_PID) rmSync(stopFile(HOME, task), { force: true });
     releaseLock(lock);
   }
 }

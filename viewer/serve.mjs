@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // viewer/serve.mjs — 外部工具，不属于内核（§16）
-// 只做这几件事：列 run、按字节切片吐日志、收决定、列任务、起任务。零依赖。
+// 只做这几件事：列 run、按字节切片吐日志、收决定、列任务、起任务、停任务。零依赖。
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync
@@ -183,6 +183,18 @@ function startRun(task, argv) {
   return runId;
 }
 
+// 停任务交给 run.mjs stop，跟终端里 miworkflow stop 是同一份逻辑；回它打印的话给页面
+function stopTask(task, now) {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [RUN, 'stop', task, ...(now ? ['--now'] : [])], {
+      cwd: HOME,
+      env: { ...process.env, AGENTFLOW_HOME: HOME },
+      timeout: 30_000,
+      windowsHide: true
+    }, (err, stdout, stderr) => resolve({ ok: !err, message: `${stdout}${stderr}`.trim() }));
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
   const route = decodeURIComponent(url.pathname);
@@ -247,6 +259,16 @@ const server = http.createServer(async (req, res) => {
       const argv = toArgv(args);
       if (!argv) return json(res, { error: 'bad_args' }, 400);
       return json(res, { runId: startRun(task, argv) });
+    }
+
+    // 强关会丢掉半路的活，跟起任务一样默认只收本机
+    if (req.method === 'POST' && route === '/api/stop') {
+      if (!REMOTE_RUN && !isLocal(req.socket.remoteAddress)) {
+        return json(res, { error: 'local_only' }, 403);
+      }
+      const { task, now } = await readBody(req);
+      if (!SAFE_TASK.test(String(task))) return json(res, { error: 'no_such_task' }, 400);
+      return json(res, await stopTask(String(task), now === true));
     }
 
     if (req.method === 'GET' && route === '/health') return json(res, { ok: true });

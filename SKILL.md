@@ -58,6 +58,9 @@ export default async function ({ script, agent, human, args }) {
 - 项目根目录自己算：`fileURLToPath(new URL('../..', import.meta.url))`。
 - 任务之间共用的常量放 `.workflow/` 下的普通模块，相对 import（如 `../config.mjs`）。
 - 任务里抛异常 = 这次运行失败，会记进日志。
+- 逐个处理一批东西（工单、文件、讨论单）的任务，入参里取 `stopping`，在「做完一个、挑下一个之前」查 `stopping()`，
+  是 `true` 就正常收尾返回——人敲 `miworkflow stop <task>`（或在 viewer 点「做完这单停」）时就停在这里。
+  测任务时不传它也要能跑：写成 `stopping = () => false`。
 
 ## 三个原语的契约
 
@@ -113,7 +116,8 @@ await task({
 
 ```bash
 miworkflow <task> [--key value]    # 项目里任意子目录都行，往上找 .workflow/
-miworkflow view                    # 网页：点运行、看每一步、审批
+miworkflow stop <task> [--now]     # 停：做完手头这一单再停；--now 立刻强关
+miworkflow view                    # 网页：点运行、看每一步、审批、停
 ```
 
 不要做：改内核、给任务写 `import 'miworkflow'`、在任务里手写 `say`、让 Agent 返回待执行的命令列表。

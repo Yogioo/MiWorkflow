@@ -473,6 +473,7 @@ test('new：没有 .workflow/ → 报错提示 init；保留字不能当任务�
   makeHome(dir, {});
   assert.equal(cli(['new', 'view'], { cwd: dir }).code, 1);
   assert.equal(cli(['new', 'skill'], { cwd: dir }).code, 1);
+  assert.equal(cli(['new', 'stop'], { cwd: dir }).code, 1);
   assert.equal(cli(['new', '../evil'], { cwd: dir }).code, 1);
 });
 
@@ -533,6 +534,177 @@ test('--every：某一轮失败记下退出码，循环照常继续', async () =
   const r = await loopUntil(['tick', '--every=1s', '--fail'], home, 2);
   assert.ok(r.rounds.length >= 2, r.out);
   assert.match(r.out, /退出码 1/);
+});
+
+// ── stop：做完手头这一单再停 / --now 强关 ─────────────────────────────────
+// 后台起一个真 run（或 --every 循环），等它就位，再用 miworkflow stop 停它
+function startBg(argv, home) {
+  const base = { ...process.env };
+  for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES', 'AGENTFLOW_DRY_RUN', 'AGENTFLOW_LOOP_PID']) delete base[k];
+  const child = spawn(process.execPath, [path.join(ROOT, 'run.mjs'), ...argv], { env: { ...base, AGENTFLOW_HOME: home } });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', (d) => { out += d; });
+  const exited = new Promise((r) => child.once('exit', (code) => r(code)));
+  return { child, exited, out: () => out };
+}
+
+async function waitFor(check, ms = 15_000) {
+  const until = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > until) throw new Error('等太久了');
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+const runRows = (home, runId) => readFileSync(path.join(home, 'logs', `${runId}.jsonl`), 'utf8').split('\n').filter(Boolean).map(JSON.parse);
+
+// 每一「单」写一行 ticks，单与单之间查 stopping()
+const SLOW_TASK = [
+  "import { appendFileSync } from 'node:fs';",
+  "export const title = '慢慢做';",
+  'export default async function ({ stopping }) {',
+  '  for (let i = 0; i < 400; i++) {',
+  '    if (stopping()) return;',
+  "    appendFileSync(new URL('../ticks.txt', import.meta.url), `${i}\\n`);",
+  '    await new Promise((r) => setTimeout(r, 50));',
+  '  }',
+  '}',
+  ''
+].join('\n');
+
+// 起一个睡死的孙进程（模拟 Agent CLI），pid 写进 grandchild.txt，自己也一直等
+const HANG_TASK = [
+  "import { spawn } from 'node:child_process';",
+  "import { writeFileSync } from 'node:fs';",
+  "export const title = '卡住';",
+  'export default async function () {',
+  "  const g = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+  "  writeFileSync(new URL('../grandchild.txt', import.meta.url), String(g.pid));",
+  '  await new Promise(() => {});',
+  '}',
+  ''
+].join('\n');
+
+const ticks = (home) => { try { return readFileSync(path.join(home, 'ticks.txt'), 'utf8').split('\n').filter(Boolean).length; } catch { return 0; } };
+
+test('stop：没在跑 → 说一声，退出码 0；顺手清掉没人认领的旧请求', () => {
+  const home = makeHome(tmpDir(), { slow: SLOW_TASK });
+  mkdirSync(path.join(home, 'logs'), { recursive: true });
+  writeFileSync(path.join(home, 'logs', 'slow.stop'), JSON.stringify({ runId: 'old', loopPid: null }));
+  const r = cli(['stop', 'slow'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /slow 没在跑/);
+  assert.ok(!existsSync(path.join(home, 'logs', 'slow.stop')));
+  assert.equal(cli(['stop'], { env: { AGENTFLOW_HOME: home } }).code, 1, '没给任务名报用法');
+});
+
+test('stop：任务查 stopping() 停在自己的边界，正常结束；记录写明收到停止请求，锁和请求都清掉', async () => {
+  const home = makeHome(tmpDir(), { slow: SLOW_TASK });
+  const bg = startBg(['slow'], home);
+  await waitFor(() => ticks(home) >= 2);
+  const { runId } = readLock(home, 'slow');
+
+  const r = cli(['stop', 'slow'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /已请求停止：slow 做完手头这一单就停/);
+  assert.equal(await bg.exited, 0, bg.out());
+  assert.ok(ticks(home) < 400, '没跑完全部就停了');
+  const last = runRows(home, runId).at(-1);
+  assert.equal(last.status, 'ok');
+  assert.match(last.say, /收到停止请求/);
+  assert.ok(!existsSync(lockPath(home, 'slow')));
+  assert.ok(!existsSync(path.join(home, 'logs', 'slow.stop')));
+});
+
+test('stop：过期的请求对不上新 run，不会误停', () => {
+  const home = makeHome(tmpDir(), {
+    peek: "import { writeFileSync } from 'node:fs';\nexport default async function ({ stopping }) { writeFileSync(new URL('../out.json', import.meta.url), JSON.stringify({ stopping: stopping() })); }\n"
+  });
+  mkdirSync(path.join(home, 'logs'), { recursive: true });
+  writeFileSync(path.join(home, 'logs', 'peek.stop'), JSON.stringify({ runId: 'old-run', loopPid: 12345 }));
+  const r = cli(['peek'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'new-run' } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(readOut(home), { stopping: false });
+});
+
+test('stop --now：杀掉 run 和它的子孙进程，补一条 failed 终态，删锁', async () => {
+  const home = makeHome(tmpDir(), { hang: HANG_TASK });
+  const bg = startBg(['hang'], home);
+  const gFile = path.join(home, 'grandchild.txt');
+  await waitFor(() => existsSync(gFile) && readFileSync(gFile, 'utf8').length > 0);
+  const grandchild = Number(readFileSync(gFile, 'utf8'));
+  const { pid, runId } = readLock(home, 'hang');
+
+  const r = cli(['stop', 'hang', '--now'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /已强关 hang/);
+  await bg.exited;
+  assert.ok(!alive(pid), 'run 进程没了');
+  await waitFor(() => !alive(grandchild), 5000);
+  assert.ok(!existsSync(lockPath(home, 'hang')), '锁删掉');
+  const rows = runRows(home, runId);
+  const last = rows.at(-1);
+  assert.equal(last.primitive, 'run');
+  assert.equal(last.status, 'failed');
+  assert.match(last.say, /被强行停止/);
+  assert.equal(last.seq, rows.at(-2).seq + 1, 'seq 接着往下排');
+  assert.equal(last.title, '卡住');
+});
+
+test('stop：--every 循环跑完这一轮就退出，不再起下一轮；等下一轮时收到请求也马上退', async () => {
+  const home = makeHome(tmpDir(), { tick: ROUND_TASK });
+  const bg = startBg(['tick', '--every', '1h'], home);
+  await waitFor(() => readRounds(home).length >= 1 && !existsSync(lockPath(home, 'tick')));
+  assert.ok(existsSync(path.join(home, 'logs', 'tick.loop')), '循环记下了 pid');
+
+  const r = cli(['stop', 'tick'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /--every 循环（pid \d+）马上退出/);
+  assert.equal(await bg.exited, 0, bg.out());
+  assert.match(bg.out(), /收到停止请求，跑了 1 轮，退出/);
+  assert.equal(readRounds(home).length, 1);
+  assert.ok(!existsSync(path.join(home, 'logs', 'tick.loop')));
+  assert.ok(!existsSync(path.join(home, 'logs', 'tick.stop')));
+});
+
+test('stop：--every 循环的那一轮在跑时，run 用 stopping() 停下，循环也跟着退出', async () => {
+  const home = makeHome(tmpDir(), { slow: SLOW_TASK });
+  const bg = startBg(['slow', '--every', '1s'], home);
+  await waitFor(() => ticks(home) >= 2);
+
+  const r = cli(['stop', 'slow'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /这一轮跑完退出/);
+  assert.equal(await bg.exited, 0, bg.out());
+  assert.match(bg.out(), /跑了 1 轮/);
+  assert.ok(ticks(home) < 400);
+  assert.ok(!existsSync(path.join(home, 'logs', 'slow.stop')));
+});
+
+test('stop --now：--every 循环连同正在跑的那一轮一起杀掉', async () => {
+  const home = makeHome(tmpDir(), { hang: HANG_TASK });
+  const bg = startBg(['hang', '--every', '1s'], home);
+  await waitFor(() => existsSync(lockPath(home, 'hang')) && existsSync(path.join(home, 'logs', 'hang.loop')));
+  const loopPid = JSON.parse(readFileSync(path.join(home, 'logs', 'hang.loop'), 'utf8')).pid;
+
+  const r = cli(['stop', 'hang', '--now'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  await bg.exited;
+  assert.ok(!alive(loopPid));
+  assert.ok(!existsSync(lockPath(home, 'hang')));
+  assert.ok(!existsSync(path.join(home, 'logs', 'hang.loop')));
+});
+
+test('--every：同一任务已有循环在跑 → 不起第二个', () => {
+  const home = makeHome(tmpDir(), { tick: ROUND_TASK });
+  mkdirSync(path.join(home, 'logs'), { recursive: true });
+  writeFileSync(path.join(home, 'logs', 'tick.loop'), JSON.stringify({ pid: process.pid }));
+  const r = cli(['tick', '--every', '1s'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /tick 已有循环在跑/);
+  assert.deepEqual(readRounds(home), []);
 });
 
 test('--every：缺值 / 格式不对 → 报错退出，不起任何 run', () => {

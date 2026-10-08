@@ -14,6 +14,7 @@
 //   miworkflow dev --issue 42         只做工单 42（不看入队和依赖，人点名就跑）
 //   miworkflow dev --confirm          每次提交（+ 推送 + 标记完成）前 human 确认
 //   miworkflow dev --dry-run          只报会做哪些工单、哪些被挡住，不改工单、不改 git
+//   miworkflow stop dev               手头这张单做完（提交、标记）就停，不再挑下一张；--now 立刻强关、半成品留给人
 //
 // 提交权在工作流：Agent 只改代码、在回话 data 里给 type / summary，审查、验证（和 --confirm）之后由这里统一提交，
 // 一张工单一笔，提交信息按工单源的 commitMessage 拼（Agent 自己提交了会被 git_commit 压成这一笔）。
@@ -31,7 +32,7 @@ export const title = '开发：认领工单 → 开发 → 审查 → 验证 →
 // .workflow/ 的上一级 = 项目根
 const PROJECT = fileURLToPath(new URL('../..', import.meta.url));
 
-export default async function ({ script: rawScript, agent, human, args }) {
+export default async function ({ script: rawScript, agent, human, args, stopping = () => false }) {
   // 工单脚本内部对工单系统故障退避重试（一次 ticket_mark 可能多条命令各自等），缺省 120 秒不够
   const script = (name, input, opts) =>
     rawScript(name, input, name.startsWith('ticket_') ? { timeoutMs: 900_000, ...opts } : opts);
@@ -76,6 +77,7 @@ export default async function ({ script: rawScript, agent, human, args }) {
     if (done >= max) { stop = `到上限（--max ${args.max}）`; break; }
     if (failures >= maxFailures) { stop = `连续失败 ${failures} 次`; break; }
     if (only && done + failures > 0) break;
+    if (stopping()) { stop = '收到停止请求（miworkflow stop dev）'; break; }
 
     const t = await pick(only, ctx);
     if (t?.down) { infraStopped = true; stop = t.down; break; }

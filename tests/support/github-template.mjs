@@ -91,7 +91,7 @@ writeFileSync(FAKE_GH, [
 ].join('\n'));
 
 // 假的 Agent：按 FAKE_AGENT_PLAN 数组逐次回话；step.file 时往 inputs.cwd 写文件；step.commit 时自己提交（模拟「Agent 先提交了」）；
-// step.crash 时什么都不吐直接非 0 退出（模拟进程被杀）
+// step.crash 时什么都不吐直接非 0 退出（模拟进程被杀）；step.miworkflow 时跑一条 miworkflow 命令（模拟人在 Agent 干活时敲 miworkflow stop）
 const FAKE_AGENT = path.join(TMP, 'fake-agent.mjs');
 writeFileSync(FAKE_AGENT, [
   "import { readFileSync, writeFileSync } from 'node:fs';",
@@ -106,6 +106,7 @@ writeFileSync(FAKE_AGENT, [
   'writeFileSync(planFile + ".seen.jsonl", JSON.stringify({ goal: pkg.goal, session: pkg.inputs?.session, issue: pkg.inputs?.issue, ticket: pkg.inputs?.ticket, reply: pkg.inputs?.reply, budget: pkg.budget }) + "\\n", { flag: "a" });',
   'writeFileSync(planFile, JSON.stringify(plan));',
   'if (step.crash) process.exit(1);',
+  `if (step.miworkflow) spawnSync(process.execPath, [${JSON.stringify(path.join(ROOT, 'run.mjs'))}, ...step.miworkflow], { stdio: ['ignore', 2, 2] });`,
   'if (step.file) writeFileSync(path.join(pkg.inputs.cwd, step.file.name), step.file.content);',
   'if (step.reply) writeFileSync(pkg.inputs.reply, step.reply);',
   'if (step.ghComment) {',

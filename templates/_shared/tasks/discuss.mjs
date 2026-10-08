@@ -31,6 +31,7 @@
 // 用法：
 //   miworkflow discuss            逐张处理轮到 AI 的讨论单
 //   miworkflow discuss --max 3    最多处理 3 张
+//   miworkflow stop discuss       手头这张讨论单处理完就停
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -58,7 +59,7 @@ const CONTRACT = {
 // 节点短名（§13.1、§13.6）：提示词太长，不当节点名，viewer 里显示这几个
 const LABELS = { grilling: '讨论Agent', spec: '规格Agent', tickets: '拆单Agent' };
 
-export default async function ({ script, agent, args }) {
+export default async function ({ script, agent, args, stopping = () => false }) {
   const max = args.max === undefined ? Infinity : Number(args.max);
   if (max !== Infinity && !(Number.isInteger(max) && max >= 1)) throw new Error(`--max 要正整数：${args.max}`);
   const r = await script('discuss_list', { enter: ENTER, grilling: GRILLING, spec: SPEC });
@@ -67,6 +68,7 @@ export default async function ({ script, agent, args }) {
   let handled = 0;
   for (const item of r.data.items) {
     if (handled >= max) break;
+    if (stopping()) break;
     const v = await script('discuss_view', { id: item.id });
     if (v.status !== 'ok') { console.error(`✖ 读 ${item.ref} 失败：${v.error}`); continue; }
     const issue = v.data;

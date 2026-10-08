@@ -81,7 +81,7 @@ MiWorkflow/
 - 进化的 commit 落在业务仓库，跟业务代码一起回滚（§14）。
 - **内核仓库里没有 `tasks/`、`scripts/`**，测试断言它（§16）。
 
-一个命令，五个用法（`init`、`new`、`view`、`skill` 是保留字，其余的词都当任务名）；另有两个内核开关，在任务分派之前处理：
+一个命令，六个用法（`init`、`new`、`view`、`skill`、`stop` 是保留字，其余的词都当任务名）；另有两个内核开关，在任务分派之前处理：
 
 | 命令 | 做什么 |
 |---|---|
@@ -91,7 +91,8 @@ MiWorkflow/
 | `miworkflow init --upgrade [--template <名字>]` | 把模板新版铺回已有的 `.workflow/`（§15）：模板里的文件覆盖、缺的补上；`config.mjs` / `source.mjs` 以模板新版为底、保留项目里一行写完的 `export const`；项目自己的文件、`AGENTS.md`、`.gitignore` 不碰；改动过的旧文件备份到 `logs/upgrade-<时间>/`。不给 `--template` 就认 `.workflow/` 里文件齐全的那个模板 |
 | `miworkflow new <name>` | 建 `tasks/<name>.mjs` 骨架（`title` + 传参的 `default`），不覆盖已有；没有 `.workflow/` 就报错，提示先 `init` |
 | `miworkflow <task> [--key value]` | 跑任务 |
-| `miworkflow <task> --every <间隔> [--key value]` | 常驻循环跑：间隔 `30s` / `5m` / `1h`，必须显式给值，缺值或格式不对报错退出、不起 run。外层循环不是 run（不写日志、不拿锁）；每一轮起一个子进程当全新的 run（新 runId，不继承 `AGENTFLOW_RUN_ID`），其余参数原样传；间隔从上一轮结束算，不会自己重叠；某轮非 0 退出只在终端记下退出码，循环继续；另一个终端在跑同一任务时由按任务锁挡住，该轮跳过。Ctrl+C 不特殊处理，连同正在跑的 run 一起结束。纯 Node，三平台一致；一个命令一个任务，多个任务开多个终端；viewer 的「运行」不提供 |
+| `miworkflow <task> --every <间隔> [--key value]` | 常驻循环跑：间隔 `30s` / `5m` / `1h`，必须显式给值，缺值或格式不对报错退出、不起 run。外层循环不是 run（不写日志、不拿锁）；每一轮起一个子进程当全新的 run（新 runId，不继承 `AGENTFLOW_RUN_ID`），其余参数原样传；间隔从上一轮结束算，不会自己重叠；某轮非 0 退出只在终端记下退出码，循环继续；另一个终端在跑同一任务时由按任务锁挡住，该轮跳过。Ctrl+C 不特殊处理（只顺手删掉循环标记），连同正在跑的 run 一起结束；要等手头这一单做完再退，用 `miworkflow stop <task>`。纯 Node，三平台一致；一个命令一个任务，多个任务开多个终端；viewer 的「运行」不提供 |
+| `miworkflow stop <task> [--now]` | 停任务（§9）：缺省**做完手头这一单再停**——任务用 `stopping()` 在自己定的边界停下，不查的任务把这次跑完，`--every` 循环不再起下一轮；`--now` **立刻强关**——杀整棵进程树（循环、run、Agent CLI 和它起的命令），替被杀的 run 补一条 `failed` 终态、删锁，停在半路的改动与外部状态原样留给人收拾。没在跑就说一声、退出 0 |
 | `miworkflow view` | 用找到的 HOME 起 viewer（§13.6） |
 | `miworkflow skill` | 打印内核的 `SKILL.md`（不需要 `.workflow/`） |
 
@@ -127,10 +128,13 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 对任务而言只有这三个。另有 `log()` 供 `run.mjs` 写 run 级记录（run 开始 / 结束）。
 另导出常量 `HOME`、`LOGS_DIR`（HOME 与它的 `logs/` 的绝对路径），只给需要定位目录的调用方用，不属于任务接口。
 
-**原语和参数都传进来，不 import**：`run.mjs` 调 `mod.default({ script, agent, human, args })`。
+**原语和参数都传进来，不 import**：`run.mjs` 调 `mod.default({ script, agent, human, args, stopping })`。
 `args` 来自命令行：`miworkflow <task> --issue 12 --max=5 --confirm` → `{ issue: '12', max: '5', confirm: true }`。
 值一律是字符串，只写 `--flag` 就是 `true`，类型由任务自己转；`--yes`、`--dry-run`、`--every` 归内核，不进 `args`。
 这样业务项目里不需要 `package.json`，同一次运行也天然只有一份 `core.mjs`（`seq` 在模块里）。
+
+`stopping()` 不是原语：返回这次运行有没有被 `miworkflow stop <task>` 要求停下（§9）。逐个处理一批东西的任务（`dev` 逐张工单）
+在「做完一个、挑下一个之前」查它，查到就正常收尾返回；不查也行，那就跑完这一次。
 
 - 任务之间共用的东西仍可相对 import（如 `../config.mjs`）。
 - 项目根目录由任务自己算（`fileURLToPath(new URL('../..', import.meta.url))`），不另外注入。
@@ -378,7 +382,18 @@ async function runTask(task) {
 `runTask` 起跑前按 task 建锁：`logs/<task>.lock`，内容 `{ pid, runId, at }`（`logs/` 不进 Git）。已在跑就打印
 `<task> 已在跑（pid …，run …）` 并退出码 `0`——有意跳过，不是出错，不执行任务体。锁里的 pid 已不在（被杀、断电、
 Ctrl-C）按陈锁接管；跨平台判活用 `process.kill(pid, 0)` + try/catch。正常结束、任务抛异常、进程收到 `SIGINT`/`SIGTERM`
-都删锁。只有「跑任务」加锁，`init` / `new` / `view` / `skill` 不加；不同 task 各锁各的。
+都删锁。只有「跑任务」加锁，`init` / `new` / `view` / `skill` / `stop` 不加；不同 task 各锁各的。
+
+**停止**（`miworkflow stop <task> [--now]`，viewer 上同一套按钮）按任务找目标：run 看任务锁，`--every` 外层循环另在
+`logs/<task>.loop` 记 `{ pid, at }`（同一任务只留一个循环，已有就不起第二个）。都不在就打印「没在跑」。
+
+- **缺省：做完手头这一单再停。** 写停止请求 `logs/<task>.stop` = `{ runId, loopPid, at }`（先写临时文件再改名），写明对准哪个 run、哪个循环；
+  过期的请求对不上任何新 run，不会误停。run 的 `stopping()` 认「对准我的 runId」或「对准我所在的循环」（循环把自己的 pid 经
+  `AGENTFLOW_LOOP_PID` 交给每一轮）；任务正常返回时 run 记 `ok`，`say` 带「收到停止请求，停下了」。循环每轮前后、等下一轮期间都查请求，
+  对上了就不再起下一轮、删请求和标记、退出 0。单独的 run 结束时删对准自己的请求，循环里的 run 留给循环删。
+- **`--now`：立刻强关。** 杀整棵进程树——Windows `taskkill /T /F`，其它平台用 `ps` 找出全部子孙再 `SIGKILL`（Agent CLI 常在自己的进程组里，
+  杀进程组不够）。等进程真没了，再替被杀的 run 补一条终态（`primitive:'run'`、`status:'failed'`、`error` 写明被强行停止，`seq` 接着日志里最大的往下排，
+  最后一行被杀成半截就另起一行），删锁、循环标记和请求。半路的步骤**不收尾**：工作区的改动、工单标签这类外部状态原样留着，由人看记录收拾。
 
 这就是内核：
 
@@ -572,7 +587,7 @@ JSONL 最小字段：
 - 一次运行一个 `runId`，三个原语共用，可按运行复盘
 - `seq` 在本次运行内单调递增，是稳定 key；`ref` 指向被解决的那条进行中记录（`human` 的 `pending` / `agent` 的 `running`，§13.1）
 - `primitive: 'run'` 的两条记录（开始 / 结束）由 `run.mjs` 写，`title` 只出现在这里
-- 任务锁落在 `logs/<task>.lock`（占用标记，不是日志、不进 Git），约定见 §9
+- 任务锁落在 `logs/<task>.lock`（占用标记，不是日志、不进 Git），约定见 §9；同类的还有循环标记 `logs/<task>.loop` 与停止请求 `logs/<task>.stop`
 - 不引入错误指纹
 - 不做自动聚类
 - 不做 tokens 统计
@@ -664,11 +679,11 @@ human() 写一条 status:'pending' 记录，阻塞
 `viewer/` 是仓库里的外部工具，不是内核（§16）：
 
 ```text
-viewer/serve.mjs    零依赖静态服务 + 六个只读接口 + 两个写接口
-viewer/index.html   单文件视图：任务列表与运行按钮 / 可按任务筛的 run 列表 / 可折叠 trace 时间线（展开分输入·输出·执行三段）/ 待决定卡片
+viewer/serve.mjs    零依赖静态服务 + 六个只读接口 + 三个写接口
+viewer/index.html   单文件视图：任务列表与运行按钮 / 可按任务筛的 run 列表 / 在跑的 run 上的停止按钮 / 可折叠 trace 时间线（展开分输入·输出·执行三段）/ 待决定卡片
 ```
 
-接口只有八个：
+接口只有九个：
 
 | 接口 | 作用 |
 |---|---|
@@ -678,6 +693,7 @@ viewer/index.html   单文件视图：任务列表与运行按钮 / 可按任务
 | `GET /api/run/<id>?from=N` | 从第 N 字节起吐日志，只吐完整行；日志还没生成就吐空 |
 | `GET /api/run/<id>/events/<n>?from=N` | Agent 某一步的过程事件；带 `from` 按字节增量吐 `{ next, items }`（半行 / 文件没建都稳），不带 `from` 吐全量数组（§10.1） |
 | `POST /api/decide` | 写决定文件（§13.5） |
+| `POST /api/stop` | `{ task, now? }` 起 `run.mjs stop <task> [--now]`，回 `{ ok, message }`（message 是它打印的话）；页面在跑的 run 上给「做完这单停 / 立刻强关」，强关先确认（§9） |
 | `GET /health` | 存活探针，给反代 / 脚本用 |
 | `GET /` | 视图页 |
 
@@ -696,8 +712,8 @@ viewer/index.html   单文件视图：任务列表与运行按钮 / 可按任务
   `run` 的输入是任务名 + `inputs`；终态行（带 `ref`）的输入 / 过程从它指回的进行中记录上取。
   `agent` 行的节点名取 `label`（任务给的短名，如「开发Agent」），提示词不当节点名、只在展开后的「输入」里看。
   头部一个「默认展开」勾选框（存 `localStorage`，刷新仍生效）。没手动点过的行跟随全局默认，手动点过的行尊重手动状态。
-- **`POST /api/run` 默认只收本机请求。** viewer 默认监听 `0.0.0.0`，局域网的人只能看和审批；
-  能起任务就等于能起全权限 Agent，要放开得显式设 `MIWORKFLOW_REMOTE_RUN=1`。
+- **`POST /api/run`、`POST /api/stop` 默认只收本机请求。** viewer 默认监听 `0.0.0.0`，局域网的人只能看和审批；
+  能起任务就等于能起全权限 Agent，强关会丢掉半路的活，要放开得显式设 `MIWORKFLOW_REMOTE_RUN=1`。
 
 启动：`miworkflow view`（用找到的 HOME）；或 `AGENTFLOW_HOME=<HOME> node viewer/serve.mjs`。`HOST=0.0.0.0` 即内网可访。
 
