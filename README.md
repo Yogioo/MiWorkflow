@@ -166,6 +166,11 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
 - spec 阶段回复 `/tickets` → AI 按 `.workflow/prompts/tickets.md` 交回**开发单结构**（`data.tickets`），
   **建单 / 贴标签 / 写依赖由脚本做**（Agent 不碰工单系统）；通过就写清单、阶段改为 `discuss:ticketed`，此后不再响应
 - 追问的 Agent 由 `source.mjs` 的 `DISCUSS` 指定
+- **常驻用 `miworkflow discuss --every 30s`，它会省着查**（工单系统有调用额度，TAPD 个人令牌只有 2000 次 / 24 小时）：
+  下次查的间隔 = 距上次有动静（人回复、AI 发言）的时间 ÷ 4，最短是 `--every` 给的间隔，最长 `config.mjs` 的 `DISCUSS_IDLE_MAX_SEC`（缺省 10 分钟）；
+  没到点的那一轮直接结束、不碰工单系统；列单失败（如额度用完）按最长间隔退开。TAPD 还做了增量：每次查只花两次请求（列单 + 全项目最新评论），
+  只读有新的人的评论或需求改过的单子（改旧评论不算）。单跑一次 `miworkflow discuss` 不受影响，照旧每张都看。
+  记账在 `.workflow/logs/discuss.pace.json`，删掉它就从头来
 
 两个工单源都实现了，流程与提示词共用，差异全在 `scripts/` 里。TAPD（`--template tapd`）跟 GitHub 不一样的地方：
 
@@ -178,7 +183,7 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
 
 GitHub 这边：spec 写进正文末尾的机器区域，标记是评论末尾的 HTML 注释（人看不见），开发单是普通 issue，依赖写在正文的 `## Blocked by`，优先级原样贴 `P0`–`P4` 标签。
 
-改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `REVIEW` / `VERIFY` / `ROUNDS` / `PUSH`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY`）；
+改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `REVIEW` / `VERIFY` / `ROUNDS` / `PUSH` / `DISCUSS_IDLE_MAX_SEC`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY`）；
 开发 / 审查 / 验证修正的提示词在 `.workflow/prompts/dev.md` / `review.md` / `fix.md`（模板文件，升级会覆盖）；
 项目自己的要求（比如回帖稿按什么角度写）写进 `.workflow/prompts/local/dev.md` / `review.md` / `fix.md`，各接到对应 Agent 的提示词里，升级不碰。
 

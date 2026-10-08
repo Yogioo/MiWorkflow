@@ -38,3 +38,8 @@ export const AGENT_IDLE_SEC = 1200;
 
 // 同一张工单被强制结束（卡死、超时合并计数）第几次就不再重做，转人工（贴 afk-failed）
 export const AGENT_KILL_LIMIT = 3;
+
+// 讨论单在 --every 循环里省着查（工单系统有调用额度，TAPD 个人令牌 2000 次 / 24 小时）：
+// 下次查的间隔 = 距上次有动静（人回复、AI 发言）的时间 ÷ 4，最长这么多秒；最短就是 --every 给的间隔。
+// 刚聊完那几分钟几乎每轮都查，没人理就逐步拉长到这个上限。
+export const DISCUSS_IDLE_MAX_SEC = 600;

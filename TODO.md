@@ -499,6 +499,9 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 - **依赖**（afk-run **完全没做**，`blockedBy` 永远为空，是新活）：TAPD 原生前后置依赖，`tapd-cli` 没封装，要带令牌直接调
   `stories/get_time_relative_stories`（tapd-cli 技能「已知限制」一节有写法）。满足判据见 F2；「结束类状态」先查能否按工作流取到，别写死状态名
 - **调用配额**：个人令牌每天有上限（`with_usage=1` 看剩余）；afk-run 没处理（每次全量拉评论）。`--every` 轮询下 `ticket_ready` 先按修改时间粗筛
+  - 2026-10-08 DigitDoor 实跑撞上：`discuss --every` 约 20 秒一轮、`dev --every` 约 30 秒一轮，每轮 discuss 都把每张讨论单完整读一遍（1 + 2N 次），
+    约 4 小时用完 2000 次 / 24 小时，之后全部 429。✅ 讨论侧已做：`discuss_list` 增量（每次两次请求）+ 任务在循环里自适应间隔（÷4，最长 `DISCUSS_IDLE_MAX_SEC`）+ 额度用完不重试。
+    `dev` / `ticket_ready` 还没做：常驻时用 `--every 10m` 这一档（空转一次 1 次请求）
 - 假 `tapd-cli`：照 afk-run 测试的做法（`node fake.mjs` + 状态 JSON 文件），注入点照 `MIWORKFLOW_GH` 用 `MIWORKFLOW_TAPD`
 
 ### F4. TAPD 讨论流程（**开工**，2026-09-30；Step 0–3 已做，Step 4 文档已同步 / 真项目实测待人）
@@ -641,7 +644,9 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
   按快照取法 `get-image` 把两张评论图下载回来、魔数确认 PNG。顺带查出上面「评论读取」与「stdout 多一行」两个坑。
   （之前「332 条评论没有一条带图」是 `tapd-cli` 剥掉 HTML 造成的假象）
 - TAPD 源码关联关键字的写法（`commitMessage` 要用）——F3 已按 `--story=… --user=…` 实现，待真 TAPD 项目实测
-- 每日配额够不够 `--every 5m`——待真 TAPD 项目实测
+- 每日配额够不够 `--every 5m`——2026-10-08 实测：个人令牌 2000 次 / 24 小时，`discuss` 20 秒一轮 + `dev` 30 秒一轮约 4 小时耗尽（见 F3「调用配额」）
+- 全项目 `/comments`（不带 `entry_id`、`order=created desc`）与 `story list` 的 `modified` 字段——增量按文档实现，待真 TAPD 项目实测；
+  要是评论 ID 不随时间递增，增量会漏评论
 - TAPD「结束类状态」能否按工作流取到——F3 已按 `workflows/last_steps` / `status_map` 实现、取不到退回 `END_STATUSES`，待真 TAPD 项目实测
 
 ## G. 审查分级：简单单不起审查 Agent（2026-09-30 提出，同日拍板）

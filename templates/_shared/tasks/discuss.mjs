@@ -3,7 +3,8 @@
 // 是哪家工单系统、正文与评论长什么样、标记与 spec 存在哪，全在每个工单源的那几个脚本里（Core.md §15）。
 //
 // 规范形状（任务只认它，源负责与自家存储形态互转）：
-//   discuss_list 入 { enter, grilling, spec }，出 { items: [{ id, ref, title, labels }] }
+//   discuss_list 入 { enter, grilling, spec, cursor? }，出 { items: [{ id, ref, title, labels, changed? }], cursor? }
+//     cursor 内容归源，任务原样存、下次原样带回；changed = false 的单子这轮不读
 //   discuss_view 入 { id }，出 { id, ref, title, body, spec, labels, comments }
 //     body     = 人写的正文（Markdown，机器区域/机器评论已去掉）
 //     spec     = 当前 spec（Markdown）或 null
@@ -28,14 +29,23 @@
 //
 // 会话：按 CLI + 工单号算会话号（pi 首轮就建出可续的会话）。续不上（换机器、会话丢失、cursor 等）就重放完整正文 + 全部评论。
 //
+// 省着查（工单系统有调用额度）：只在 --every 循环里（内核给每一轮设 AGENTFLOW_LOOP_PID）生效，单跑一次照旧全量看一遍。
+//   节奏：下次查的时刻记在 logs/discuss.pace.json，间隔 = 距上次有动静的时间 ÷ 4，最长 config.mjs 的 DISCUSS_IDLE_MAX_SEC；
+//         没到点的那一轮直接结束，不碰工单系统。列单失败（如额度用完）按最长间隔退开。
+//   增量：discuss_list 交回的 cursor 原样存着，下次带上；源据此给每张单标 changed，没变的不读。
+//         源不支持增量（不交 cursor、不标 changed）就每张都读。本轮有单子没读成，cursor 不前进，下次重看。
+//
 // 用法：
-//   miworkflow discuss            逐张处理轮到 AI 的讨论单
-//   miworkflow discuss --max 3    最多处理 3 张
-//   miworkflow stop discuss       手头这张讨论单处理完就停
+//   miworkflow discuss                  逐张处理轮到 AI 的讨论单
+//   miworkflow discuss --max 3          最多处理 3 张
+//   miworkflow discuss --every 30s      常驻：最快 30 秒查一次，没动静就逐步拉长
+//   miworkflow stop discuss             手头这张讨论单处理完就停
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DISCUSS } from '../source.mjs';
+import { DISCUSS_IDLE_MAX_SEC } from '../config.mjs';
 
 export const title = '讨论单：agent-discuss → 评论区逐轮追问 → /spec 写 spec → /tickets 建开发单';
 
@@ -62,15 +72,24 @@ const LABELS = { grilling: '讨论Agent', spec: '规格Agent', tickets: '拆单A
 export default async function ({ script, agent, args, stopping = () => false }) {
   const max = args.max === undefined ? Infinity : Number(args.max);
   if (max !== Infinity && !(Number.isInteger(max) && max >= 1)) throw new Error(`--max 要正整数：${args.max}`);
-  const r = await script('discuss_list', { enter: ENTER, grilling: GRILLING, spec: SPEC });
-  if (r.status !== 'ok') throw new Error(`列讨论单失败：${r.error}`);
+  const pace = process.env.AGENTFLOW_LOOP_PID ? readPace() : null;
+  if (pace && Date.now() < pace.nextAt) {
+    console.log(`还没到点：${clock(pace.nextAt)} 再查（上次有动静：${pace.activeAt ? clock(pace.activeAt) : '无'}）`);
+    return;
+  }
+  const r = await script('discuss_list', { enter: ENTER, grilling: GRILLING, spec: SPEC, ...(pace?.cursor ? { cursor: pace.cursor } : {}) });
+  if (r.status !== 'ok') {
+    if (pace) writePace({ ...pace, nextAt: Date.now() + DISCUSS_IDLE_MAX_SEC * 1000 });
+    throw new Error(`列讨论单失败：${r.error}`);
+  }
 
   let handled = 0;
+  let complete = true;
   for (const item of r.data.items) {
-    if (handled >= max) break;
-    if (stopping()) break;
+    if (item.changed === false) continue;
+    if (handled >= max || stopping()) { complete = false; break; }
     const v = await script('discuss_view', { id: item.id });
-    if (v.status !== 'ok') { console.error(`✖ 读 ${item.ref} 失败：${v.error}`); continue; }
+    if (v.status !== 'ok') { complete = false; console.error(`✖ 读 ${item.ref} 失败：${v.error}`); continue; }
     const issue = v.data;
     const hash = humanHash(issue);
     const last = lastMark(issue);
@@ -110,8 +129,36 @@ export default async function ({ script, agent, args, stopping = () => false }) 
     if (p.status !== 'ok') console.error(`✖ ${issue.ref} 回写失败：${p.error}`);
     else console.log(`${out.ok ? '✔' : '✖'} ${issue.ref} ${out.ok ? done : `失败：${out.reason}`}`);
   }
-  console.log(`本轮结束：处理 ${handled} 张讨论单`);
+  if (pace) {
+    const now = Date.now();
+    const busy = handled > 0 || (Boolean(pace.cursor) && r.data.items.some((i) => i.changed));
+    const activeAt = busy ? now : pace.activeAt;
+    const nextAt = now + Math.min(DISCUSS_IDLE_MAX_SEC * 1000, (now - activeAt) / 4);
+    writePace({ cursor: complete ? r.data.cursor ?? null : pace.cursor, activeAt, nextAt });
+    console.log(`本轮结束：处理 ${handled} 张讨论单，${clock(nextAt)} 再查`);
+  } else {
+    console.log(`本轮结束：处理 ${handled} 张讨论单`);
+  }
 }
+
+// 省着查的记账（只在 --every 循环里用）：{ cursor, activeAt, nextAt }，时间是毫秒时间戳；文件坏了当没有
+const PACE = fileURLToPath(new URL('../logs/discuss.pace.json', import.meta.url));
+
+function readPace() {
+  try {
+    const p = JSON.parse(readFileSync(PACE, 'utf8'));
+    return { cursor: p.cursor ?? null, activeAt: Number(p.activeAt) || 0, nextAt: Number(p.nextAt) || 0 };
+  } catch {
+    return { cursor: null, activeAt: 0, nextAt: 0 };
+  }
+}
+
+function writePace(p) {
+  mkdirSync(path.dirname(PACE), { recursive: true });
+  writeFileSync(PACE, JSON.stringify(p, null, 2));
+}
+
+const clock = (ms) => new Date(ms).toLocaleTimeString('zh-CN', { hour12: false });
 
 // 拆单：Agent 只交结构（data.tickets），建单 / 贴标签 / 写依赖 / 回查都在脚本里
 async function ticketsRound(issue, last, hash, agent, script) {

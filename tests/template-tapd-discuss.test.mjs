@@ -8,7 +8,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readTapdState, startFakeOpenApi, story, tapdEnv, writeTapdState } from './support/tapd-fakes.mjs';
+import { openApiLog, readTapdState, startFakeOpenApi, story, tapdEnv, writeTapdState } from './support/tapd-fakes.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TMP = mkdtempSync(path.join(os.tmpdir(), 'miworkflow-tapd-discuss-'));
@@ -50,6 +50,60 @@ test('discuss_list：只挑贴了 agent-discuss 且阶段标为空 / grilling / 
     assert.equal(out.data.items[0].ref, `story ${D}`);
     assert.equal(out.data.items[0].title, '要追问的');
     assert.deepEqual(out.data.items[0].labels, ['agent-discuss', 'discuss:grilling']);
+  } finally { await api.close(); }
+});
+
+test('discuss_list 增量：给了 cursor，只有需求改过或有新的人的评论才标 changed（AI 带标记的不算）；每次只花两次请求', async () => {
+  const E = '1152360842001006003';
+  const f = stateFile({
+    stories: [
+      { ...story(D, { label: 'agent-discuss|discuss:grilling' }), modified: '2026-01-01 00:00:00' },
+      { ...story(E, { label: 'agent-discuss' }), modified: '2026-01-01 00:00:00' }
+    ],
+    comments: [comment(1, D, '<p>人写的</p>')]
+  });
+  const api = await startFakeOpenApi(f);
+  const calls = () => readTapdState(f).calls.length + openApiLog(f).length;
+  const list = (cursor) => runScript('discuss_list', { enter: 'agent-discuss', grilling: 'discuss:grilling', spec: 'discuss:spec', ...(cursor ? { cursor } : {}) }, withEnv(f, api)).out.data;
+  const changed = (d) => d.items.filter((i) => i.changed).map((i) => i.id);
+  try {
+    const first = list();
+    assert.deepEqual(changed(first), [D, E], '没给 cursor 全当 changed');
+    assert.equal(first.cursor.comment, '1', '起点 = 当前最大评论 ID');
+
+    let before = calls();
+    const quiet = list(first.cursor);
+    assert.deepEqual(changed(quiet), []);
+    assert.equal(calls() - before, 2, '一次 story list + 一次全项目评论');
+
+    const st = readTapdState(f);
+    st.comments.push(comment(2, D, '<p>AI 追问</p><p>[miworkflow:discuss hash=aaa seen=1 cli=cmd]</p>', 'bot-npc'));
+    st.comments.push(comment(3, E, '<p>人回复了</p>'));
+    writeTapdState(f, st);
+    const replied = list(quiet.cursor);
+    assert.deepEqual(changed(replied), [E], 'AI 自己的评论不算动静');
+    assert.equal(replied.cursor.comment, '3');
+
+    const st2 = readTapdState(f);
+    st2.stories[0].modified = '2026-01-01 00:01:00';
+    writeTapdState(f, st2);
+    assert.deepEqual(changed(list(replied.cursor)), [D], '需求改过（正文、标签）也算');
+
+    before = calls();
+    assert.deepEqual(changed(list(replied.cursor)), [D], '旧 cursor 再用一次结果一样（cursor 只由调用方推进）');
+    assert.equal(calls() - before, 2);
+  } finally { await api.close(); }
+});
+
+test('额度用完（429 request limit exceeded）：不退避重试，报工单系统暂时不可用', async () => {
+  const f = stateFile({ stories: [story(D, { label: 'agent-discuss' })], fail: { times: 5, message: 'API 错误 429: {"status":429,"info":"API request limit exceeded (2000 requests/24 hours). Please try again later."}' } });
+  const api = await startFakeOpenApi(f);
+  try {
+    const { out } = runScript('discuss_list', { enter: 'agent-discuss' }, withEnv(f, api));
+    assert.equal(out.status, 'failed');
+    assert.equal(out.data?.transient, true);
+    assert.match(out.error, /调用额度用完/);
+    assert.equal(readTapdState(f).fail.times, 4, '只调了一次，没重试');
   } finally { await api.close(); }
 });
 

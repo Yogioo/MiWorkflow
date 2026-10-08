@@ -173,6 +173,7 @@ export const CONFIG = (verify, rounds, push, retryDelays = [0, 0], review = 'alw
   `export const AGENT_RETRY_DELAYS = ${JSON.stringify(retryDelays)};`,
   `export const AGENT_IDLE_SEC = ${idleSec};`,
   `export const AGENT_KILL_LIMIT = ${killLimit};`,
+  'export const DISCUSS_IDLE_MAX_SEC = 600;',
   ''
 ].join('\n');
 

@@ -80,6 +80,9 @@ export const retryable = (err) => {
     /network|timeout|timed out|connection|econnreset|econnrefused|etimedout|eai_again|enetunreach|ehostunreach|socket hang up|temporarily unavailable|rate limit|too many requests|something went wrong while executing your query|reset by peer|unexpected eof|\beof\b/i.test(text);
 };
 
+// 令牌的调用额度用完（个人令牌 2000 次 / 24 小时，429 `API request limit exceeded`）：退避几十秒没用，不重试
+export const quotaExceeded = (err) => /request limit exceeded|\b429\b[\s\S]*limit/i.test(outputText(err));
+
 const missingCommand = (err) =>
   err?.code === 'ENOENT' || /\benoent\b|not recognized|不是内部或外部命令/i.test(errorText(err));
 
@@ -100,10 +103,12 @@ export function runTapd(argv, opts = {}) {
       if (!fake && missingCommand(err)) {
         throw new Error('找不到 tapd-cli：先装好它（见 tapd-cli 技能），或设 MIWORKFLOW_TAPD', { cause: err });
       }
-      const transient = retryable(err);
+      const quota = quotaExceeded(err);
+      const transient = quota || retryable(err);
       const detail = errorText(err);
-      if (!transient || attempt >= retries) {
-        const e = new Error(mask(`tapd-cli ${argv.join(' ')} 失败${detail ? `：${detail}` : ''}`), { cause: err });
+      if (!transient || quota || attempt >= retries) {
+        const why = quota ? 'TAPD 令牌的调用额度用完了（要等 24 小时窗口滚过去）' : detail;
+        const e = new Error(mask(`tapd-cli ${argv.join(' ')} 失败${why ? `：${why}` : ''}`), { cause: err });
         if (transient) e.transient = true;
         throw e;
       }
