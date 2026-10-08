@@ -23,7 +23,7 @@ export function defineDevScenarios(src) {
   });
 
   const assertDelivered = (t) => {
-    assert.equal(t.closed, src.name === 'github', 'GitHub 关单，TAPD 不关单');
+    assert.equal(t.closed, src.closes, 'GitHub / beads 关单，TAPD 不关单');
     if (src.name === 'tapd') assert.equal(t.status, 'open', 'TAPD 完成不改状态');
     assert.deepEqual(t.labels, src.deliveredLabels);
   };
@@ -213,7 +213,7 @@ export function defineDevScenarios(src) {
     plan(s, DONE_STEPS('seven.txt'));
     const r = cli(s, ['dev', '--issue', src.id(7)]);
     assert.equal(r.code, 0, r.stderr);
-    assert.equal(view(7).closed, src.name === 'github');
+    assert.equal(view(7).closed, src.closes);
     assert.ok(view(7).labels.includes('afk-delivered'));
     assert.deepEqual(view(8).labels, READY, '没点名的不碰');
   });
@@ -409,7 +409,7 @@ export function defineDevScenarios(src) {
     assert.equal(r.code, 0, r.stderr);
     assert.equal(seen(s).length, 2, '开发 + 审查');
     const t = view(1);
-    assert.equal(t.closed, src.name === 'github', '按各家语义交付');
+    assert.equal(t.closed, src.closes, '按各家语义交付');
     assert.ok(t.labels.includes('afk-delivered'), t.labels.join(','));
     assert.ok(!t.labels.includes('afk-claimed'), t.labels.join(','));
     assert.ok(view(1).comments.some((c) => c.includes('审查者看过，没有改动')), view(1).comments.join('\n'));

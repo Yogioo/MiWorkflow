@@ -862,6 +862,25 @@ AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 
   节奏归共用的 `discuss` 任务：只在 `--every` 循环里（认 `AGENTFLOW_LOOP_PID`），间隔 = 距上次有动静 ÷ 4、最长 `DISCUSS_IDLE_MAX_SEC`，没到点的一轮不碰工单系统，
   记账在 `logs/discuss.pace.json`；单跑一次照旧全量。
 
+`templates/beads/` = [beads](https://github.com/steveyegge/beads)（`ticket_*` + `discuss_*` / `tickets_create` 脚本、`scripts/_bd.mjs` / `_discuss.mjs`、`source.mjs`；`dev` 与 `discuss` 都是共用的）。三个 `ticket_*` 的 beads 实现（按 `bd` 1.1.2 实测）：
+
+- 调用：`execFileSync` 起 `bd`（不经 shell）；`source.mjs` 的 `BD` 可写路径，空则 PATH 上的 `bd`——Windows 上 npm 全局装的是 `.cmd` / `.ps1` 包装、起不来，改找 `@beads/bd/bin/` 里的 `bd.exe` / `bd.js`；`MIWORKFLOW_BD` 可换成一个 JS 文件。
+  库被锁、dolt server 连不上、超时按 `BD_RETRY_DELAYS` 退避，用完标 `transient`。`ACTOR` 非空时每条命令带 `--actor`。
+- `ticket_ready`：一次 `bd list --limit 0`（只列没关的单；不带 `--limit 0` 只给 50 条）；只接状态 `open` 的单；优先级就是 beads 的 0~4；
+  依赖只认 `blocks` 类，前置已关单（不在列表里）或贴了 `afk-delivered` 才满足；父单还有没做完的子单进 `blocked`（父单当容器，子单照常入队）。
+- `ticket_view`：`bd show`（不带评论）+ `bd comments`，快照带描述、设计 / 验收标准 / 备注与全部评论；本地库，图片不下载。
+- `ticket_mark`：状态跟着标签走——认领改 `in_progress`，失败 / 释放改回 `open`，`done` 贴 `afk-delivered` 并 `bd close`（`--reason` 带提交号）；
+  评论写成文件经 `bd comments add -f` 发（多行、长文都不经命令行）；beads 没有附件，回帖稿里的本地图片换成绝对路径。
+- `source.mjs`：`BD`、`ACTOR`、`LABELS`、`BD_RETRY_DELAYS`、`DISCUSS`；`ref` 就是 beads ID；提交信息缺省 `{id} {summary}`，可改成 beads 习惯的 `{summary} ({id})`。
+
+四个 `discuss_*` 的 beads 实现：
+
+- **形态同 GitHub**：beads 存纯文本、HTML 注释原样保留（实测），spec 与开发单清单写进描述（description）的两个机器区域，AI 记账标记是评论末尾的 HTML 注释；描述经 `bd update --body-file`、评论经 `bd comments add -f` 写，都不经命令行。
+- **建开发单**：`bd create --parent <讨论单> --no-inherit-labels`，标签 `ready-for-agent` + 可选的「要审查」，优先级 `P0`~`P4` → 0~4，依赖 `bd dep add <开发单> <前置>`（blocks）。
+  子单缺省继承父单标签（`agent-discuss`、阶段标签跟过去，开发单就成了讨论单），所以必须带 `--no-inherit-labels`，回查时也核对没继承讨论单的标签；
+  回查还核对父单、优先级、前置正好是这批里该有的那几张、不依赖讨论单、不成环。
+- `discuss_list`：`bd list --label <enter> --limit 0`（只列没关的单），阶段过滤同 GitHub；本地库没有调用额度，不做增量。讨论单由人 `bd close`。
+
 ---
 
 ## 16. 内核明确不做

@@ -147,6 +147,7 @@ DEV 只能升级不能降级：提示词列了该升级的情形（改公共接�
   `dev` 看到就整轮立即停下（退出码非 0，不计入 `--max-failures`，不贴 `afk-failed`）：认领时失败还没动 git，下轮重做；
   关单时失败代码**已推送、不回滚**，停止原因写明「已推送 <sha>，工单 X 标记完成失败」，要人补标记（下一轮不会自动补）。
   4xx、权限、工单不存在、参数错照旧当失败、不重试。
+  beads 是本地库，「暂时不可用」指库被别的 `bd` 进程锁住、dolt server 连不上、超时，按 `BD_RETRY_DELAYS`（缺省 1 秒、5 秒、15 秒）退避。
 
 Agent 不直接碰 GitHub：认领 / 读单 / 标记全由 `.workflow/scripts/` 里的 `ticket_ready` / `ticket_view` / `ticket_mark` 做。
 读单读的是**工单快照**（正文 + 全部评论转成的 Markdown，图片下到旁边，在 `.workflow/logs/<runId>/tickets/<id>/`）；
@@ -172,7 +173,7 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
   只读有新的人的评论或需求改过的单子（改旧评论不算）。单跑一次 `miworkflow discuss` 不受影响，照旧每张都看。
   记账在 `.workflow/logs/discuss.pace.json`，删掉它就从头来
 
-两个工单源都实现了，流程与提示词共用，差异全在 `scripts/` 里。TAPD（`--template tapd`）跟 GitHub 不一样的地方：
+GitHub、TAPD、beads 三个工单源都实现了，流程与提示词共用，差异全在 `scripts/` 里。TAPD（`--template tapd`）跟 GitHub 不一样的地方：
 
 - **spec 发成一条评论**，末尾标记带 `kind=spec`；当前 spec 是最新那条 `kind=spec` 评论，不写需求描述——`story update description=` 不幂等，每写一次外层多包一层 `<p>`
 - **AI 记账标记是评论末尾一行纯文本** `[miworkflow:discuss hash=… seen=… …]`，人看得见；TAPD 会把评论里的 HTML 注释整个剥掉，GitHub 那套用不了
@@ -182,6 +183,11 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
 - **阶段标签不用预建**：`discuss:grilling` / `discuss:spec` / `discuss:ticketed` 第一次写入时 TAPD 隐式建出来；多个标签用 `|` 分隔写入，写完回读校验
 
 GitHub 这边：spec 写进正文末尾的机器区域，标记是评论末尾的 HTML 注释（人看不见），开发单是普通 issue，依赖写在正文的 `## Blocked by`，优先级原样贴 `P0`–`P4` 标签。
+
+beads（`--template beads`）存纯文本、HTML 注释原样保留，所以 spec 与开发单清单同 GitHub 写进描述末尾的机器区域、标记同样是评论末尾的 HTML 注释（`bd show` 里看得见）。
+开发单建成讨论单的子单（`bd create --parent`），优先级 `P0`–`P4` 落成 beads 的 0~4，依赖落成 `blocks`（`bd dep add`）。
+子单缺省会继承父单的标签——`agent-discuss`、`discuss:spec` 跟过去，开发单就成了讨论单——所以建单一律带 `--no-inherit-labels`，回查也核对没继承。
+本地库没有调用额度，不做增量，每轮每张都读；讨论单由人 `bd close`。
 
 改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `REVIEW` / `VERIFY` / `ROUNDS` / `PUSH` / `DISCUSS_IDLE_MAX_SEC`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY`）；
 开发 / 审查 / 验证修正的提示词在 `.workflow/prompts/dev.md` / `review.md` / `fix.md`（模板文件，升级会覆盖）；
@@ -222,6 +228,36 @@ miworkflow dev                         # 把就绪需求逐个做完；--issue <
 失败、未推送的处理与 GitHub 相同（失败保留 `ready-for-agent`、贴 `afk-failed`；未推送保留 `afk-claimed`、评论注明本地提交）；
 失败分类也相同：Agent 没跑完就退避重试，还不行回滚、撤 `afk-claimed`、不贴 `afk-failed`、评论后整轮停下（不关单、不改状态），下轮重做。
 工单快照里的图片经 `tapd-cli attachment get-image` 下载；回帖稿的图逐张 `upload-image` 后随评论发出。
+
+## 开箱即用：beads 开发
+
+同一条 `dev` 流水线换成 [beads](https://github.com/steveyegge/beads)（`bd`）的 issue 当工单（`--template beads`，开发任务与提示词共用）：
+
+```bash
+miworkflow init --template beads       # 复制模板（已有文件一个不覆盖）
+miworkflow dev --dry-run               # 先干跑：只报会做哪些单、哪些被挡住，不叫 Agent、不改 beads、不碰 git
+miworkflow dev                         # 把就绪的单逐个做完；--issue <beads ID> / --max / --confirm 同 GitHub
+```
+
+跑之前要配好：项目里已经 `bd init`（`bd` 从 `.workflow/` 往上找得到 `.beads/`）、`bd` 装好（`npm i -g @beads/bd`）。
+Windows 上 npm 全局装的 `bd` 是 `.cmd` / `.ps1` 包装，脚本不经 shell 起不来，会自动改用包里的 `bd.exe`；装在别处就在 `source.mjs` 的 `BD` 写路径。
+想让评论和改动记在固定名字下，在 `source.mjs` 的 `ACTOR` 填上（每条命令带 `--actor`）；空着就是 bd 自己的缺省（`BD_ACTOR` / git 用户名）。
+
+issue 约定（标签名在 `source.mjs` 的 `LABELS` 里可改）：
+
+- 入队：状态 `open`、贴 `ready-for-agent`、没贴任何机器标签（`afk-claimed` / `afk-delivered` / `afk-failed`）；人改成 `in_progress` / `blocked` / `deferred` 的不碰
+- 优先级：beads 自己的 0~4（0 最急），没有当 2；同级按 ID 升序
+- 依赖：只认 `blocks` 类（`bd dep add <单> <前置>`），前置已关单或贴了 `afk-delivered` 才算满足；`related` 这类不挡。
+  父单（epic）还有没做完的子单就进 `blocked`，子单自己照常入队
+- 要审查：同 GitHub，贴 `needs-review`
+- 工单引用就是 beads ID（如 `demo-a3f2`）；提交信息缺省 `{id} {summary}`，想要 beads 习惯的 `{summary} ({id})` 改 `COMMIT_FORMAT`
+
+**状态跟着标签走**：认领时贴 `afk-claimed` 并改成 `in_progress`（`bd ready` 就不会再把它给别的 Agent）；
+完成时贴 `afk-delivered`、摘 `ready-for-agent` / `afk-claimed`、`bd close`（关单原因带提交号）；失败、释放改回 `open`。
+评论一律写成文件经 `bd comments add -f` 发；beads 没有附件，回帖稿里引用的本地图片换成绝对路径（在本机点得开）。
+工单快照带描述、设计、验收标准、备注与全部评论，正文里的图片不下载。
+
+讨论流程（`miworkflow discuss`）也能用，跟 GitHub 同一套形态，差异见上面「讨论单」一节末尾。
 
 ## 内核仓库
 
@@ -273,6 +309,7 @@ node --test
 | `MIWORKFLOW_REMOTE_RUN=1` | 允许非本机从网页起任务（能起任务 = 能起全权限 Agent） |
 | `MIWORKFLOW_GH` | GitHub 模板改用它当 `gh`（一个 JS 文件，参数照传）；测试 / 替换 `gh` 用 |
 | `MIWORKFLOW_TAPD` | TAPD 模板改用它当 `tapd-cli`（一个 JS 文件，参数照传）；测试 / 替换 `tapd-cli` 用 |
+| `MIWORKFLOW_BD` | beads 模板改用它当 `bd`（一个 JS 文件，参数照传）；测试 / 替换 `bd` 用 |
 | `TAPD_NPC_ROLE` | TAPD 模板的评论人（`source.mjs` 的 `COMMENTER` 留空时读它） |
 | `TAPD_API_ENDPOINT` / `TAPD_TOKEN` | TAPD 模板直连 OpenAPI 的地址与个人令牌（评论、前后置依赖、结束类状态） |
 

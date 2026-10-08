@@ -121,6 +121,12 @@ writeFileSync(FAKE_AGENT, [
   '  st.comments.push({ id: String(n + 1), entry_type: "stories", entry_id: String(pkg.inputs.id), description: step.tapdComment, author: "human", created: `2026-01-01 00:00:${String(n).padStart(2, "0")}` });',
   '  writeFileSync(process.env.FAKE_TAPD_STATE, JSON.stringify(st));',
   '}',
+  'if (step.bdComment) {',
+  '  const st = JSON.parse(readFileSync(process.env.FAKE_BD_STATE, "utf8"));',
+  '  const i = st.issues.find((x) => x.id === String(pkg.inputs.id));',
+  '  i.comments = (i.comments ?? []).concat([{ id: `h${i.comments?.length ?? 0}`, author: "human", text: step.bdComment, created_at: "" }]);',
+  '  writeFileSync(process.env.FAKE_BD_STATE, JSON.stringify(st));',
+  '}',
   'if (step.ghCreate) {',
   '  const st = JSON.parse(readFileSync(process.env.FAKE_GH_STATE, "utf8"));',
   '  st.issues.push(...step.ghCreate);',
@@ -190,7 +196,7 @@ export function setup({ source = 'github', issues = [], repoLabels, verify = '',
   // 工单系统故障的退避间隔：测试里缺省全 0（不真等）
   const srcFile = path.join(home, 'source.mjs');
   writeFileSync(srcFile, readFileSync(srcFile, 'utf8')
-    .replace(/(export const (?:GH|TAPD)_RETRY_DELAYS = )\[[^\]]*\];/, `$1${JSON.stringify(ticketRetryDelays)};`));
+    .replace(/(export const (?:GH|TAPD|BD)_RETRY_DELAYS = )\[[^\]]*\];/, `$1${JSON.stringify(ticketRetryDelays)};`));
   const withPush = push || remoteAhead;
   writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush, retryDelays, review, idleSec, killLimit));
   writeFileSync(path.join(home, '.gitignore'), 'logs/\n');

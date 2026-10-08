@@ -1,4 +1,4 @@
-// 讨论流程的两家假工单源，接成同一套接口：场景只写一遍（tests/support/discuss-scenarios.mjs），对 GitHub、TAPD 各跑一次。
+// 讨论流程的各家假工单源，接成同一套接口：场景只写一遍（tests/support/discuss-scenarios.mjs），对 GitHub、TAPD、beads 各跑一次。
 // 讨论单写成 { key, labels?, body?, spec?, parent? }：key 是场景里的小编号，各家换成自己的工单号；spec 给了就预置一份当前 spec；
 // parent 给了就是挂在那张讨论单下的已有子需求（GitHub 写正文 `## Parent`，TAPD 写 parent_id）。
 // 读法按源各自实现，场景只认：
@@ -11,6 +11,7 @@ import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setup, issue, readState } from './github-template.mjs';
 import { readTapdState, startFakeOpenApi, story, tapdEnv, writeTapdState } from './tapd-fakes.mjs';
+import { bdEnv, bdIssue, readBdState, writeBdState } from './bd-fakes.mjs';
 
 const MARK_FIELDS = '(?: \\w+=\\S+)*';
 const SPEC_BEGIN = '<!-- miworkflow:spec:begin -->';
@@ -119,4 +120,52 @@ const tapdEdit = (s, fn) => {
   writeFileSync(s.tapdFile, JSON.stringify(st, null, 2));
 };
 
-export const SOURCES = { github, tapd };
+// beads：跟 GitHub 同一套形态（spec 在描述的标记区域、标记是评论末尾的 HTML 注释），开发单是讨论单的子单、依赖是 blocks
+const beadsId = (key) => `demo-${key}`;
+const beadsKey = (id) => Number(String(id).replace(/^demo-/, ''));
+
+const beads = {
+  name: 'beads',
+  ref: beadsId,
+  markRe: github.markRe,
+  async open({ issues = [] } = {}) {
+    const s = setup({ source: 'beads' });
+    s.bdFile = path.join(s.base, 'bd-state.json');
+    writeBdState(s.bdFile, {
+      issues: issues.map((t) => bdIssue(beadsId(t.key), {
+        labels: t.labels ?? [],
+        description: t.spec === undefined ? (t.body ?? `做 ${t.key}`) : `${t.body ?? `做 ${t.key}`}\n\n${SPEC_BEGIN}\n${t.spec}\n<!-- miworkflow:spec:end -->`,
+        ...(t.parent ? { parent: beadsId(t.parent) } : {})
+      }))
+    });
+    Object.assign(s.env, bdEnv(s.bdFile));
+    s.close = async () => {};
+    return s;
+  },
+  thinkStep: (text) => ({ bdComment: text }),
+  comments: (s, key) => (bdOf(s, key).comments ?? []).map((c) => c.text),
+  labels: (s, key) => bdOf(s, key).labels,
+  original: (s, key) => bdOf(s, key).description.split(`\n\n${SPEC_BEGIN}`)[0],
+  spec: (s, key) => SPEC_AREA.exec(bdOf(s, key).description)?.[1] ?? null,
+  reply(s, key, text, { beforeLast = false } = {}) {
+    bdEdit(s, key, (i) => i.comments.splice(beforeLast ? i.comments.length - 1 : i.comments.length, 0, { id: `h${i.comments.length}`, author: 'human', text, created_at: '' }));
+  },
+  editOriginal(s, key, text) {
+    bdEdit(s, key, (i) => { i.description = [text, ...i.description.split(`\n\n${SPEC_BEGIN}`).slice(1)].join(`\n\n${SPEC_BEGIN}`); });
+  },
+  setLabels: (s, key, labels) => bdEdit(s, key, (i) => { i.labels = [...labels]; }),
+  devTickets: (s, parent) => readBdState(s.bdFile).issues.filter((i) => i.parent === beadsId(parent))
+    .sort((a, b) => beadsKey(a.id) - beadsKey(b.id))
+    .map((i) => ({ key: beadsKey(i.id), title: i.title, labels: i.labels, body: i.description })),
+  blockedBy: (s, key) => (bdOf(s, key).dependencies ?? []).filter((d) => d.type === 'blocks').map((d) => beadsKey(d.depends_on_id)),
+  readyLabels: (priority, review) => ['ready-for-agent', ...(review ? ['needs-review'] : [])]
+};
+
+const bdOf = (s, key) => readBdState(s.bdFile).issues.find((i) => i.id === beadsId(key));
+const bdEdit = (s, key, fn) => {
+  const st = readBdState(s.bdFile);
+  fn(st.issues.find((i) => i.id === beadsId(key)));
+  writeFileSync(s.bdFile, JSON.stringify(st, null, 2));
+};
+
+export const SOURCES = { github, tapd, beads };

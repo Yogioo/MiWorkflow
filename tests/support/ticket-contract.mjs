@@ -73,7 +73,7 @@ export function defineTicketContract(src) {
 
     assert.equal(mark(1, { action: 'done', sha: 'abc123' }).status, 'ok');
     assert.deepEqual(view(1).labels, src.deliveredLabels);
-    assert.equal(view(1).closed, src.name === 'github', 'GitHub 关单，TAPD 不关单');
+    assert.equal(view(1).closed, src.closes, 'GitHub / beads 关单，TAPD 不关单');
     assert.ok(view(1).comments.some((c) => c.includes('abc123')));
 
     mark(2, { action: 'claimed' });

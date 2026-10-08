@@ -394,6 +394,27 @@ test('init --template tapd：共用 + TAPD 两部分都复制进来，不带 Git
   assert.match(bad.stderr, /可选：[^\n]*tapd/, '模板菜单出现 TAPD');
 });
 
+test('init --template beads：共用 + beads 两部分都复制进来（开发与讨论流程的脚本齐全）；upgrade 认得出', () => {
+  const dir = tmpDir();
+  const r = cli(['init', '--template', 'beads'], { cwd: dir });
+  assert.equal(r.code, 0, r.stderr);
+  const home = path.join(dir, '.workflow');
+  for (const f of ['config.mjs', 'tasks/dev.mjs', 'tasks/discuss.mjs', 'scripts/_lib.mjs', 'prompts/dev.md',
+    'source.mjs', 'scripts/_bd.mjs', 'scripts/ticket_ready.mjs', 'scripts/ticket_view.mjs', 'scripts/ticket_mark.mjs',
+    'scripts/discuss_list.mjs', 'scripts/discuss_view.mjs', 'scripts/discuss_post.mjs', 'scripts/tickets_create.mjs',
+    'scripts/_discuss.mjs', 'scripts/_tickets.mjs', 'prompts/grilling.md']) {
+    assert.ok(existsSync(path.join(home, f)), f);
+  }
+  assert.ok(!existsSync(path.join(home, 'scripts', '_gh.mjs')));
+  assert.ok(!existsSync(path.join(home, 'scripts', '_tapd.mjs')));
+
+  const bad = cli(['init', '--template', '__nope'], { cwd: dir });
+  assert.match(bad.stderr, /可选：[^\n]*beads/, '模板菜单出现 beads');
+  const up = cli(['init', '--upgrade'], { cwd: dir });
+  assert.equal(up.code, 0, up.stderr);
+  assert.match(up.stdout, /模板：beads/);
+});
+
 test('init --upgrade：认出模板；模板文件覆盖、缺的补上；项目配置的一行 export const 保留；项目自己的文件不碰；旧文件备份', () => {
   const dir = tmpDir();
   assert.equal(cli(['init', '--template', 'tapd'], { cwd: dir }).code, 0);
