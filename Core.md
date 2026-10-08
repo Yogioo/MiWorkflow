@@ -76,7 +76,8 @@ MiWorkflow/
 - **HOME 怎么找**：`AGENTFLOW_HOME` → 从当前目录**往上找 `.workflow/`**（像 git 找 `.git`）→ 都没有就报错，
   提示 `miworkflow init`。**不回落到当前目录**，免得分不清任务从哪找的。`run.mjs` 把找到的 HOME 写回
   `AGENTFLOW_HOME` 再加载 core / viewer。
-- `tasks/`、`scripts/`、`logs/` 都在 HOME 下找；脚本与 Agent 子进程的 cwd 是 HOME；viewer 读 HOME 的 `logs/`。
+- `tasks/`、`scripts/`、`logs/` 都在 HOME 下找；脚本子进程的 cwd 是 HOME；Agent 子进程的 cwd 是项目根
+  （HOME 叫 `.workflow` 时取上一级，否则就是 HOME，§10.1）；viewer 读 HOME 的 `logs/`。
 - 进化的 commit 落在业务仓库，跟业务代码一起回滚（§14）。
 - **内核仓库里没有 `tasks/`、`scripts/`**，测试断言它（§16）。
 
@@ -480,7 +481,9 @@ runner 层从 exec-review 技能复制起步，之后**独立演进**，不回�
   **合不合契约仍由 core 判**（§6.2），适配器不补默认值。CLI 起不来 / 非 0 退出 / 超时 / 没回话 → 适配器写
   `{status:'failed', choice:'agent_cli_failed', reason}`（这是事实，不是猜）；`reason` 优先取事件流里的错误
   （codex 的错误不走 stderr），其次 stderr 首句。
-- **运行目录**：`inputs.cwd`，缺省 HOME。内核不加 `opts.cwd`。
+- **运行目录**：`inputs.cwd`，缺省项目根（HOME 叫 `.workflow` 时取上一级，否则就是 HOME，如 `examples/`）。
+  不缺省成 `.workflow/`：Agent CLI 从 cwd 找 `AGENTS.md`，落在 `.workflow/` 会读到写工作流的那份、搜不到项目代码
+  （cursor 的 `--workspace` 还会把整个工作区卡在里面）。内核不加 `opts.cwd`。
 - **过程**：各家事件流统一成同一种形状（`agents/normalize-event.mjs`），翻成人话写 stderr（core 已透传到终端）：
   `· <工具> <参数>`、`» <说了什么>`、`✖ <错误>`。
   提示词、原始输出、统一后的事件落在 HOME `logs/<runId>/agent-<n>.{prompt.md,log,events.jsonl,out.txt}`

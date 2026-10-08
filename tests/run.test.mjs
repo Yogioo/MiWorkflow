@@ -163,6 +163,44 @@ test('HOME：AGENTFLOW_HOME 优先于往上找', () => {
   assert.ok(existsSync(path.join(other, 'out.json')));
 });
 
+// ── Agent 缺省目录（§10.1）：不给 inputs.cwd 就在项目根，不在 .workflow/ ──────
+
+// 假 pi：把自己的 cwd 交回
+const WHERE_PI = [
+  "const text = JSON.stringify({ status: 'ok', choice: 'done', reason: '', data: { cwd: process.cwd() } });",
+  "process.stdout.write(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } }) + '\\n');",
+  ''
+].join('\n');
+const WHERE_TASK = [
+  "import { writeFileSync } from 'node:fs';",
+  'export default async function ({ agent }) {',
+  "  const r = await agent('你在哪', {});",
+  "  writeFileSync(new URL('../out.json', import.meta.url), JSON.stringify(r));",
+  '}',
+  ''
+].join('\n');
+
+test('agent：没给 inputs.cwd 时，HOME 是 <项目>/.workflow 就在项目根干活；别的 HOME 就在 HOME 里', () => {
+  const fakePi = path.join(tmpDir(), 'where-pi.mjs');
+  writeFileSync(fakePi, WHERE_PI);
+  const env = { AGENTFLOW_AGENT: 'pi', PI_BIN: fakePi };
+  const same = (a, b) => assert.equal(path.resolve(a).toLowerCase(), path.resolve(b).toLowerCase());
+
+  const project = tmpDir();
+  const home = makeHome(project, { where: WHERE_TASK });
+  const r = cli(['where'], { cwd: project, env });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(readOut(home).status, 'ok', JSON.stringify(readOut(home)));
+  same(readOut(home).data.cwd, project);
+
+  const plain = tmpDir();
+  mkdirSync(path.join(plain, 'tasks'));
+  writeFileSync(path.join(plain, 'tasks', 'where.mjs'), WHERE_TASK);
+  const p = cli(['where'], { env: { ...env, AGENTFLOW_HOME: plain } });
+  assert.equal(p.code, 0, p.stderr);
+  same(readOut(plain).data.cwd, plain);
+});
+
 // ── 任务锁（§9）：同一 task 同时只跑一个 ────────────────────────────────
 
 const lockPath = (home, task) => path.join(home, 'logs', `${task}.lock`);

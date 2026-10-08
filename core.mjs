@@ -9,6 +9,8 @@ import path from 'node:path';
 // HOME：沉淀所在（§3）。tasks/ scripts/ logs/ 都在这里，缺省为当前目录
 export const HOME = path.resolve(process.env.AGENTFLOW_HOME || process.cwd());
 export const LOGS_DIR = path.join(HOME, 'logs');
+// Agent 缺省在项目根干活：HOME 是 <项目>/.workflow 时取上一级，其它（如 examples/）就是 HOME（§3、§10.1）
+const AGENT_CWD = path.basename(HOME) === '.workflow' ? path.dirname(HOME) : HOME;
 const SCRIPTS_DIR = path.join(HOME, 'scripts');
 const AGENT_CLI = fileURLToPath(new URL('./agents/agent_cli.mjs', import.meta.url));
 
@@ -51,9 +53,9 @@ export function log(record) {
 
 // ── 子进程 ────────────────────────────────────────────────────────────────
 // 无 shell 依赖（§11）；stderr 原样透传，方便人当场看（§6.1）
-function run(cmd, argv, input, timeoutMs, env = process.env) {
+function run(cmd, argv, input, timeoutMs, env = process.env, cwd = HOME) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, argv, { cwd: HOME, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(cmd, argv, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '';
     let stderr = '';
     let done = false;
@@ -182,7 +184,7 @@ export async function agent(goal, opts = {}) {
     data = {};
   } else {
     const [bin, ...rest] = command.argv;
-    const res = await run(bin, rest, JSON.stringify(pkg), (pkg.budget.timeoutSec + 5) * 1000, env);
+    const res = await run(bin, rest, JSON.stringify(pkg), (pkg.budget.timeoutSec + 5) * 1000, env, AGENT_CWD);
     try {
       const out = JSON.parse(res.stdout);
       session = out?.session;
