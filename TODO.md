@@ -756,7 +756,8 @@ REVIEWER 那次完整的 Agent 调用（还要重读项目）是白花的开销�
 
 ### I3. 实现顺序
 
-1. 内核：`init` 覆盖顺序、记模板名、共用层（`_beads`）；`node --test` 全绿
+1. ✅ 内核：`init` 覆盖顺序、记模板名（`.workflow/.template`）、共用层（模板清单 `template.json` 的 `extends`）；`node --test` 328 全绿。
+   beads 脚本挪进 `_beads/` 放到第 3 步：哪些能共用要等 `parallel` 的 `ticket_mark` 等定下来才看得清
 2. `dev.mjs` 可选能力：`ticket_claim`、启动清理、推送前变基、待人验收；github / tapd 场景测试照过
 3. 新模板：beads 公共部分挪进 `_beads/`；`ticket_claim`（含父单回查）、启动清理、`ticket_mark` 待人验收 + `attachment://` 截图；
    工人 / 讨论各自的 bd 身份；讨论间隔调小；README 提醒配好网页的 `humanActor` 与人类名单
