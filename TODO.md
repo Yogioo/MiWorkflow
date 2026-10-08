@@ -17,6 +17,7 @@
 7.1 ✅ **H beads 工单源**（2026-10-08，`templates/beads/`：开发流程三个 `ticket_*` + 讨论流程四个脚本，按 `bd` 1.1.2 实测写、真 `bd` 各冒烟过一轮；
    开发 / 讨论的共用场景与契约测试多跑一家假 `bd`。实测踩到的坑：`bd list` 缺省 50 条、`bd show` 不带评论且依赖形状跟 `list` 不同、
    Windows 上 npm 的 `bd` 是 `.cmd` 包装、`bd create --parent` 缺省继承父单标签）
+7.2 **I 本机多 worktree 并行开发**（`templates/parallel/`，见下文 I，2026-10-08 拍板；并发抢单已实测通过，实现待做）
 8. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
 B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项目专用的（如 Unity 跑测试）。
@@ -707,6 +708,78 @@ REVIEWER 那次完整的 Agent 调用（还要重读项目）是白花的开销�
 | `VERIFY` 为空时强制审查 | 不做 |
 | `REVIEW` 常量 | 做：`'auto'` / `'always'` |
 | 汇总审查 | 搁置（G3） |
+
+## I. 本机多 worktree 并行开发：只认 beads 的模板（2026-10-08 提出，同日拍板）
+
+**起因**：想让一台机器同时开几个 git worktree、各自接单开发。现有 `dev` 做不到：
+- HOME 按 worktree 隔离（各有 `.workflow/logs/`、任务锁），git 操作也只碰自己的 worktree——这部分本来就成立
+- 但挑单（`ticket_ready` 取队首）与认领（`ticket_mark claimed`）之间有空档，三家的认领都不查「已被认领」：
+  GitHub 贴标签幂等、TAPD 整组读改写且已有标签时静默成功、beads 贴标签 + 改状态，两个 worktree 会做同一张单
+- `git_commit` 只跑裸 `git push`：worktree 不能签出主分支，新分支没上游就推送失败；推到别的分支就关单，依赖它的单会误判为前置已完成
+
+**终极目标**（这次不做，设计别堵死）：多台机器、每台多个 worktree 自己接单干活；人只负责和 AI 讨论需求、验收必须人看的内容、迭代「AI 验收技能」。
+
+### I1. 结论
+
+- **内循环只认 beads**，另做一个模板 `parallel`（名字不强关联 beads）。外循环（GitHub / TAPD ↔ beads 同步）以后另写，这次不做
+  - beads 只存本地（`.git/info/exclude`，与 DigitDoor 现状一致）；各 worktree 经 git 共享目录自动用同一个库
+  - 现有 `blank` / `beads` / `github` / `tapd` 四个模板行为不变
+- **两个角色、两个地方**：
+  - 主目录（clone 根）只跑一个 `discuss --every`：追问 → spec → 拆单入队；不当开发工人（免得讨论 Agent 读到半成品或读到一半被回滚）
+  - 开发 worktree 各跑一个 `dev --every`：从 beads 抢单 → 开发 → 推送，不碰 spec 与拆单
+  - 人在 bead-me-up-scotty 网页的评论区讨论（异步，跟 GitHub / TAPD 同一套讨论流程），本地 beads 没有调用额度，讨论查询间隔可以调小
+- **`dev.mjs` 共用一个**，新能力做成可选（github / tapd 模板不用就保持原样）：
+  - **原子取单**：可选脚本 `ticket_claim`，一步「取就绪单 + 认领」（beads：`bd ready --claim`）；没有就照旧 `ticket_ready` + `ticket_mark claimed`
+  - **启动清理**：开跑前把「认领人是我、还在进行中」的单当上次没收尾——回滚 worktree、释放（同一 worktree 同时只跑一个 `dev`，任务锁保证）
+  - **推送前变基**（`config.mjs` 开关，缺省关 = 现在的行为）：每单开工前对齐 `origin/main`；推送被拒就拉取 → 变基 → 再推；变基冲突就释放这张单重做
+  - **待人验收**：`ticket_mark` 新动作；工人里不用 `human()`（无终端时会干等一小时），必须人验收的单标成待人验收就去接下一张
+- **署名**：每个工人一个 bd 身份（如 `miworkflow/wt1`），讨论用 `miworkflow/discuss`。原子认领靠它区分认领人；
+  现在脚本不设 `ACTOR` 就退回 git 用户名，跟人同名，网页分不清人和 Agent
+- **截图走网页的附件约定**：回帖稿里的图复制到**主目录**的 `.beads/attachments/<单号>/`（文件名只用 `[A-Za-z0-9._-]`），
+  引用改写成 `![说明](attachment://<单号>/<文件名>)`；worktree 里没有 `.beads/`，位置用 `bd where` 查
+- 内核两处小改：`init` 也让具体模板覆盖共用模板（现在 `init` 是 `_shared` 赢、`init --upgrade` 是模板赢，不一致）；
+  `init` 时记下模板名，升级先读它再猜（新模板若包含 beads 模板的全部文件，现在的猜法会报「都像」）；支持 `_beads` 这类共用层，beads 脚本不复制两份
+
+### I2. 实测（2026-10-08，`bd` 1.1.2，临时仓库，测完已删）
+
+- ✅ worktree 里 `bd where` 指向主仓库的 `.beads/`（嵌入式 Dolt），不用配置
+- ✅ **并发抢单**：4 个 worktree 抢 12 张；8 个抢 40 张连跑 3 轮——共 132 次认领，**零重复、零报错、零撞锁**；
+  单次认领 0.6 秒，并发时 1～4 秒（bd 内部排队），对十几分钟一张的开发单可以忽略
+- ✅ `bd ready --claim -l ready-for-agent --exclude-label …`：带过滤一样原子；前置没关的单不出现
+- ⚠️ `--exclude-label` **要重复写**（`--exclude-label a --exclude-label b`）；写成 `a,b` 不拆开，带 `afk-failed` 的单会漏进来
+- ⚠️ **子单没做完的父单 `bd ready` 照样当就绪**，现有 `ticket_ready` 会挡住它。讨论流程建的开发单父单是讨论单（不带入队标签），平时碰不到；
+  `ticket_claim` 认领后要回查，有未完成子单就释放
+- bead-me-up-scotty（读源码确认，另在 `.beads/attachments/` 放临时图经它的接口取回，已删）：
+  - 网页发的评论署名是配置里的 `humanActor`（缺省 `BEADS_ACTOR`，再退到系统用户名，本机是 `EDY`）；人 / Agent 只按「人类名单」判断
+  - 描述与评论按 react-markdown 9 渲染、没开 HTML：HTML 注释（spec 区域、讨论记账标记）会**显示成文字**，不影响功能
+  - 图片只认 `attachment://` 与 http(s)；本机绝对路径被安全过滤清空，`<img>` 标签显示成文字——所以现在 beads `ticket_mark` 的截图在网页上看不到
+
+### I3. 实现顺序
+
+1. 内核：`init` 覆盖顺序、记模板名、共用层（`_beads`）；`node --test` 全绿
+2. `dev.mjs` 可选能力：`ticket_claim`、启动清理、推送前变基、待人验收；github / tapd 场景测试照过
+3. 新模板：beads 公共部分挪进 `_beads/`；`ticket_claim`（含父单回查）、启动清理、`ticket_mark` 待人验收 + `attachment://` 截图；
+   工人 / 讨论各自的 bd 身份；讨论间隔调小；README 提醒配好网页的 `humanActor` 与人类名单
+4. 在 DigitDoor 上实测：主目录跑 `discuss`，2～3 个 worktree 各跑 `dev`，几张真实小单走完全程；看一台机器开几个 worktree 合适（Unity 每个 worktree 一份 `Library/`）
+
+### I4. 以后再做
+
+- 一键开 N 个 worktree 并在每个里启动工人
+- 外循环：GitHub / TAPD ↔ beads 同步（导入用 `bd create --external-ref`，回写评论 / 标签 / 关单）
+- 多台机器：中心 Dolt 服务（`bd dolt set host …`）、租约续期与过期释放、全机群暂停、机群看板、共享产物位置
+
+### I5. 拍板记录
+
+| 议题 | 结论 |
+|---|---|
+| 内循环工单源 | 只认 beads；GitHub / TAPD 只在外循环 |
+| 新模板还是改 beads 模板 | 新模板 `parallel`（名字不强关联 beads） |
+| `dev.mjs` | 共用一个，新能力可选 |
+| 推送模型 | 都推到主分支：开工前对齐 `origin/main`，推送前变基，冲突就释放重做 |
+| 讨论流程 | 放进新模板，只在主目录跑；人在 bead-me-up-scotty 里讨论 |
+| 主目录当不当开发工人 | 不当 |
+| Git 做队列（认领 = 在远端建 ref） | 不做：人不熟、不如 beads 的工单表现 |
+| 多台机器 | 这次不做；以后走中心 Dolt 服务 |
 
 ## E. 来自 MiCan 的经验（先不做，写明什么时候做）
 
