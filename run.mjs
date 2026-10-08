@@ -14,10 +14,6 @@ const VERSION = JSON.parse(readFileSync(path.join(KERNEL, 'package.json'), 'utf8
 const TEMPLATES = path.join(KERNEL, 'templates');
 // 工单源模板都先叠上这份共用模板；以 _ 开头的目录不当模板列出
 const SHARED = '_shared';
-// 模板目录里的清单：{ "extends": ["_beads"] } 在共用模板和它自己之间再叠几层共用层；清单本身不复制
-const MANIFEST = 'template.json';
-// init 记下的模板名，init --upgrade 先认它
-const RECORD = '.template';
 // init --upgrade 时归项目所有的配置文件，与其中按行保留的写法
 const PROJECT_FILES = new Set(['config.mjs', 'source.mjs']);
 const ONE_LINE_EXPORT = /^(export const (\w+) = .*;)[ \t]*(?=\r?$)/gm;
@@ -172,8 +168,7 @@ async function init(template) {
   place(path.join(home, '.gitignore'), home, created, skipped, (f) => writeFileSync(f, 'logs/\n'));
   place(path.join(home, 'AGENTS.md'), home, created, skipped, (f) => writeFileSync(f, AGENTS_MD));
   if (template !== 'blank') {
-    for (const [rel, src] of templateFiles(template)) place(path.join(home, rel), home, created, skipped, (f) => copyFileSync(src, f));
-    place(path.join(home, RECORD), home, created, skipped, (f) => writeFileSync(f, `${template}\n`));
+    for (const part of [SHARED, template]) copyTree(path.join(TEMPLATES, part), home, home, created, skipped);
   }
   const rootAgents = writeRootAgents(root);
 
@@ -221,32 +216,13 @@ function place(file, home, created, skipped, write) {
   created.push(rel);
 }
 
-// 模板由几层叠成：共用模板 → 清单里 extends 的共用层 → 模板自己
-function layersOf(template) {
-  const file = path.join(TEMPLATES, template, MANIFEST);
-  if (!existsSync(file)) return [SHARED, template];
-  let extra;
-  try {
-    extra = JSON.parse(readFileSync(file, 'utf8')).extends ?? [];
-  } catch (err) {
-    fail(`模板 ${template} 的 ${MANIFEST} 读不了：${err.message}`);
+function copyTree(src, dst, home, created, skipped) {
+  for (const e of readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, e.name);
+    const to = path.join(dst, e.name);
+    if (e.isDirectory()) copyTree(from, to, home, created, skipped);
+    else place(to, home, created, skipped, (f) => copyFileSync(from, f));
   }
-  const layer = (l) => typeof l === 'string' && l.startsWith('_') && l !== SHARED && isDir(path.join(TEMPLATES, l));
-  if (!Array.isArray(extra) || !extra.every(layer)) {
-    fail(`模板 ${template} 的 ${MANIFEST}：extends 只能列以 _ 开头、存在的共用层（${SHARED} 本来就叠，不用写）`);
-  }
-  return [SHARED, ...extra, template];
-}
-
-// 模板要铺进 .workflow/ 的全部文件：相对路径 → 来源。同名文件后叠的层覆盖先叠的，init 与 init --upgrade 都按这一份
-function templateFiles(template, layers = layersOf(template)) {
-  const files = new Map();
-  for (const part of layers) {
-    for (const rel of listFiles(path.join(TEMPLATES, part))) {
-      if (rel !== MANIFEST) files.set(rel, path.join(TEMPLATES, part, rel));
-    }
-  }
-  return files;
 }
 
 // ── init --upgrade（§15）─────────────────────────────────────────────────
@@ -258,11 +234,11 @@ async function upgrade(template) {
   const home = findHome();
   if (!home || !isDir(home)) fail('找不到 .workflow/（从当前目录一路往上找过了）。先在项目里跑 miworkflow init');
   const choices = listTemplates();
-  const recorded = readRecord(home);
-  template ??= choices.includes(recorded) ? recorded : detectTemplate(home, choices);
+  template ??= detectTemplate(home, choices);
   if (!choices.includes(template)) fail(`没有这个模板：${template}（可选：${choices.join(' / ')}）`);
 
-  const files = templateFiles(template);
+  const files = new Map();
+  for (const part of [SHARED, template]) listFiles(path.join(TEMPLATES, part)).forEach((rel) => files.set(rel, path.join(TEMPLATES, part, rel)));
   const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
   const backup = path.join(home, 'logs', `upgrade-${stamp}`);
   const lines = [];
@@ -293,10 +269,6 @@ async function upgrade(template) {
     writeFileSync(dst, next);
     lines.push(`  ~ ${rel}（${note}）`);
   }
-  if (recorded !== template) {
-    writeFileSync(path.join(home, RECORD), `${template}\n`);
-    lines.push(`  ${recorded ? '~' : '+'} ${RECORD}（记下模板名 ${template}，下次升级直接认它）`);
-  }
 
   console.log(`升级 HOME  ${home}（模板：${template}）`);
   for (const l of lines) console.log(l);
@@ -304,22 +276,11 @@ async function upgrade(template) {
   if (lines.some((l) => l.startsWith('  ~'))) console.log(`改动前的旧文件备份在 ${backup}`);
 }
 
-function readRecord(home) {
-  try {
-    return readFileSync(path.join(home, RECORD), 'utf8').trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-// 没给 --template、也没记下模板名（老项目）时猜：共用模板之外的文件在 .workflow/ 里全都在的那个；
-// 好几个都像时，认文件把其余的都包含进去的那个（叠在 _beads 上的模板也像只用 _beads 的模板）
+// 没给 --template 时认：模板的文件在 .workflow/ 里全都在的那一个
 function detectTemplate(home, choices) {
-  const own = new Map(choices.map((t) => [t, [...templateFiles(t, layersOf(t).filter((l) => l !== SHARED)).keys()]]));
-  const hits = choices.filter((t) => own.get(t).every((rel) => existsSync(path.join(home, rel))));
-  const best = hits.filter((t) => hits.every((o) => own.get(o).every((rel) => own.get(t).includes(rel))));
-  if (best.length !== 1) fail(`认不出 .workflow/ 用的是哪个模板${hits.length ? `（${hits.join(' / ')} 都像）` : ''}，加 --template <名字>`);
-  return best[0];
+  const hits = choices.filter((t) => listFiles(path.join(TEMPLATES, t)).every((rel) => existsSync(path.join(home, rel))));
+  if (hits.length !== 1) fail(`认不出 .workflow/ 用的是哪个模板${hits.length ? `（${hits.join(' / ')} 都像）` : ''}，加 --template <名字>`);
+  return hits[0];
 }
 
 function listFiles(dir, prefix = '') {

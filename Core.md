@@ -87,8 +87,8 @@ MiWorkflow/
 |---|---|
 | `miworkflow --version` / `miworkflow -v` | 打印内核 `package.json` 的 `version`（不写死）到 stdout，退出 0 |
 | `miworkflow --help` / `miworkflow -h` | 打印用法（USAGE）到 stdout，退出 0；不带任何参数时 USAGE 打到 stderr、退出 1 |
-| `miworkflow init [--template <名字>]` | 建 `.workflow/`：`tasks/`、`scripts/`、`.gitignore`、`AGENTS.md`，并往项目根的 `AGENTS.md` 追加一段 AI 入口（没有就建、有就追加、已含就不动）。建在 git 仓库根，不在仓库里就建在当前目录。终端里有模板可选时让人选（**空白** = 只建目录，或 `templates/` 下的某个工单源；选了就按层叠好再复制：共用的 `templates/_shared/` → 模板清单里 `extends` 的共用层 → 它自己，同名文件后叠的赢，§15）；模板名记进 `.workflow/.template`；非终端缺省空白。已存在 `.workflow/` 时只补缺的文件，**已有的文件一个不覆盖**，跳过的列出来 |
-| `miworkflow init --upgrade [--template <名字>]` | 把模板新版铺回已有的 `.workflow/`（§15）：模板里的文件覆盖、缺的补上；`config.mjs` / `source.mjs` 以模板新版为底、保留项目里一行写完的 `export const`；项目自己的文件、`AGENTS.md`、`.gitignore` 不碰；改动过的旧文件备份到 `logs/upgrade-<时间>/`。铺的文件与 `init` 同一份（同样按层叠）。不给 `--template` 就认 `.workflow/.template` 记下的模板；没记（老项目）就猜 `.workflow/` 里文件齐全的那个，好几个都像时认文件把其余都包含进去的那个，并补记 |
+| `miworkflow init [--template <名字>]` | 建 `.workflow/`：`tasks/`、`scripts/`、`.gitignore`、`AGENTS.md`，并往项目根的 `AGENTS.md` 追加一段 AI 入口（没有就建、有就追加、已含就不动）。建在 git 仓库根，不在仓库里就建在当前目录。终端里有模板可选时让人选（**空白** = 只建目录，或 `templates/` 下的某个工单源；选了就先复制共用的 `templates/_shared/` 再复制它，§15）；非终端缺省空白。已存在 `.workflow/` 时只补缺的文件，**已有的文件一个不覆盖**，跳过的列出来 |
+| `miworkflow init --upgrade [--template <名字>]` | 把模板新版铺回已有的 `.workflow/`（§15）：模板里的文件覆盖、缺的补上；`config.mjs` / `source.mjs` 以模板新版为底、保留项目里一行写完的 `export const`；项目自己的文件、`AGENTS.md`、`.gitignore` 不碰；改动过的旧文件备份到 `logs/upgrade-<时间>/`。不给 `--template` 就认 `.workflow/` 里文件齐全的那个模板 |
 | `miworkflow new <name>` | 建 `tasks/<name>.mjs` 骨架（`title` + 传参的 `default`），不覆盖已有；没有 `.workflow/` 就报错，提示先 `init` |
 | `miworkflow <task> [--key value]` | 跑任务 |
 | `miworkflow <task> --every <间隔> [--key value]` | 常驻循环跑：间隔 `30s` / `5m` / `1h`，必须显式给值，缺值或格式不对报错退出、不起 run。外层循环不是 run（不写日志、不拿锁）；每一轮起一个子进程当全新的 run（新 runId，不继承 `AGENTFLOW_RUN_ID`），其余参数原样传；间隔从上一轮结束算，不会自己重叠；某轮非 0 退出只在终端记下退出码，循环继续；另一个终端在跑同一任务时由按任务锁挡住，该轮跳过。Ctrl+C 不特殊处理（只顺手删掉循环标记），连同正在跑的 run 一起结束；要等手头这一单做完再退，用 `miworkflow stop <task>`。纯 Node，三平台一致；一个命令一个任务，多个任务开多个终端；viewer 的「运行」不提供 |
@@ -788,8 +788,6 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 （升级时原样保留）、`prompts/local/<dev|review|fix|diagnose>.md`（项目对各 Agent 的补充要求，接到对应提示词的 `{{local}}` 处），
 以及项目自己加的任务 / 脚本；想改模板行为就把它做成一行常量或补充要求，别直接改模板文件，下次升级会被覆盖（有备份）。
 模板的测试留在内核仓库的 `tests/template-*.test.mjs`（假外部命令 / 假 Agent / 临时 git 仓库），保证复制出去的那一刻是好的。`init` 按组合复制：先复制共用模板 `templates/_shared/`（两个任务 `dev` / `discuss`，讨论提示词 `prompts/grilling|spec|tickets.md`，开发提示词 `prompts/dev|review|fix|diagnose.md`，git 脚本、`run_cmd`、`config.mjs`），再复制所选工单源；以 `_` 开头的目录不出现在模板菜单与 `--template` 里。
-几个模板共用的工单源脚本可以放进另一个 `_` 开头的共用层，模板目录里的清单 `template.json` 写 `{ "extends": ["_beads"] }` 就叠在共用模板与它自己之间（清单本身不复制）；
-同名文件后叠的层覆盖先叠的，`init` 与 `init --upgrade` 铺的是同一份。`init` 把模板名记进 `.workflow/.template`，升级先认它（TODO I1）。
 
 工单源的约定就是三个脚本名 + 输入输出（不做抽象层，TODO F2）；`dev` 只调它们，不知道背后是哪家。工单号一律字符串，日志 / 评论 / 提问里用工单引用 `ref`：
 

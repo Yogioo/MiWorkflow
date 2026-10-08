@@ -194,7 +194,7 @@ beads（`--template beads`）存纯文本、HTML 注释原样保留，所以 spe
 项目自己的要求（比如回帖稿按什么角度写）写进 `.workflow/prompts/local/dev.md` / `review.md` / `fix.md`，各接到对应 Agent 的提示词里，升级不碰。
 
 模板更新后，已经 init 过的项目跑 `miworkflow init --upgrade` 跟上：模板文件覆盖，`config.mjs` / `source.mjs` 里一行写完的 `export const` 保留项目的值，
-项目自己加的任务不碰，改动过的旧文件备份到 `.workflow/logs/upgrade-<时间>/`。用的是哪个模板，`init` 时记在 `.workflow/.template`（跟着进 Git），升级直接认它。所以项目要定制的东西尽量写成这两个文件里的一行常量，别直接改模板文件。
+项目自己加的任务不碰，改动过的旧文件备份到 `.workflow/logs/upgrade-<时间>/`。所以项目要定制的东西尽量写成这两个文件里的一行常量，别直接改模板文件。
 
 ## 开箱即用：TAPD 开发
 
