@@ -4,6 +4,8 @@
 // 只通过工单源接口 ticket_ready / ticket_view / ticket_mark 碰工单系统，不知道背后是哪家（入队、标记的规则见各工单源的脚本）。
 // 失败就回滚 + 贴评论 + 标记失败，等人看完再重新入队。
 // Agent 根本没跑完（基础设施故障）不算工单失败：退避重试，还不行就回滚、释放工单（不贴失败）、整轮停下，下轮重做。
+// Agent 被强制结束（卡死：AGENT_IDLE_SEC 秒没动静；超时：2 小时上限）：诊断 Agent 查原因 → 回滚（半成品另存 diff）→
+// 评论写明结束时在干什么、诊断、diff → 释放、整轮停下，下轮的 Agent 读到评论换个做法；同一张单满 AGENT_KILL_LIMIT 次就标失败转人工。
 //
 // 用法：
 //   miworkflow dev                    按队列一直跑到空
@@ -21,7 +23,7 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, REVIEW, AGENT_RETRY_DELAYS } from '../config.mjs';
+import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, REVIEW, AGENT_RETRY_DELAYS, AGENT_IDLE_SEC, AGENT_KILL_LIMIT } from '../config.mjs';
 import * as source from '../source.mjs';
 
 export const title = '开发：认领工单 → 开发 → 审查 → 验证 → 提交 → 关单';
@@ -100,6 +102,11 @@ export default async function ({ script: rawScript, agent, human, args }) {
       infraStopped = true;
       stop = `Agent 连接失败（工单 ${t.ref}）：已回滚并释放，下轮重做`;
       break;
+    } else if (outcome === 'killed_released') {
+      // 释放的单还排在队首，本轮接着挑会立刻重做；停下，下轮（--every）再带着诊断评论重做
+      infraStopped = true;
+      stop = `Agent 被强制结束（工单 ${t.ref}）：已诊断、回滚并释放，下轮带着诊断重做`;
+      break;
     } else { failures++; }
   }
 
@@ -132,7 +139,7 @@ async function pick(only, ctx) {
 
 const transient = (r) => r?.data?.transient === true;
 
-// 一张工单走完全程；返回 'done' | 'failed' | 'push_failed' | 'unpushed' | 'infra_failed' | 'ticket_down'（停止原因在 ctx.down）
+// 一张工单走完全程；返回 'done' | 'failed' | 'push_failed' | 'unpushed' | 'infra_failed' | 'killed_released' | 'ticket_down'（停止原因在 ctx.down）
 async function runTicket(t, ctx) {
   const { script, human, args, root } = ctx;
 
@@ -160,7 +167,7 @@ async function runTicket(t, ctx) {
     inputs: { cwd: root, ticket: t.file, reply, choices: ['done', 'done_review', 'no_change'] }
   }, async () => { saved += await rollback(base, ctx); });
   notes.push({ who: '开发', reply, answer: dev });
-  if (dev.infra) return release(t, dev.infra, base, ctx, saved);
+  if (dev.infra) return release(t, dev, base, ctx, saved);
   if (dev.status === 'need_human') return fail(t, `Agent 提问：${dev.reason}`, base, ctx, reply);
   if (dev.status !== 'ok' || !['done', 'done_review', 'no_change'].includes(dev.choice)) {
     return fail(t, `开发失败（${dev.choice}）：${dev.reason}`, base, ctx, reply);
@@ -184,7 +191,7 @@ async function runTicket(t, ctx) {
       inputs: { cwd: root, ticket: t.file, reply, changed, choices: ['clean', 'refined', 'reject'] }
     });
     notes.push({ who: '审查', reply, answer: rev });
-    if (rev.infra) return release(t, rev.infra, base, ctx, saved);
+    if (rev.infra) return release(t, rev, base, ctx, saved);
     if (rev.status === 'need_human') return fail(t, `审查者提问：${rev.reason}`, base, ctx, reply);
     if (rev.status !== 'ok' || !['clean', 'refined'].includes(rev.choice)) {
       return fail(t, `审查未通过（${rev.choice}）：${rev.reason}`, base, ctx, reply);
@@ -208,7 +215,7 @@ async function runTicket(t, ctx) {
         inputs: { cwd: root, ticket: t.file, reply, verify: VERIFY, output: v.data?.tail, choices: ['fixed', 'give_up'] }
       });
       notes.push({ who: '验证后修正', reply, answer: fix });
-      if (fix.infra) return release(t, fix.infra, base, ctx, saved);
+      if (fix.infra) return release(t, fix, base, ctx, saved);
       if (fix.status !== 'ok' || fix.choice !== 'fixed') {
         return fail(t, `验证失败后放弃：${fix.reason}`, base, ctx, reply);
       }
@@ -289,19 +296,84 @@ function markQuietly(r, t, what) {
 }
 
 // Agent 基础设施故障重试用完（或不该重试）：回滚到起点，ticket_mark released——摘认领、不贴失败、保留入队，下轮重做
-// saved：重试时已经回滚备份过的提交备注
-async function release(t, reason, base, ctx, saved = '') {
-  console.error(`✖ ${t.ref} Agent 连接失败：${reason}`);
+// r：callAgent 交回的结果（infra 是原因首句）；saved：重试时已经回滚备份过的提交备注
+async function release(t, r, base, ctx, saved = '') {
+  if (KILLED[r.choice]) return killed(t, r, base, ctx, saved);
+  console.error(`✖ ${t.ref} Agent 连接失败：${r.infra}`);
   const note = saved + await rollback(base, ctx);
-  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'released', comment: `Agent 连接失败，已回滚并释放，下轮重做：${reason}${note}` }), t, '释放');
+  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'released', comment: `Agent 连接失败，已回滚并释放，下轮重做：${r.infra}${note}` }), t, '释放');
   return 'infra_failed';
+}
+
+// 被强制结束的两种情形：名字写进评论；focus 告诉诊断 Agent 该往哪查
+const KILLED = {
+  agent_idle: { name: '卡死', focus: '它是长时间没有任何动静被结束的：重点查最后那条命令 / 那一步为什么迟迟不返回。' },
+  agent_timeout: { name: '超时', focus: '它一直在干活，但到了总时长上限还没做完：重点查时间花在了哪——在兜圈子重复同样的尝试、某一步本身很慢，还是这张单太大该拆。' }
+};
+
+// 被强制结束（卡死 / 超时）：趁半成品还在先让诊断 Agent 查原因 → 回滚（半成品另存 diff）→ 评论（适配器记的事实 + 诊断 + diff 位置）→
+// 没满 AGENT_KILL_LIMIT 次就释放，下轮的 Agent 读快照里的评论换个做法；满了就标失败转人工。
+// 第几次 = 快照里以前的这类评论数 + 1（评论开头是 KILL_MARK，卡死、超时合并计数），不另加标签
+const KILL_MARK = 'Agent 被强制结束（第';
+async function killed(t, r, base, ctx, saved) {
+  const kind = KILLED[r.choice];
+  const n = countKilled(t.file) + 1;
+  const last = n >= AGENT_KILL_LIMIT;
+  console.error(`✖ ${t.ref} ${r.reason}`);
+  const diagnosis = await diagnose(t, r, kind, ctx);
+  const back = await restore(base, ctx, { diffFile: path.join(path.dirname(t.file), `killed-${n}.diff`) });
+  const parts = [
+    `${KILL_MARK} ${n} 次，${kind.name}；${last ? `已满 ${AGENT_KILL_LIMIT} 次，不再自动重做` : `满 ${AGENT_KILL_LIMIT} 次转人工`}）：${r.reason}`,
+    `${back?.data?.diff ? `半成品改动已回滚，diff 存在 \`${back.data.diff}\`，接手时可以参考。` : '工作区没有留下改动。'}${saved}${lostNote(back)}`,
+    `**诊断**\n${diagnosis}`,
+    last ? '等人看过再重新入队。' : '接手的 Agent：先读上面的诊断，换个做法，别走同一条路。'
+  ];
+  const file = path.join(path.dirname(t.file), `killed-${n}.md`);
+  writeFileSync(file, `${parts.join('\n\n')}\n`);
+  if (last) {
+    markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'failed', comment: `afk failed：Agent 第 ${n} 次被强制结束`, commentFile: file }), t, '标记失败');
+    return 'failed';
+  }
+  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'released', commentFile: file }), t, '释放');
+  return 'killed_released';
+}
+
+function countKilled(ticketFile) {
+  let text = '';
+  try { text = readFileSync(ticketFile, 'utf8'); } catch { /* 读不到当 0 次 */ }
+  return text.split('\n').filter((l) => l.trimStart().startsWith(KILL_MARK)).length;
+}
+
+// 诊断 Agent：只读，查上一个 Agent 为什么没做完、进展到哪、下次怎么做；没跑成就只留适配器记的事实
+async function diagnose(t, r, kind, ctx) {
+  const reply = nextReply(t);
+  const d = r.data ?? {};
+  const res = await ctx.agent(render('diagnose', {
+    cwd: ctx.root, ticket: t.file, reply, reason: r.reason, focus: kind.focus, trace: d.trace ?? '（没有）', events: d.events ?? '（没有）'
+  }), {
+    label: '诊断Agent',
+    ...(DEV ? { agent: DEV } : {}),
+    inputs: { cwd: ctx.root, ticket: t.file, trace: d.trace, events: d.events, reply, choices: ['diagnosed'] },
+    budget: { timeoutSec: 900, idleSec: 300 }
+  });
+  const draft = readDraft(reply);
+  if (draft) return draft;
+  if (res.status === 'ok' && String(res.reason ?? '').trim()) return String(res.reason).trim();
+  return `诊断 Agent 没跑成（${firstLine(res.reason) || res.choice}），只有上面记的结束时在干什么。`;
 }
 
 // 回滚到起点；丢掉的提交已由 git_restore 备份成 ref，返回写进评论的那句备注（没丢提交就是空串）
 async function rollback(base, ctx) {
-  if (!base) return '';
-  const r = await ctx.script('git_restore', { sha: base, cwd: ctx.root });
-  if (!r.data?.lost?.length) return '';
+  return lostNote(await restore(base, ctx));
+}
+
+async function restore(base, ctx, extra = {}) {
+  if (!base) return null;
+  return ctx.script('git_restore', { sha: base, cwd: ctx.root, ...extra });
+}
+
+function lostNote(r) {
+  if (!r?.data?.lost?.length) return '';
   console.error(`  回滚掉的提交备份在 ${r.data.backup}`);
   return `\n（回滚掉的 ${r.data.lost.length} 笔提交备份在 ${r.data.backup}：${r.data.lost.map((l) => l.split(' ')[0]).join(' ')}）`;
 }
@@ -311,7 +383,7 @@ async function rollback(base, ctx) {
 // 用完或不该重试就交回 { ...结果, infra: 原因首句 }，由调用方 release。
 async function callAgent(ctx, goal, opts, beforeRetry) {
   for (let i = 0; ; i++) {
-    const r = await ctx.agent(goal, opts);
+    const r = await ctx.agent(goal, { ...opts, budget: { idleSec: AGENT_IDLE_SEC, ...opts.budget } });
     const kind = infraKind(r);
     if (!kind) return r;
     const why = firstLine(r.reason) || r.choice;
@@ -324,11 +396,11 @@ async function callAgent(ctx, goal, opts, beforeRetry) {
   }
 }
 
-// 'retry'：连不上 / 崩了 / 被杀了什么都没吐；'stop'：没配 Agent、超时（重试也白搭）；null：Agent 自己给的结论
-const TIMEOUT_RE = /超时（\d+ 秒）/;
+// 'retry'：连不上 / 崩了 / 被杀了什么都没吐；'stop'：没配 Agent、被强制结束（卡死 / 超时，重试也白搭，由 release 转去诊断）；
+// null：Agent 自己给的结论
 function infraKind(r) {
-  if (r.choice === 'agent_unavailable') return 'stop';
-  if (r.choice === 'agent_cli_failed') return TIMEOUT_RE.test(String(r.reason ?? '')) ? 'stop' : 'retry';
+  if (r.choice === 'agent_unavailable' || KILLED[r.choice]) return 'stop';
+  if (r.choice === 'agent_cli_failed') return 'retry';
   if (r.choice === 'agent_invalid_json' && !String(r.data?.stdout ?? '').trim()) return 'retry';
   return null;
 }
@@ -406,14 +478,15 @@ function readDraft(file) {
   try { return readFileSync(file, 'utf8').trim(); } catch { return ''; }
 }
 
-// ── 提示词：正文在 prompts/dev|review|fix.md，{{名字}} 占位 ──
+// ── 提示词：正文在 prompts/dev|review|fix|diagnose.md，{{名字}} 占位 ──
 const PROMPTS = {
   dev: fileURLToPath(new URL('../prompts/dev.md', import.meta.url)),
   review: fileURLToPath(new URL('../prompts/review.md', import.meta.url)),
-  fix: fileURLToPath(new URL('../prompts/fix.md', import.meta.url))
+  fix: fileURLToPath(new URL('../prompts/fix.md', import.meta.url)),
+  diagnose: fileURLToPath(new URL('../prompts/diagnose.md', import.meta.url))
 };
 
-// 项目自己的补充要求：prompts/local/<dev|review|fix>.md，各接到对应提示词的 {{local}} 处；不在模板里，init --upgrade 不碰
+// 项目自己的补充要求：prompts/local/<dev|review|fix|diagnose>.md，各接到对应提示词的 {{local}} 处；不在模板里，init --upgrade 不碰
 const localPrompt = (kind) => {
   let text = '';
   try { text = readFileSync(fileURLToPath(new URL(`../prompts/local/${kind}.md`, import.meta.url)), 'utf8').trim(); } catch { /* 没有就不加 */ }

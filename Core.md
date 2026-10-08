@@ -172,7 +172,9 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
   缺 `status` / `choice` 或 `status` 不在枚举内 → `failed`（`choice: 'agent_bad_output'`），不补默认值、不猜
 - 没配 Agent（`opts.cmd` / `opts.agent` / `AGENTFLOW_AGENT_CMD` / `AGENTFLOW_AGENT` 都没有，§10）→ 不假装思考：
   `status: 'failed'`、`choice: 'agent_unavailable'`，`reason` 说明怎么配
-- 内核适配器起不来 / 非 0 退出 / 超时 / 没回话 → `failed`（`choice: 'agent_cli_failed'`），`reason` 写哪家、原因
+- 内核适配器起不来 / 非 0 退出 / 没回话 → `failed`（`choice: 'agent_cli_failed'`），`reason` 写哪家、原因
+- 被强制结束 → `failed`：看门狗判卡死（事件流 `budget.idleSec` 秒没动静）是 `choice: 'agent_idle'`，到 `budget.timeoutSec` 是 `choice: 'agent_timeout'`；
+  `reason` 写结束时在干什么，`data` 带 `{ idleSec | timeoutSec, stuck, trace, events }`（§10.1）
 - 不输出 actions
 - 可直接写，默认全权限
 - 任务 JS 根据 `choice` 分支，再调 `script()`
@@ -405,6 +407,7 @@ Agent 输入：结构化任务包
   "budget": {
     "maxTokens": 20000,
     "timeoutSec": 7200,
+    "idleSec": 1200,
     "maxTurns": 8
   }
 }
@@ -478,7 +481,7 @@ runner 层从 exec-review 技能复制起步，之后**独立演进**，不回�
   容不下自由形状的 `data`，所以不用。
 - **出**：取最后一条回话，剥掉至多一层代码围栏；整段不是 JSON 时，**取最后一段能解析的 JSON 对象**
   （Agent 常先来一段人话总结再给契约 JSON）——只做传输层归一，不补字段、不猜形状。
-  **合不合契约仍由 core 判**（§6.2），适配器不补默认值。CLI 起不来 / 非 0 退出 / 超时 / 没回话 → 适配器写
+  **合不合契约仍由 core 判**（§6.2），适配器不补默认值。CLI 起不来 / 非 0 退出 / 没回话 → 适配器写
   `{status:'failed', choice:'agent_cli_failed', reason}`（这是事实，不是猜）；`reason` 优先取事件流里的错误
   （codex 的错误不走 stderr），其次 stderr 首句。
 - **运行目录**：`inputs.cwd`，缺省项目根（HOME 叫 `.workflow` 时取上一级，否则就是 HOME，如 `examples/`）。
@@ -496,9 +499,17 @@ runner 层从 exec-review 技能复制起步，之后**独立演进**，不回�
   - 续不上（会话不存在 / CLI 不支持续）→ `{status:'failed', choice:'session_not_found', reason:'<哪家> 续不上会话 <s>：<原因>'}`。
     会话不存在靠 CLI 失败时的错误文本识别（`agents/session.mjs`），认不出的仍是 `agent_cli_failed`。
   - 交回的会话号写在回话 JSON 顶层 `session`；回话不是 JSON 对象时原样交给 core 判（§6.2）。
-- **预算**：只有 `timeoutSec` 真生效 —— 适配器到点杀整棵进程树，core 在 `timeoutSec + 5` 秒兜底；
+- **预算**：`timeoutSec` 与 `idleSec` 真生效 —— 适配器到点杀整棵进程树，core 在 `timeoutSec + 5` 秒兜底；
   `maxTokens` / `maxTurns` 三家都没有对应开关，只写进提示词。默认 7200 秒（2 小时），按改代码这类长活定的；
   短活想早点失败就显式给小一点的 `budget: { timeoutSec }`。
+- **看门狗**（`idleSec`，默认 1200，`0` 关掉）：事件流连续这么多秒没有任何一条事件（含命令输出的增量）就杀整棵进程树。
+  各家 CLI 的单条命令都可以没有超时（pi 的 bash 工具缺省不设），一条全盘 `find /` 就能让整个 Agent 干等到 `timeoutSec`，
+  看门狗按「多久没动静」而不是「总共多久」判。
+- **被强制结束的交回**：卡死 `{status:'failed', choice:'agent_idle', reason, data}`，超时同形、`choice:'agent_timeout'`：
+  `data.stuck` = 最后一个开跑了还没跑完的工具调用 `{ toolName, args, sinceSec }`（没有就是 `null`，停在等模型），
+  `data.trace` = 过程摘要 `<base>.trace.md`（最后 300 行工具调用与回话，给诊断用），`data.events` = 完整事件流，
+  另带 `idleSec` / `timeoutSec`。提示词的预算段写明看门狗，让 Agent 别跑可能很久不返回的命令。
+  被结束后怎么办由任务决定（`dev` 的做法见 §15）。
 - **权限**：三家都全权限（§10）：pi 不排除工具；codex `--dangerously-bypass-approvals-and-sandbox`；
   cursor `--force --approve-mcps --sandbox disabled --trust`。
 - **`choice` 不由 core 校验**：不加 `opts.choices`。可选值放 `inputs.choices` 给适配器渲染，
@@ -758,9 +769,9 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 不默认加载 —— 跟 §16「不内置具体任务 / 脚本」不冲突。模板的 bug 与契约只在内核仓库里改、带测试；
 已经 `init` 过的项目用 `miworkflow init --upgrade` 跟上（2026-09-30 起；此前是「复制过去各自演进、不回头同步」，
 结果同一个 bug 要在两处各修一遍）。归项目的只有配置：`config.mjs`、`source.mjs` 里一行写完的 `export const`
-（升级时原样保留）、`prompts/local/<dev|review|fix>.md`（项目对各 Agent 的补充要求，接到对应提示词的 `{{local}}` 处），
+（升级时原样保留）、`prompts/local/<dev|review|fix|diagnose>.md`（项目对各 Agent 的补充要求，接到对应提示词的 `{{local}}` 处），
 以及项目自己加的任务 / 脚本；想改模板行为就把它做成一行常量或补充要求，别直接改模板文件，下次升级会被覆盖（有备份）。
-模板的测试留在内核仓库的 `tests/template-*.test.mjs`（假外部命令 / 假 Agent / 临时 git 仓库），保证复制出去的那一刻是好的。`init` 按组合复制：先复制共用模板 `templates/_shared/`（两个任务 `dev` / `discuss`，讨论提示词 `prompts/grilling|spec|tickets.md`，开发提示词 `prompts/dev|review|fix.md`，git 脚本、`run_cmd`、`config.mjs`），再复制所选工单源；以 `_` 开头的目录不出现在模板菜单与 `--template` 里。
+模板的测试留在内核仓库的 `tests/template-*.test.mjs`（假外部命令 / 假 Agent / 临时 git 仓库），保证复制出去的那一刻是好的。`init` 按组合复制：先复制共用模板 `templates/_shared/`（两个任务 `dev` / `discuss`，讨论提示词 `prompts/grilling|spec|tickets.md`，开发提示词 `prompts/dev|review|fix|diagnose.md`，git 脚本、`run_cmd`、`config.mjs`），再复制所选工单源；以 `_` 开头的目录不出现在模板菜单与 `--template` 里。
 
 工单源的约定就是三个脚本名 + 输入输出（不做抽象层，TODO F2）；`dev` 只调它们，不知道背后是哪家。工单号一律字符串，日志 / 评论 / 提问里用工单引用 `ref`：
 
@@ -794,8 +805,15 @@ AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 
   一张工单一笔（`git_commit` 收 `baseSha`，Agent 自己做的提交先 `reset --soft` 压进来）；提交后回读，标题被钩子改了或带 AI 署名（`Co-authored-by` / `Made-with` 等）判失败回滚。
 - **审查按需**（`config.mjs` 的 `REVIEW`，缺省 `'auto'`）：工单贴了「要审查」标签（`source.mjs` 的 `LABELS.review`）、或 DEV 回话选 `done_review` 主动升级，才起审查 Agent；
   否则 DEV 完成后直接进验证 / 提交。`REVIEW = 'always'` 恢复「每张都审」。DEV 只能升级不能降级，`prompts/dev.md` 列了该升级的情形。
+- **被强制结束**（§10.1 的 `agent_idle` 卡死 / `agent_timeout` 超时；卡死阈值 `config.mjs` 的 `AGENT_IDLE_SEC`）：不重试，两种走同一条路。
+  诊断 Agent（只读，`prompts/diagnose.md`，自己的看门狗 300 秒）趁半成品还在，读过程摘要查为什么没做完、进展到哪、下次怎么做
+  （卡死时重点查那条命令为什么不返回，超时时重点查时间花在哪、要不要拆单），写成诊断稿 →
+  `git_restore` 回滚，回滚前把改动存成同目录 `killed-<n>.diff` →
+  评论（开头 `Agent 被强制结束（第 n 次，卡死|超时；…）`：适配器记的结束时在干什么 + 诊断稿 + diff 位置）→ `released`、整轮停下。
+  下轮接单的 Agent 从工单快照的评论里读到诊断，`prompts/dev.md` 要它换个做法。第几次 = 快照里以这句开头的评论数 + 1（卡死、超时合并计数），不另加标签；
+  满 `AGENT_KILL_LIMIT` 次（缺省 3）改为 `failed` 转人工——评论只能降低重犯的概率，次数上限才挡得住死循环。诊断没跑成，评论照发，只是没有诊断稿。
 - **机器标签**（名字在各工单源的 `source.mjs`，可改）：入队 `ready-for-agent`；`afk-claimed`（认领中）/ `afk-delivered`（已交付）/ `afk-failed`（失败）。依赖满足 = 前置单贴了 `afk-delivered` 或已关单（TAPD：已到结束类状态）。
-- 每个工单源带 `source.mjs`：这家的常量 + `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY` + `commitMessage(ticket, { type, summary })`；共用的 `config.mjs` 只留 `DEV / REVIEWER / REVIEW / VERIFY / ROUNDS / PUSH`。
+- 每个工单源带 `source.mjs`：这家的常量 + `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY` + `commitMessage(ticket, { type, summary })`；共用的 `config.mjs` 只留 `DEV / REVIEWER / REVIEW / VERIFY / ROUNDS / PUSH / AGENT_RETRY_DELAYS / AGENT_IDLE_SEC / AGENT_KILL_LIMIT`。
 
 已实现的工单源：
 `templates/github/` = GitHub（`ticket_*` 脚本、讨论流程的 `discuss_*` 脚本、`source.mjs`；配合共用的 `dev` 与 `discuss`：认领 issue → 开发 →（要审查的单子）审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`；讨论单贴 `agent-discuss` → 评论区逐轮追问 → `/spec` 写进正文 → `/tickets` 建开发单，见 TODO C3、F2、F4）。

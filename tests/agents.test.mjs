@@ -128,12 +128,13 @@ test('renderPrompt：goal、inputs、constraints、预算与输出契约都在',
     goal: '修掉失败的测试',
     inputs: { failures: 3, choices: ['fixed', 'give_up'] },
     constraints: ['不改公共 API'],
-    budget: { maxTokens: 20000, maxTurns: 8, timeoutSec: 600 }
+    budget: { maxTokens: 20000, maxTurns: 8, timeoutSec: 600, idleSec: 1200 }
   });
   assert.match(p, /修掉失败的测试/);
   assert.match(p, /"failures": 3/);
   assert.match(p, /- 不改公共 API/);
   assert.match(p, /600 秒后会被强制结束/);
+  assert.match(p, /连续 1200 秒没有任何动静.*会被当成卡死/);
   assert.match(p, /`fixed` \/ `give_up`/, 'choice 只能取 inputs.choices');
   assert.match(p, /ok.*need_human.*failed/);
 });
@@ -198,7 +199,20 @@ const emit = (ev) => process.stdout.write(JSON.stringify(ev) + '\\n');
 const say = (text) => emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } });
 if (mode === 'crash') { process.stderr.write('boom: 模型不存在\\n'); process.exit(3); }
 if (mode === 'hang') setInterval(() => {}, 1000);
-else {
+else if (mode === 'stuck') {
+  emit({ type: 'tool_execution_start', toolCallId: '1', toolName: 'read', args: { path: 'a.cs' } });
+  emit({ type: 'tool_execution_end', toolCallId: '1', toolName: 'read', result: {} });
+  emit({ type: 'tool_execution_start', toolCallId: '2', toolName: 'bash', args: { command: 'find / -name x' } });
+  setInterval(() => {}, 1000);
+} else if (mode === 'chatty') {
+  let n = 0;
+  const timer = setInterval(() => {
+    emit({ type: 'message_update' });
+    if (++n < 8) return;
+    clearInterval(timer);
+    say(JSON.stringify({ status: 'ok', choice: 'done', reason: '一直有动静', data: {} }));
+  }, 250);
+} else {
   emit({ type: 'tool_execution_start', toolCallId: '1', toolName: 'bash', args: { command: 'ls' } });
   if (mode === 'prose') say('我改好了，没什么要交回的');
   if (mode === 'ok') {
@@ -297,10 +311,34 @@ test('回话不是 JSON → 适配器不猜，core 判 agent_invalid_json', asyn
   assert.match(r.data.stdout, /我改好了/);
 });
 
-test('超时 → 适配器杀掉 CLI，agent_cli_failed', async () => {
+test('超时 → 适配器杀掉 CLI，agent_timeout，同样交回结束时在跑什么与过程摘要', async () => {
   const { r } = await callAgent('随便', { agent: 'pi', budget: { timeoutSec: 1 } }, 'hang');
-  assert.equal(r.choice, 'agent_cli_failed');
-  assert.match(r.reason, /超时（1 秒）/);
+  assert.equal(r.status, 'failed');
+  assert.equal(r.choice, 'agent_timeout');
+  assert.match(r.reason, /pi 超时（1 秒），已结束进程；没有在跑的工具，停在等模型回话/);
+  assert.equal(r.data.timeoutSec, 1);
+  assert.equal(r.data.stuck, null);
+  assert.ok(existsSync(r.data.trace));
+});
+
+test('看门狗：事件流 idleSec 秒不动 → 杀掉 CLI，agent_idle，交回卡住的工具调用与过程摘要', async () => {
+  const { r, runId } = await callAgent('随便', { agent: 'pi', budget: { idleSec: 1 } }, 'stuck');
+  assert.equal(r.status, 'failed');
+  assert.equal(r.choice, 'agent_idle');
+  assert.match(r.reason, /pi 空闲 1 秒没有动静，已结束进程；卡在 bash：find \/ -name x/);
+  assert.equal(r.data.idleSec, 1);
+  assert.deepEqual(r.data.stuck.args, { command: 'find / -name x' }, '跑完了的 read 不算卡住');
+  const trace = readFileSync(r.data.trace, 'utf8');
+  assert.match(trace, /· read a\.cs/);
+  assert.match(trace, /· bash find \/ -name x/);
+  const row = rows(runId).at(-1);
+  assert.equal(path.resolve(r.data.events), path.join(LOGS, row.events));
+  assert.equal(row.say, r.reason);
+});
+
+test('看门狗：一直有动静（哪怕只是输出增量）就不杀', async () => {
+  const { r } = await callAgent('随便', { agent: 'pi', budget: { idleSec: 1 } }, 'chatty');
+  assert.equal(r.choice, 'done', JSON.stringify(r));
 });
 
 test('不认识的 CLI、cursor 只给 thinking → agent_cli_failed，说清原因', async () => {

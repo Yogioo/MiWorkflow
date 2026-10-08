@@ -35,6 +35,10 @@ export function renderPrompt(pkg) {
   if (budget.maxTokens) hints.push(`约 ${budget.maxTokens} tokens`);
   if (budget.maxTurns) hints.push(`约 ${budget.maxTurns} 轮`);
   if (budget.timeoutSec) hints.push(`${budget.timeoutSec} 秒后会被强制结束`);
+  if (budget.idleSec) {
+    hints.push(`连续 ${budget.idleSec} 秒没有任何动静（包括一条命令迟迟不出输出）会被当成卡死、强制结束：` +
+      '别跑全盘搜索（如 find /）这类可能很久不返回的命令，长命令自己加超时');
+  }
   if (hints.length) lines.push('# 预算', '', hints.join('；'), '');
 
   lines.push(

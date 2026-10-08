@@ -103,7 +103,7 @@ writeFileSync(FAKE_AGENT, [
   'const planFile = process.env.FAKE_AGENT_PLAN;',
   'const plan = JSON.parse(readFileSync(planFile, "utf8"));',
   'const step = plan.shift();',
-  'writeFileSync(planFile + ".seen.jsonl", JSON.stringify({ goal: pkg.goal, session: pkg.inputs?.session, issue: pkg.inputs?.issue, ticket: pkg.inputs?.ticket, reply: pkg.inputs?.reply }) + "\\n", { flag: "a" });',
+  'writeFileSync(planFile + ".seen.jsonl", JSON.stringify({ goal: pkg.goal, session: pkg.inputs?.session, issue: pkg.inputs?.issue, ticket: pkg.inputs?.ticket, reply: pkg.inputs?.reply, budget: pkg.budget }) + "\\n", { flag: "a" });',
   'writeFileSync(planFile, JSON.stringify(plan));',
   'if (step.crash) process.exit(1);',
   'if (step.file) writeFileSync(path.join(pkg.inputs.cwd, step.file.name), step.file.content);',
@@ -162,7 +162,7 @@ export const issue = (number, { title = `issue ${number}`, body = `做 ${number}
 
 // review：config.mjs 的 REVIEW。缺省 'always'——既有场景大多在验审查路径，保持它们照旧覆盖；
 // 审不审（'auto'）另有用例（tests/support/dev-scenarios.mjs 里的「审查分级」）。
-export const CONFIG = (verify, rounds, push, retryDelays = [0, 0], review = 'always') => [
+export const CONFIG = (verify, rounds, push, retryDelays = [0, 0], review = 'always', idleSec = 1200, killLimit = 3) => [
   'export const DEV = null;',
   'export const REVIEWER = null;',
   `export const REVIEW = ${JSON.stringify(review)};`,
@@ -170,12 +170,14 @@ export const CONFIG = (verify, rounds, push, retryDelays = [0, 0], review = 'alw
   `export const ROUNDS = ${rounds};`,
   `export const PUSH = ${push};`,
   `export const AGENT_RETRY_DELAYS = ${JSON.stringify(retryDelays)};`,
+  `export const AGENT_IDLE_SEC = ${idleSec};`,
+  `export const AGENT_KILL_LIMIT = ${killLimit};`,
   ''
 ].join('\n');
 
 // repoLabels：给了就只认这些仓库标签（贴没有的会报错，要先 gh label create）；不给 = 什么标签都能贴
 // retryDelays：Agent 基础设施故障的重试间隔，测试里缺省 [0, 0]（不真等）
-export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {}, retryDelays = [0, 0], ticketRetryDelays = [0, 0, 0], review = 'always' } = {}) {
+export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {}, retryDelays = [0, 0], ticketRetryDelays = [0, 0, 0], review = 'always', idleSec, killLimit } = {}) {
   const base = tmpDir();
   const root = path.join(base, 'repo');
   mkdirSync(root, { recursive: true });
@@ -188,7 +190,7 @@ export function setup({ source = 'github', issues = [], repoLabels, verify = '',
   writeFileSync(srcFile, readFileSync(srcFile, 'utf8')
     .replace(/(export const (?:GH|TAPD)_RETRY_DELAYS = )\[[^\]]*\];/, `$1${JSON.stringify(ticketRetryDelays)};`));
   const withPush = push || remoteAhead;
-  writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush, retryDelays, review));
+  writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush, retryDelays, review, idleSec, killLimit));
   writeFileSync(path.join(home, '.gitignore'), 'logs/\n');
 
   git(['init', '-q', '--initial-branch=main'], root);

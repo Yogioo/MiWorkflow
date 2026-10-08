@@ -207,6 +207,21 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
         `ticket_mark` 不再拼硬编码开头、不截断，调用方给整段；失败发完整原因。`comment add` 的 id 按 `{ ok, id }` 取，为空时按评论人回查。
       - 同步：`miworkflow init --upgrade`，模板文件覆盖，`config.mjs` / `source.mjs` 里一行写完的 `export const` 保留项目的值，旧文件备份。
 
+- [x] **B9. Agent 卡在一条不返回的命令上，整个 run 干等到 2 小时超时**（2026-10-08 DigitDoor 实遇）—— **2026-10-08 定并实现**
+      现象：DigitDoor `dev` 的 pi Agent 跑了 `find / -name SystemContext.cs ... | head -3`（Git Bash 全盘扫），13 分钟后起再无一条事件，
+      干等 75 分钟才被人发现；pi 的 bash 工具缺省不设超时（`timeout` 参数要模型自己给），内核只有按总时长的 `timeoutSec`（7200）。
+      单纯「卡了就杀、释放下轮重做」会死循环：模型下一轮多半还走同一条路，释放又不计入 `--max-failures`。
+      原来的 2 小时超时也是同一个洞：释放后从零重做、评论只有一句「超时」，同样没尽头、没留痕。
+      实现（超时与卡死统一成「被强制结束」，同一套诊断兜底）：
+      - 内核：适配器看门狗 `budget.idleSec`（缺省 1200，`0` 关），事件流这么久没动静就杀整棵进程树，交回 `agent_idle`；
+        超时从 `agent_cli_failed` 拆出来交回 `agent_timeout`。两者都带 `data.stuck`（结束时在跑的工具调用）、`data.trace`（过程摘要）、`data.events`；
+        提示词预算段写明看门狗，让 Agent 别跑全盘搜索这类命令（`Core.md` §10.1）。
+      - 模板 `dev`：被强制结束不重试 → 诊断 Agent（只读，卡死 / 超时各给一句查的重点）趁半成品还在查原因 → 回滚，改动先存 `killed-<n>.diff` →
+        评论写结束时在干什么 + 诊断 + diff → 释放、整轮停下；下轮 Agent 从快照评论读到诊断（`prompts/dev.md` 要它换做法）。
+        同一张单满 `AGENT_KILL_LIMIT`（卡死、超时合并计数，缺省 3）次转人工（`afk-failed`），次数按快照里的这类评论数，不加标签（`Core.md` §15）。
+        卡死阈值 `AGENT_IDLE_SEC` 在 `config.mjs`，缺省 1200 秒。
+      - 没做：只杀卡住的那条工具命令、保住 Agent 进度（要跨平台找孙进程、绕开常驻的 MCP 子进程，太脆）。
+
 ## C. 初始工作流创建体验
 
 - [x] **C1. 补 `AGENTS.md`** —— 并入 B3：改为内核根的 `SKILL.md`，可链成技能（已写）
@@ -443,7 +458,7 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 - ✅ #27（2026-09-30，起因：本机代理断了，#23、#24 被当工单失败回滚 + 贴 `afk-failed`）：`dev` 区分 Agent 基础设施故障——
   `agent_cli_failed`（超时除外）/ 空 stdout 的 `agent_invalid_json` 按 `AGENT_RETRY_DELAYS` 退避重试（开发重试前先回起点），
   用完或 `agent_unavailable` / 超时就回滚、`ticket_mark released`（摘认领、不贴失败、保留 ready）、整轮停下，不计入 `--max-failures`。
-  待做：Agent 静默超时（N 分钟无事件就杀，要改 `agents/runners/`）
+  ~~待做：Agent 静默超时（N 分钟无事件就杀）~~ —— 已由 B9 实现（看门狗在 `agents/agent_cli.mjs`，没动 runners）；超时也改走 B9 的诊断兜底。
 - ✅ #28（2026-09-30，起因：GitHub API 连续 5xx，#26 已推送却关单失败被记成工单失败、#27 认领两次失败，整轮「连续失败 3 次」退出）：
   `runGh` / `runTapd` 对 5xx、GraphQL 通用服务端报错、限流按 `GH_RETRY_DELAYS` / `TAPD_RETRY_DELAYS`（各家 `source.mjs`）秒级退避，
   用完 `ticket_*` 出 `data.transient`；`dev` 在挑单 / 认领 / 关单时见到就整轮停下（不计入 `--max-failures`、不贴 `afk-failed`、不回滚已推送代码）。

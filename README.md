@@ -79,7 +79,8 @@ AGENTFLOW_AGENT=codex miworkflow fix_tests     # PowerShell：$env:AGENTFLOW_AGE
 
 也可以每次调用单独选：`agent(goal, { agent: { cli: 'pi', model: 'sonnet', thinking: 'high' } })`。
 终端里能看到 Agent 每一步（`· 工具`、`» 说了什么`）；提示词、原始输出、事件落在 `.workflow/logs/<runId>/`。
-默认超时 2 小时，想早点失败就给 `budget.timeoutSec`。完整说明见 [Core.md](Core.md) §10.1。
+默认超时 2 小时，想早点失败就给 `budget.timeoutSec`；另有看门狗：事件流 20 分钟没动静（比如一条命令迟迟不返回）就当卡死结束，
+`budget.idleSec` 改阈值、`0` 关掉。完整说明见 [Core.md](Core.md) §10.1。
 
 让 AI 写任务：`init` 往项目根的 `AGENTS.md` 追加一段入口（没有就建、有就追加，项目原有内容一个不动），
 Cursor / Codex / Claude Code / pi 从 cwd 往上就能读到，它让 AI 先跑 `miworkflow skill` 读完整写法（即内核的 [SKILL.md](SKILL.md)）；也可以把内核目录链成技能。
@@ -128,8 +129,14 @@ DEV 只能升级不能降级：提示词列了该升级的情形（改公共接�
 - **业务失败**（Agent 说不行）：`need_human`、`no_change`、审查 `reject`、验证放弃或不过、输出不合契约等，照上面回滚 + 贴 `afk-failed` + 评论。
 - **Agent 没跑完**（基础设施故障）：CLI 起不来 / 非 0 退出 / 没回话（`agent_cli_failed`），或进程被杀什么都没吐（空输出的 `agent_invalid_json`）。
   按 `config.mjs` 的 `AGENT_RETRY_DELAYS`（缺省 30 秒、2 分钟，空数组 = 不重试）重试同一步，开发重试前先回到本轮起点；
-  还不行，或没配 Agent（`agent_unavailable`）、超时，就回滚（提交先备份成 `refs/afk-backup/*`）、摘 `afk-claimed`、**不贴** `afk-failed`、
+  还不行，或没配 Agent（`agent_unavailable`），就回滚（提交先备份成 `refs/afk-backup/*`）、摘 `afk-claimed`、**不贴** `afk-failed`、
   评论「Agent 连接失败，已回滚并释放，下轮重做：<原因>」，整轮立即停下（退出码非 0，不计入 `--max-failures`），下一轮自动重做。
+- **Agent 被强制结束**：卡死（看门狗 `agent_idle`：`config.mjs` 的 `AGENT_IDLE_SEC` 内事件流没动静，缺省 1200 秒，`0` 不看）
+  或超时（`agent_timeout`：到 2 小时上限），都不重试，走同一条路：
+  先叫诊断 Agent（只读）趁半成品还在查为什么没做完、进展到哪、下次怎么做 → 回滚，半成品另存 `killed-<n>.diff` →
+  评论「Agent 被强制结束（第 n 次，卡死|超时；…）」写明结束时在干什么、诊断、diff 位置 → 释放、整轮停下；
+  下轮接单的 Agent 从快照评论里读到诊断，换个做法。同一张单满 `AGENT_KILL_LIMIT` 次（卡死、超时合并计数，缺省 3）就贴 `afk-failed` 转人工。
+  项目对诊断的补充要求写 `prompts/local/diagnose.md`。
 - **工单系统暂时不可用**：GitHub / TAPD 服务端 5xx、网络、限流、GraphQL 通用服务端报错（`Something went wrong while executing your query`、不带 4xx 的 `Could not ...`）。
   `ticket_*` 脚本按各家 `source.mjs` 的 `GH_RETRY_DELAYS` / `TAPD_RETRY_DELAYS`（缺省 5 秒、20 秒、60 秒）退避重试，还不行就出 `failed` + `data.transient`；
   `dev` 看到就整轮立即停下（退出码非 0，不计入 `--max-failures`，不贴 `afk-failed`）：认领时失败还没动 git，下轮重做；

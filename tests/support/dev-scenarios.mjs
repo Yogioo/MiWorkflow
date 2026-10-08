@@ -2,7 +2,7 @@
 // 断言只在「完成」的含义上按工单源分支，其余共用。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { plan, seen, cli, gitOut } from './github-template.mjs';
 
@@ -269,22 +269,16 @@ export function defineDevScenarios(src) {
     assert.match(r.stderr + r.stdout, /Agent 连接失败（工单 [^）]+）：已回滚并释放，下轮重做/);
   });
 
-  scenario('没配 Agent / 超时 → 不重试，直接释放并停下', {
+  scenario('没配 Agent → 不重试，直接释放并停下', {
     tickets: [{ key: 1, labels: READY }, { key: 2, labels: READY }]
   }, (s, view) => {
     plan(s, [{ status: 'failed', choice: 'agent_unavailable', reason: '未配置 Agent：设 AGENTFLOW_AGENT' }]);
-    let r = cli(s, ['dev']);
+    const r = cli(s, ['dev']);
     assert.equal(r.code, 1);
     assert.equal(seen(s).length, 1);
     assertReleased(view(1));
     assert.ok(view(1).comments.some((c) => c.includes('未配置 Agent')));
     assert.deepEqual(view(2).labels, READY);
-
-    plan(s, [{ status: 'failed', choice: 'agent_cli_failed', reason: 'cursor 超时（7200 秒），已结束进程' }, INFRA]);
-    r = cli(s, ['dev']);
-    assert.equal(r.code, 1);
-    assert.equal(seen(s).length, 2, '超时不重试');
-    assertReleased(view(1));
   });
 
   scenario('Agent 进程什么都没吐（空 stdout）→ 按连不上重试；AGENT_RETRY_DELAYS 为空就不重试', {
@@ -295,6 +289,70 @@ export function defineDevScenarios(src) {
     assert.equal(r.code, 1);
     assert.equal(seen(s).length, 1);
     assertReleased(view(1));
+  });
+
+  // ── 被强制结束（卡死 / 超时）：诊断 → 回滚存 diff → 评论 → 释放；同一张单满 AGENT_KILL_LIMIT 次转人工 ──
+  const TIMEOUT = {
+    status: 'failed',
+    choice: 'agent_timeout',
+    reason: 'pi 超时（7200 秒），已结束进程；没有在跑的工具，停在等模型回话',
+    data: { timeoutSec: 7200, stuck: null, trace: 'T/agent-2.trace.md', events: 'T/agent-2.events.jsonl' }
+  };
+  const IDLE = (extra = {}) => ({
+    status: 'failed',
+    choice: 'agent_idle',
+    reason: 'pi 空闲 1200 秒没有动静，已结束进程；卡在 bash：find / -name SystemContext.cs（已跑 1200 秒）',
+    data: { idleSec: 1200, stuck: { toolName: 'bash', args: { command: 'find / -name SystemContext.cs' }, sinceSec: 1200 }, trace: 'T/agent-1.trace.md', events: 'T/agent-1.events.jsonl' },
+    ...extra
+  });
+  const DIAG = { choice: 'diagnosed', reason: '卡在全盘 find', reply: '卡在 `find /` 全盘搜索。\n下次去 Library/PackageCache 找。' };
+
+  scenario('Agent 卡死 → 不重试：诊断 → 回滚并存 diff → 评论写卡在哪 + 诊断 + diff → 释放、整轮停下', {
+    tickets: [{ key: 1, labels: READY }, { key: 2, labels: READY }], idleSec: 900
+  }, (s, view) => {
+    plan(s, [IDLE({ file: { name: 'half.txt', content: 'half\n' } }), DIAG]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 1);
+    const [dev, diag] = seen(s);
+    assert.equal(seen(s).length, 2, '卡死不重试，只多叫一个诊断 Agent');
+    assert.equal(dev.budget.idleSec, 900, 'AGENT_IDLE_SEC 传给 Agent');
+    assert.ok(diag.goal.includes('find / -name SystemContext.cs') && diag.goal.includes('T/agent-1.trace.md'), diag.goal);
+    assert.ok(diag.goal.includes('迟迟不返回'), '卡死时让诊断 Agent 查那条命令');
+    assert.equal(diag.budget.idleSec, 300, '诊断 Agent 自己也有看门狗');
+
+    const t = view(1);
+    assert.equal(t.closed, false);
+    assert.deepEqual(t.labels, READY, '释放：摘 afk-claimed、不贴 afk-failed、保留 ready');
+    const c = t.comments.at(-1);
+    assert.ok(c.includes('Agent 被强制结束（第 1 次，卡死；满 3 次转人工）'), c);
+    assert.ok(c.includes('find / -name SystemContext.cs') && c.includes('下次去 Library/PackageCache 找') && c.includes('killed-1.diff'), c);
+
+    const diff = path.join(path.dirname(dev.ticket), 'killed-1.diff');
+    assert.match(readFileSync(diff, 'utf8'), /half\.txt[\s\S]*\+half/, '回滚前存下的 diff 带上新建的文件');
+    assert.ok(!existsSync(path.join(s.root, 'half.txt')), '回滚了');
+    assert.equal(gitOut(['status', '--porcelain'], s.root), '');
+    assert.deepEqual(view(2).labels, READY, '整轮停下，不挑下一张');
+    assert.match(r.stderr + r.stdout, /Agent 被强制结束（工单 [^）]+）：已诊断、回滚并释放/);
+  });
+
+  scenario('卡死、超时合并计数：满 AGENT_KILL_LIMIT 次 → 标失败转人工；下次接单读得到上次的诊断；诊断没跑成也照样评论', {
+    tickets: [{ key: 1, labels: READY }], killLimit: 2
+  }, (s, view) => {
+    plan(s, [IDLE(), DIAG]);
+    assert.equal(cli(s, ['dev']).code, 1);
+    assert.deepEqual(view(1).labels, READY);
+
+    plan(s, [TIMEOUT, { crash: true }]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 1);
+    assert.equal(seen(s).length, 4, '超时也不重试');
+    assert.ok(readFileSync(seen(s)[2].ticket, 'utf8').includes('下次去 Library/PackageCache 找'), '第二轮的快照里有第一次的诊断');
+    assert.ok(seen(s)[3].goal.includes('兜圈子'), '超时时让诊断 Agent 查时间花在哪');
+    assertFailed(view(1));
+    const c = view(1).comments.at(-1);
+    assert.ok(c.includes('afk failed') && c.includes('Agent 被强制结束（第 2 次，超时；已满 2 次，不再自动重做）'), c);
+    assert.ok(c.includes('pi 超时（7200 秒）'), c);
+    assert.ok(c.includes('诊断 Agent 没跑成') && c.includes('工作区没有留下改动'), c);
   });
 
   scenario('回帖稿带进失败评论：一句话在前、回帖稿在后', { tickets: [{ key: 1, labels: READY }] }, (s, view) => {

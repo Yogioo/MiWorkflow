@@ -27,5 +27,14 @@ export const PUSH = true;
 
 // Agent 根本没跑完（CLI 起不来 / 非 0 退出 / 没回话，或被杀掉什么都没吐）时，隔多久重试同一步（毫秒）。
 // 缺省重试 2 次：30 秒、2 分钟；空数组 = 不重试。重试完还不行：回滚、释放工单（不贴 afk-failed）、整轮停下。
-// 超时（agents/agent_cli.mjs 的 2 小时上限）与没配 Agent 不重试。
+// 没配 Agent、被强制结束（卡死 / 超时，见下）不重试。
 export const AGENT_RETRY_DELAYS = [30_000, 120_000];
+
+// 看门狗：Agent 连续这么多秒没有任何动静（事件流不前进，比如一条命令迟迟不返回）就算卡死，杀掉整棵进程树。
+// 0 = 不看。合法但长时间不出声的命令（Unity 批处理编译、装包）要比它短，不然会被误杀。
+// 被强制结束（卡死，或到 agents/agent_cli.mjs 的 2 小时超时）后：诊断 Agent 查原因写成评论 →
+// 回滚（半成品另存 diff）→ 释放工单、整轮停下，下轮带着诊断重做。
+export const AGENT_IDLE_SEC = 1200;
+
+// 同一张工单被强制结束（卡死、超时合并计数）第几次就不再重做，转人工（贴 afk-failed）
+export const AGENT_KILL_LIMIT = 3;

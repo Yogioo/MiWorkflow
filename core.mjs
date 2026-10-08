@@ -146,7 +146,7 @@ export async function agent(goal, opts = {}) {
     goal,
     inputs: opts.inputs ?? {},
     constraints: opts.constraints ?? [],
-    budget: { maxTokens: 20000, timeoutSec: 7200, maxTurns: 8, ...(opts.budget ?? {}) }
+    budget: { maxTokens: 20000, timeoutSec: 7200, idleSec: 1200, maxTurns: 8, ...(opts.budget ?? {}) }
   };
 
   let status;
