@@ -14,6 +14,10 @@
 //   miworkflow dev --issue 42         只做工单 42（不看入队和依赖，人点名就跑）
 //   miworkflow dev --confirm          每次提交（+ 推送 + 标记完成）前 human 确认
 //   miworkflow dev --dry-run          只报会做哪些工单、哪些被挡住，不改工单、不改 git
+//   miworkflow dev --now              忽略退避，立刻就列一次队（队列空过一阵之后不想等）
+//
+// 省着查（工单系统有调用额度）：队列空的那一轮记退避（logs/dev.pace.json，实现在 scripts/_pace.mjs），
+// 空闲期最多每 config.mjs 的 DEV_IDLE_MAX_SEC 秒列一次队；--issue、--dry-run、--now 直接放行。
 //   miworkflow stop dev               手头这张单做完（提交、标记）就停，不再挑下一张；--now 立刻强关、半成品留给人
 //
 // 提交权在工作流：Agent 只改代码、在回话 data 里给 type / summary，审查、验证（和 --confirm）之后由这里统一提交，
@@ -24,13 +28,17 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, REVIEW, AGENT_RETRY_DELAYS, AGENT_IDLE_SEC, AGENT_KILL_LIMIT } from '../config.mjs';
+import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, REVIEW, AGENT_RETRY_DELAYS, AGENT_IDLE_SEC, AGENT_KILL_LIMIT, DEV_IDLE_MAX_SEC } from '../config.mjs';
 import * as source from '../source.mjs';
+import { paceOf, clock } from '../scripts/_pace.mjs';
 
 export const title = '开发：认领工单 → 开发 → 审查 → 验证 → 提交 → 关单';
 
 // .workflow/ 的上一级 = 项目根
 const PROJECT = fileURLToPath(new URL('../..', import.meta.url));
+
+// 省着查的记账：logs/dev.pace.json（实现见 scripts/_pace.mjs）
+const devPace = paceOf('dev', DEV_IDLE_MAX_SEC);
 
 export default async function ({ script: rawScript, agent, human, args, stopping = () => false }) {
   // 工单脚本内部对工单系统故障退避重试（一次 ticket_mark 可能多条命令各自等），缺省 120 秒不够
@@ -39,6 +47,13 @@ export default async function ({ script: rawScript, agent, human, args, stopping
   const max = args.max ? Number(args.max) : Infinity;
   const maxFailures = args['max-failures'] ? Number(args['max-failures']) : 3;
   const only = args.issue ? String(args.issue) : null;
+  // 省着查：退避对所有调用方生效（单跑也读）——只管 --every 循环的话，外面套一层 while 反复单跑，
+  // 每轮都实打实列一次队。人点名的（--issue）、干跑、--now 放行：这三种都是当场就要看结果。
+  const force = Boolean(args.now || only || process.env.AGENTFLOW_DRY_RUN === '1');
+  if (!force && devPace.held()) {
+    console.log(`还没到点：${clock(devPace.read().nextAt)} 再查（上一轮队列空；要立刻就做用 --now）`);
+    return;
+  }
   const ctx = { script, agent, human, args };
 
   // 开跑前工作区必须干净，免得把人的改动混进提交或被回滚掉
@@ -113,6 +128,9 @@ export default async function ({ script: rawScript, agent, human, args, stopping
   }
 
   console.log(`本轮结束：完成 ${done} 个，失败 ${failures} 个；${stop}`);
+  // 队列空（没做成、也没出事）才记退避；出过事的下一轮照旧快查，别把重试拖慢
+  const after = devPace.settle(done > 0 || failures > 0 || pushStopped || infraStopped);
+  if (after.idle && after.nextAt > Date.now()) console.log(`队列空，${clock(after.nextAt)} 再查（要立刻就做用 --now）`);
   if (failures > 0) throw new Error(`本轮有 ${failures} 个工单失败（停止原因：${stop}）`);
   if (pushStopped || infraStopped) throw new Error(stop);
 }
@@ -123,7 +141,8 @@ async function pick(only, ctx) {
   const { script } = ctx;
   let id = only;
   if (id === null) {
-    const r = await script('ticket_ready', {});
+    // first：只要第一张可做的就行——别为后面整条队列（每张一次依赖查询、每个前置一次 /stories）付钱
+    const r = await script('ticket_ready', { first: true });
     if (r.status !== 'ok') {
       if (transient(r)) return { down: `工单系统暂时不可用（列就绪工单）：${firstLine(r.error)}` };
       throw new Error(`列就绪工单失败：${r.error}`);

@@ -237,6 +237,41 @@ test('ticket_ready：空壳需求进 blocked，贴 afk-failed + 评论；干跑�
   }
 });
 
+test('ticket_ready first：只扫到第一张可做的（dev 只用第一张，不为整条队列付依赖查询）', async () => {
+  const seed = () => ({
+    stories: [
+      story('1152360842001005001', { label: 'ready-for-agent', priority: '高' }),
+      story('1152360842001005002', { label: 'ready-for-agent', priority: '低' }),
+      story('1152360842001005003', { label: 'ready-for-agent', priority: '低' })
+    ]
+  });
+  const relIds = (f) => openApiLog(f).filter((l) => l.url.includes('get_time_relative_stories'))
+    .map((l) => /story_id=(\d+)/.exec(l.url)[1]);
+
+  const lazy = stateFile(seed());
+  const api1 = await startFakeOpenApi(lazy);
+  let out;
+  try {
+    ({ out } = runScript('ticket_ready', { first: true }, tapdEnv(lazy, api1.endpoint)));
+  } finally {
+    await api1.close();
+  }
+  assert.deepEqual(out.data.ready.map((t) => t.id), ['1152360842001005001'], '按优先级，只要第一张');
+  assert.deepEqual(out.data.blocked, []);
+  assert.match(out.say, /后面还有 2 张没看/);
+  assert.deepEqual(relIds(lazy), ['1152360842001005001'], '只给第一张查依赖');
+
+  const full = stateFile(seed());
+  const api2 = await startFakeOpenApi(full);
+  try {
+    ({ out } = runScript('ticket_ready', {}, tapdEnv(full, api2.endpoint)));
+  } finally {
+    await api2.close();
+  }
+  assert.equal(out.data.ready.length, 3, '不给 first 照旧全扫');
+  assert.equal(relIds(full).length, 3, '每张候选都查依赖');
+});
+
 test('ticket_ready：前后置依赖——未完成挡住并指出前置；afk-delivered / 结束类状态放行；不认识的前置挡住；同一前置只查一次', async () => {
   const rel = (pre, post) => ({ workitem_id: pre, dst_workitem_id: post, src_field: 'due', dst_field: 'begin' });
   const seed = (extra = {}) => ({

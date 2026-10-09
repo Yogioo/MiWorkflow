@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { setup, plan, issue, issueState, labelsOf, comments, cli, gitOut } from './support/github-template.mjs';
+import { setup, plan, issue, issueState, labelsOf, comments, cli, gitOut, seen } from './support/github-template.mjs';
 
 test('依赖挡住 → 不算就绪，不跑', () => {
   const s = setup({
@@ -89,4 +89,35 @@ test('--dry-run → 被依赖挡住的工单连同原因一起列出', () => {
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /队列空/);
   assert.match(r.stdout, /被挡住 #2：.*#1/);
+});
+
+test('dev：队列空才记退避——外面套 while 反复单跑，第二轮不碰工单系统；--now 放行', () => {
+  const s = setup({ issues: [] });
+  plan(s, []);
+
+  const first = cli(s, ['dev']);
+  assert.equal(first.code, 0, first.stderr);
+  assert.match(first.stdout, /队列空/, '第一轮照常查');
+
+  const before = seen(s).length;
+  const second = cli(s, ['dev']);
+  assert.equal(second.code, 0, second.stderr);
+  assert.match(second.stdout, /还没到点/, '第二轮被上一轮记下的退避拦住');
+  assert.equal(seen(s).length, before, '没到点：连 Agent 都不叫');
+
+  const forced = cli(s, ['dev', '--now']);
+  assert.equal(forced.code, 0, forced.stderr);
+  assert.doesNotMatch(forced.stdout, /还没到点/, '--now 放行');
+  assert.match(forced.stdout, /队列空/);
+});
+
+test('dev：上一轮出过事（有失败）就不记退避——下一轮照跑，不被人自己上一轮挡住', () => {
+  const s = setup({ issues: [issue(1, { labels: ['ready-for-agent'] })] });
+  plan(s, [{ status: 'need_human', choice: 'ask', reason: '要接口文档' }]);
+
+  const bad = cli(s, ['dev']);
+  assert.equal(bad.code, 1, '失败轮退出码非 0');
+
+  const next = cli(s, ['dev']);
+  assert.doesNotMatch(next.stdout, /还没到点/, '出过事不算「没事干」，不该记退避');
 });

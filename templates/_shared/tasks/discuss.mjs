@@ -29,12 +29,8 @@
 //
 // 会话：按 CLI + 工单号算会话号（pi 首轮就建出可续的会话）。续不上（换机器、会话丢失、cursor 等）就重放完整正文 + 全部评论。
 //
-// 省着查（工单系统有调用额度）：退避对所有调用方生效，单跑也读 logs/discuss.pace.json。
-//   只管自动循环（--every）的话，外面套一层 while 反复单跑就能把额度烧光——每轮都是实打实两次调用。
-//   节奏：下次查的时刻记在 logs/discuss.pace.json，间隔 = 距上次有动静的时间 ÷ 4，最长 config.mjs 的 DISCUSS_IDLE_MAX_SEC；
-//         没到点的那一轮直接结束，不碰工单系统。列单失败（如额度用完）按最长间隔退开。人的手动放行：--now。
-//   只拦「上一轮没事干」：干过活的那一轮不记退避，免得人刚在工单上补完内容、重跑却被自己的上一轮挡住。
-//   退避短于 PACE_MIN_GATE_MS 也当 0——刚有动静时间隔只有零点几秒，拦不住什么，反倒会挡住紧接着的手动重跑。
+// 省着查（工单系统有调用额度）：退避对所有调用方生效，单跑也读 logs/discuss.pace.json（实现在 scripts/_pace.mjs）。
+//   只管自动循环（--every）的话，外面套一层 while 反复单跑就能把额度烧光——每轮都是实打实两次调用。人的手动放行：--now。
 //   增量：只在 --every 循环里用（内核给每一轮设 AGENTFLOW_LOOP_PID）——单跑照旧全量看一遍，也不会动循环攒下的 cursor。
 //         discuss_list 交回的 cursor 原样存着，下次带上；源据此给每张单标 changed，没变的不读。
 //         源不支持增量（不交 cursor、不标 changed）就每张都读。本轮有单子没读成，cursor 不前进，下次重看。
@@ -46,11 +42,11 @@
 //   miworkflow discuss --every 30s      常驻：最快 30 秒查一次，没动静就逐步拉长
 //   miworkflow stop discuss             手头这张讨论单处理完就停
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DISCUSS } from '../source.mjs';
 import { DISCUSS_IDLE_MAX_SEC } from '../config.mjs';
+import { paceOf, clock } from '../scripts/_pace.mjs';
 
 export const title = '讨论单：agent-discuss → 评论区逐轮追问 → /spec 写 spec → /tickets 建开发单';
 
@@ -79,16 +75,17 @@ export default async function ({ script, agent, args, stopping = () => false }) 
   if (max !== Infinity && !(Number.isInteger(max) && max >= 1)) throw new Error(`--max 要正整数：${args.max}`);
   // 退避对所有调用方生效（单跑也读）：不然外面套一层 while 反复单跑，每轮都实打实查工单系统。--now 是人的手动放行。
   const loop = Boolean(process.env.AGENTFLOW_LOOP_PID);
-  const pace = readPace();
-  if (!args.now && pace.idle && Date.now() < pace.nextAt) {
-    console.log(`还没到点：${clock(pace.nextAt)} 再查（上一轮没事干；上次有动静：${pace.activeAt ? clock(pace.activeAt) : '无'}）；要立刻就查用 --now`);
+  if (!args.now && pace.held()) {
+    const held = pace.read();
+    console.log(`还没到点：${clock(held.nextAt)} 再查（上一轮没事干；上次有动静：${held.activeAt ? clock(held.activeAt) : '无'}）；要立刻就查用 --now`);
     return;
   }
+  const before = pace.read();
   // cursor（增量）只在循环里带：单跑按老规矩全量看一遍
-  const cursor = loop ? pace.cursor : null;
+  const cursor = loop ? before.cursor : null;
   const r = await script('discuss_list', { enter: ENTER, grilling: GRILLING, spec: SPEC, ...(cursor ? { cursor } : {}) });
   if (r.status !== 'ok') {
-    writePace({ ...pace, nextAt: Date.now() + DISCUSS_IDLE_MAX_SEC * 1000, idle: true });
+    pace.backoff();
     throw new Error(`列讨论单失败：${r.error}`);
   }
 
@@ -138,39 +135,15 @@ export default async function ({ script, agent, args, stopping = () => false }) 
     if (p.status !== 'ok') console.error(`✖ ${issue.ref} 回写失败：${p.error}`);
     else console.log(`${out.ok ? '✔' : '✖'} ${issue.ref} ${out.ok ? done : `失败：${out.reason}`}`);
   }
-  const now = Date.now();
   // busy 的 cursor 那一路只在循环里算：单跑不带 cursor，源会把每张单都标 changed，据此判 busy 会永远算「有动静」
-  const busy = handled > 0 || (loop && Boolean(pace.cursor) && r.data.items.some((i) => i.changed));
-  const activeAt = busy ? now : pace.activeAt;
-  const gap = Math.min(DISCUSS_IDLE_MAX_SEC * 1000, (now - activeAt) / 4);
-  // 上一轮没事干才记退避；退避短于门槛就当 0（否则刚有动静时那几十毫秒的间隔也会挡住下一个调用）
-  const idle = !busy;
-  const nextAt = idle && gap >= PACE_MIN_GATE_MS ? now + gap : now;
-  // cursor 归循环：单跑把它抹成 null，会毁掉循环攒下的增量状态
-  writePace({ cursor: loop ? (complete ? r.data.cursor ?? null : pace.cursor) : pace.cursor, activeAt, nextAt, idle });
-  console.log(`本轮结束：处理 ${handled} 张讨论单，${clock(nextAt)} 再查`);
+  const busy = handled > 0 || (loop && Boolean(before.cursor) && r.data.items.some((i) => i.changed));
+  // cursor 归循环：单跑不带它（带了也会毁掉循环攒下的增量状态），所以只在循环里、且这一轮跑完了才更新
+  const after = pace.settle(busy, loop && complete ? { cursor: r.data.cursor ?? null } : {});
+  console.log(`本轮结束：处理 ${handled} 张讨论单，${clock(after.nextAt)} 再查`);
 }
 
-// 省着查的记账（所有调用方共用）：{ cursor, activeAt, nextAt, idle }，时间是毫秒时间戳；文件坏了当没有
-const PACE = fileURLToPath(new URL('../logs/discuss.pace.json', import.meta.url));
-// 退避短于这个就当 0：刚有动静时算出来的间隔只有零点几秒，拦不住什么，反倒会把紧接着的手动重跑挡住
-const PACE_MIN_GATE_MS = 5_000;
-
-function readPace() {
-  try {
-    const p = JSON.parse(readFileSync(PACE, 'utf8'));
-    return { cursor: p.cursor ?? null, activeAt: Number(p.activeAt) || 0, nextAt: Number(p.nextAt) || 0, idle: Boolean(p.idle) };
-  } catch {
-    return { cursor: null, activeAt: 0, nextAt: 0, idle: false };
-  }
-}
-
-function writePace(p) {
-  mkdirSync(path.dirname(PACE), { recursive: true });
-  writeFileSync(PACE, JSON.stringify(p, null, 2));
-}
-
-const clock = (ms) => new Date(ms).toLocaleTimeString('zh-CN', { hour12: false });
+// 省着查的记账：{ cursor, activeAt, nextAt, idle } 都在 logs/discuss.pace.json（实现见 scripts/_pace.mjs）
+const pace = paceOf('discuss', DISCUSS_IDLE_MAX_SEC);
 
 // 拆单：Agent 只交结构（data.tickets），建单 / 贴标签 / 写依赖 / 回查都在脚本里
 async function ticketsRound(issue, last, hash, agent, script) {

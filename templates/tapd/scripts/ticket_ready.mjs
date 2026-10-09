@@ -3,9 +3,11 @@
 // 空壳需求（描述与评论都为空）不进 ready：进 blocked，并贴 failed 标签 + 评论请人补充（干跑只进 blocked、不改 TAPD）。
 // 只对描述为空的候选走 OpenAPI 读评论（`tapd-cli comment list` 会剥 HTML，只有图片的评论会被当成空）。
 // 前后置依赖：只对非空壳的候选调 OpenAPI `stories/get_time_relative_stories`；同一轮里同一个前置只查一次。
+// 给了 first 就按优先级 → 工单号扫到第一张可做的为止（dev 只用第一张，不为后面整条队列付钱）；不给就全扫。
 // 前置贴了 delivered 或到了结束类状态（见 source.mjs 的 END_STATUSES）才算满足；未满足进 blocked，reason 指出前置。
 // 前置不认识（缺陷、别的项目、已删除、接口查不到）一律当挡住，reason 写明，由人解开。依赖挡住的不改 TAPD。
-// 入：{ dryRun? }；AGENTFLOW_DRY_RUN=1 也算干跑
+// 入：{ dryRun?, first? }；AGENTFLOW_DRY_RUN=1 也算干跑
+//     first = 只要第一张可做的（按优先级扫到就停）；不给 = 全扫（干跑、人看全貌用）
 // 出：{ status, say, data: { ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] } }，id 为字符串
 import { main, readStdin, emit } from './_lib.mjs';
 import { tapdJson, openApi } from './_tapd.mjs';
@@ -139,17 +141,34 @@ await main(async () => {
   if (rows.length >= LIST_LIMIT) notes.push(`候选满 ${LIST_LIMIT} 条，可能没列全`);
 
   const machine = [LABELS.claimed, LABELS.delivered, LABELS.failed];
+  // 先按优先级 → 工单号排：懒扫描（first）要按这个顺序扫，扫到的第一张就是 dev 会挑的那张
   const candidates = rows
     .map((r) => r?.Story)
     .filter((s) => s && s.id != null && String(s.id).trim())
     .map((s) => ({ ...s, id: String(s.id).trim(), labels: labelsOf(s) }))
-    .filter((s) => s.labels.includes(LABELS.ready) && !machine.some((l) => s.labels.includes(l)));
+    .filter((s) => s.labels.includes(LABELS.ready) && !machine.some((l) => s.labels.includes(l)))
+    .sort((a, b) => priorityOf(a.priority_label || a.priority) - priorityOf(b.priority_label || b.priority) || byId(a, b));
 
+  // 逐个候选看：描述空的要先读评论才知道是不是空壳（只有图片的评论不算空）；不空的直接查依赖。
+  // first：拿到第一张可做的就停，后面的候选一张都不看（也不查依赖）。
+  const first = Boolean(args.first);
   const empty = [];
-  for (const s of candidates.filter((c) => blank(c.description))) {
-    const r = await openApi('/comments', { query: { workspace_id: ws(s) || undefined, entry_type: 'stories', entry_id: s.id } });
-    const comments = (Array.isArray(r.data) ? r.data : []).map((c) => c?.Comment?.description);
-    if (comments.every(blank)) empty.push(s);
+  const depBlocked = [];
+  const passed = [];
+  let scanned = 0;
+  for (const s of candidates) {
+    scanned++;
+    if (blank(s.description)) {
+      const r = await openApi('/comments', { query: { workspace_id: ws(s) || undefined, entry_type: 'stories', entry_id: s.id } });
+      const comments = (Array.isArray(r.data) ? r.data : []).map((c) => c?.Comment?.description);
+      if (comments.every(blank)) { empty.push(s); continue; }
+    }
+    const why = await dependencyBlock(s);
+    if (why) depBlocked.push({ id: s.id, ref: refOf(s.id), reason: why });
+    else {
+      passed.push(s);
+      if (first) break;
+    }
   }
 
   if (empty.length && !dryRun) {
@@ -164,15 +183,7 @@ await main(async () => {
     }
   }
 
-  const emptyIds = new Set(empty.map((s) => s.id));
-  const depBlocked = [];
-  const passed = [];
-  for (const s of candidates.filter((c) => !emptyIds.has(c.id))) {
-    const why = await dependencyBlock(s);
-    if (why) depBlocked.push({ id: s.id, ref: refOf(s.id), reason: why });
-    else passed.push(s);
-  }
-
+  const rest = candidates.length - scanned;      // 懒扫描没看的候选数（全扫时为 0）
   const unknown = [];
   const ready = passed
     .map((s) => {
@@ -199,6 +210,7 @@ await main(async () => {
       ready.length ? `就绪 ${ready.length} 张工单` : '没有就绪的工单',
       ...(empty.length ? [`空壳 ${empty.length} 张`] : []),
       ...(depBlocked.length ? [`依赖挡住 ${depBlocked.length} 张`] : []),
+      ...(rest > 0 ? [`后面还有 ${rest} 张没看`] : []),
       ...notes
     ].join('，'),
     data: { ready, blocked }
