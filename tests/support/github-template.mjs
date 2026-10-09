@@ -272,7 +272,7 @@ export const runScript = (s, name, input = {}, env = {}) => spawnScript(s, name,
 
 export function cli(s, argv) {
   const base = { ...process.env };
-  for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_AGENT_CMD', 'AGENTFLOW_AGENT', 'AGENTFLOW_DRY_RUN', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES']) {
+  for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_AGENT_CMD', 'AGENTFLOW_AGENT', 'AGENTFLOW_DRY_RUN', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES', 'AGENTFLOW_LOOP_PID']) {
     delete base[k];
   }
   const r = spawnSync(process.execPath, [path.join(ROOT, 'run.mjs'), ...argv], {

@@ -23,7 +23,7 @@ const tmpDir = () => {
 // 默认不带 AGENTFLOW_HOME：HOME 靠往上找 .workflow/
 function cli(argv, { cwd = ROOT, env = {} } = {}) {
   const base = { ...process.env };
-  for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_AGENT_CMD', 'AGENTFLOW_AGENT', 'AGENTFLOW_DRY_RUN', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES']) {
+  for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_AGENT_CMD', 'AGENTFLOW_AGENT', 'AGENTFLOW_DRY_RUN', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES', 'AGENTFLOW_LOOP_PID']) {
     delete base[k];
   }
   // 测试目录在 os.tmpdir() 下；若跑测试的机器上 $HOME 恰好是 Git 仓库（dotfiles），
@@ -519,7 +519,7 @@ function readRounds(home) {
 
 async function loopUntil(argv, home, rounds, env = {}) {
   const base = { ...process.env };
-  for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES', 'AGENTFLOW_DRY_RUN']) delete base[k];
+  for (const k of ['AGENTFLOW_HOME', 'AGENTFLOW_TASK', 'AGENTFLOW_RUN_ID', 'AGENTFLOW_YES', 'AGENTFLOW_DRY_RUN', 'AGENTFLOW_LOOP_PID']) delete base[k];
   const child = spawn(process.execPath, [path.join(ROOT, 'run.mjs'), ...argv], {
     env: { ...base, AGENTFLOW_HOME: home, ...env }
   });
