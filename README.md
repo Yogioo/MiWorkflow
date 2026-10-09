@@ -44,6 +44,7 @@ miworkflow fix_tests --filter login   # 跑；项目里任意子目录都行，�
 miworkflow fix_tests --every 5m  # 常驻循环：每轮一次全新的 run，间隔从上轮结束算（30s / 5m / 1h）；Ctrl+C 退出
 miworkflow stop fix_tests        # 另开终端停它：做完手头这一单再停（循环也不再起下一轮）
 miworkflow stop fix_tests --now  # 立刻强关：杀整棵进程树，半路的改动原样留给人收拾
+miworkflow stop <task> [任务参数]  # 任务导出 instance(args) 时（如 dev --dir wt1）只停对应的实例；不带参数停这个任务的全部实例
 miworkflow view                  # 网页：点「运行」、看每一步、点「通过 / 拒绝」、点「做完这单停 / 立刻强关」
 miworkflow skill                 # 打印写任务的完整说明（给 AI 看）
 ```
@@ -72,6 +73,9 @@ export default async function ({ script, agent, human, args, stopping }) {
 ```
 
 `stopping()` 告诉任务有没有人敲了 `miworkflow stop <task>`：逐个处理一批东西的任务在「做完一个、挑下一个之前」查它，查到就收尾返回。
+
+同一个任务要同时跑好几份时，再导出 `instance(args)` 返回一个实例名：锁、`--every` 循环、`stop` 都按「任务 + 实例」各算各的，
+`stop <task>` 带上同样的参数只停那一个。不导出、或返回空值，就还是「一个任务同时只有一份」。
 
 ### 接上 Agent
 

@@ -28,6 +28,7 @@ const USAGE = [
   '  miworkflow view                       起网页：看运行、审批、点运行',
   '  miworkflow skill                      打印写任务的完整说明（给 AI 看）',
   '  miworkflow stop <task> [--now]        停任务：做完手头这一单再停；--now 立刻强关（杀整棵进程树）',
+  '  miworkflow stop <task> [任务参数]     只停对应实例（如 stop dev --dir wt1）；不带参数停这个任务的全部实例',
   '  miworkflow <task> [--key value]... [--yes] [--dry-run] [--every <30s|5m|1h>]'
 ].join('\n');
 
@@ -81,8 +82,8 @@ else if (cmd === 'view') {
   useHome();
   await import('./viewer/serve.mjs');
 } else if (cmd === 'skill') process.stdout.write(readFileSync(SKILL, 'utf8'));
-else if (cmd === 'stop') await stopTask(name, args.now === true);
-else if (every !== undefined) await loopTask(cmd, every);
+else if (cmd === 'stop') await stopTask(name, args.now === true, args);
+else if (every !== undefined) await loopTask(cmd, every, args);
 else await runTask(cmd, args);
 
 // ── 参数 ──────────────────────────────────────────────────────────────────
@@ -342,12 +343,72 @@ function newTask(task) {
   console.log(`跑：miworkflow ${task}；写法：miworkflow skill`);
 }
 
-// ── 任务锁（§9）──────────────────────────────────────────────────────────
-// 同一 task 同时只允许一个 run：起跑前在 logs/ 下建 <task>.lock（logs/ 不进 Git，§12）。
-// 锁里是 { pid, runId, at }；进程没了（被杀 / 断电 / Ctrl-C）的锁视为陈锁，直接接管。
-function lockFile(HOME, task) {
-  return path.join(HOME, 'logs', `${task}.lock`);
+// ── 任务实例（§9）────────────────────────────────────────────────────────
+// 同一「任务 + 实例」同时只允许一个 run / 一个循环 / 一份停止请求，文件名都从身份派生：
+// 没实例是 <task>.lock，有实例是 <task>@<实例>.lock。实例名只有任务自己知道（导出 instance(args)，
+// 如 dev 拿工位目录名）；内核不认识 --dir 这类业务概念。任务没导出 instance、或返回空，一切照旧。
+
+// 实例名进文件名：只留 A-Za-z0-9_-，其余按 %XX 转义（目录名里的斜杠、空格、中文都落在同一套规则里）
+function instanceTag(inst) {
+  return [...String(inst)].map((c) => (/^[A-Za-z0-9_-]$/.test(c)
+    ? c
+    : [...Buffer.from(c, 'utf8')].map((b) => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join(''))).join('');
 }
+
+// 转回来只为人看：给人讲的是目录名 wt/2，不是文件名里的 wt%2F2
+function instanceName(tag) {
+  const bytes = [];
+  for (const m of tag.matchAll(/%([0-9A-F]{2})|(.)/g)) {
+    if (m[2] === undefined) bytes.push(Number.parseInt(m[1], 16));
+    else bytes.push(...Buffer.from(m[2], 'utf8'));
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+// 身份 = 任务 + 实例；消息里这么叫（dev@wt2）
+function identity(task, inst) {
+  return inst ? `${task}@${inst}` : task;
+}
+
+// 文件名里的身份：实例名先转义（dev@wt%2F2.lock）
+function stateFile(HOME, kind, task, inst) {
+  return path.join(HOME, 'logs', `${task}${inst ? `@${instanceTag(inst)}` : ''}.${kind}`);
+}
+
+function lockFile(HOME, task, inst) {
+  return stateFile(HOME, 'lock', task, inst);
+}
+
+function loopFile(HOME, task, inst) {
+  return stateFile(HOME, 'loop', task, inst);
+}
+
+function stopFile(HOME, task, inst) {
+  return stateFile(HOME, 'stop', task, inst);
+}
+
+// 任务模块（title / default / 可选的 instance）
+async function loadTask(HOME, task) {
+  const file = path.join(HOME, 'tasks', `${task}.mjs`);
+  if (!existsSync(file)) fail(`task not found: ${task}（在 ${path.join(HOME, 'tasks')} 下找）`);
+  return import(pathToFileURL(file).href);
+}
+
+// 向任务要实例名：没导出 instance、返回空（null / undefined / 空白）→ 没实例，跟以前一样。
+// 只把 args 交给任务，内核不认识它拿什么算的（dev 用 --dir，别的任务用别的）。
+async function taskInstance(mod, args, task) {
+  let raw;
+  try {
+    raw = await mod.instance?.(args);
+  } catch (err) {
+    return fail(`${task} 的 instance() 报错：${String(err?.message ?? err)}`);
+  }
+  return raw == null ? '' : String(raw).trim();
+}
+
+// ── 任务锁（§9）──────────────────────────────────────────────────────────
+// 同一「任务 + 实例」同时只允许一个 run：起跑前在 logs/ 下建锁（logs/ 不进 Git，§12）。
+// 锁里是 { pid, runId, instance, at }；进程没了（被杀 / 断电 / Ctrl-C）的锁视为陈锁，直接接管。
 
 // 锁、循环标记、停止请求都是一小段 JSON
 function readJson(file) {
@@ -371,10 +432,10 @@ function pidAlive(pid) {
 }
 
 // 用 'wx'（只在不存在时创建）原子抢锁；已存在且 pid 还活着 → held:false 交给调用方跳过
-function acquireLock(HOME, task, runId) {
-  const file = lockFile(HOME, task);
+function acquireLock(HOME, task, inst, runId) {
+  const file = lockFile(HOME, task, inst);
   mkdirSync(path.dirname(file), { recursive: true });
-  const body = `${JSON.stringify({ pid: process.pid, runId, at: new Date().toISOString() })}\n`;
+  const body = `${JSON.stringify({ pid: process.pid, runId, instance: inst || null, at: new Date().toISOString() })}\n`;
   for (let i = 0; i < 5; i++) {
     try {
       writeFileSync(file, body, { flag: 'wx' });
@@ -399,29 +460,31 @@ function releaseLock(lock) {
 
 // ── 循环运行（§9）：--every <间隔> ──────────────────────────────────────────
 // 外层循环不是 run：不加载 core、不写日志、不拿锁。每一轮起一个子进程当全新的 run
-// （删掉 AGENTFLOW_RUN_ID / AGENTFLOW_TASK，子进程自己生成），间隔从上一轮结束算，所以不会自己重叠。
+// （删掉 AGENTFLOW_RUN_ID / AGENTFLOW_TASK，子进程自己生成；子进程按同样的 args 算出实例，
+// 锁与停止请求都落在同一个身份上），间隔从上一轮结束算，所以不会自己重叠。
 // Ctrl-C 只顺手删掉循环标记：终端把信号发给整个前台进程组，外层和正在跑的 run 一起结束。
-// 循环在 logs/<task>.loop 记下 pid，miworkflow stop 靠它找到循环；收到停止请求就不再起下一轮（等的时候也照查）。
+// 循环在 logs/<task>[@<实例>].loop 记下 pid，miworkflow stop 靠它找到循环；收到停止请求就不再起下一轮（等的时候也照查）。
 function parseInterval(text) {
   const m = /^(\d+)([smh])$/.exec(text);
   const ms = m ? Number(m[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[m[2]] : 0;
   return ms > 0 && ms <= 2 ** 31 - 1 ? ms : null; // setTimeout 超过约 24.8 天会立刻触发，循环就空转了
 }
 
-async function loopTask(task, every) {
+async function loopTask(task, every, args = {}) {
   const ms = parseInterval(every);
   if (!ms) fail(`--every 要一个间隔，如 30s / 5m / 1h，最长 596h（拿到的是：${every || '空'}）`);
   const home = useHome();
-  if (!existsSync(path.join(home, 'tasks', `${task}.mjs`))) fail(`task not found: ${task}（在 ${path.join(home, 'tasks')} 下找）`);
+  const inst = await taskInstance(await loadTask(home, task), args, task);
+  const me = identity(task, inst);
 
-  const marker = loopFile(home, task);
+  const marker = loopFile(home, task, inst);
   const other = readJson(marker);
   if (other && other.pid !== process.pid && pidAlive(other.pid)) {
-    // 同一任务只留一个循环：停止请求按任务找循环，两个就分不清
-    console.log(`${task} 已有循环在跑（pid ${other.pid}）`);
+    // 同一「任务 + 实例」只留一个循环：停止请求按身份找循环，两个就分不清
+    console.log(`${me} 已有循环在跑（pid ${other.pid}）`);
     return;
   }
-  writeJson(marker, { pid: process.pid, at: new Date().toISOString() });
+  writeJson(marker, { pid: process.pid, instance: inst || null, at: new Date().toISOString() });
   const onSignal = (sig) => {
     dropIfOwner(marker, process.pid);
     process.removeListener(sig, onSignal);
@@ -433,7 +496,7 @@ async function loopTask(task, every) {
   const env = { ...process.env, AGENTFLOW_LOOP_PID: String(process.pid) };
   delete env.AGENTFLOW_RUN_ID;
   delete env.AGENTFLOW_TASK;
-  const stopped = () => readJson(stopFile(home, task))?.loopPid === process.pid;
+  const stopped = () => readJson(stopFile(home, task, inst))?.loopPid === process.pid;
   let round = 0;
   while (!stopped()) {
     round++;
@@ -451,7 +514,7 @@ async function loopTask(task, every) {
       await new Promise((r) => setTimeout(r, Math.min(500, until - Date.now())));
     }
   }
-  rmSync(stopFile(home, task), { force: true });
+  rmSync(stopFile(home, task, inst), { force: true });
   dropIfOwner(marker, process.pid);
   process.removeListener('SIGINT', onSignal);
   process.removeListener('SIGTERM', onSignal);
@@ -459,18 +522,11 @@ async function loopTask(task, every) {
 }
 
 // ── 停止（§9）──────────────────────────────────────────────────────────────
-// 两种：默认「做完手头这一单再停」——写 logs/<task>.stop，任务用 stopping() 查，在自己定的边界停下；
+// 两种：默认「做完手头这一单再停」——写停止请求 logs/<task>[@<实例>].stop，任务用 stopping() 查，在自己定的边界停下；
 // 不查的任务就把这次跑完；--every 循环跑完这一轮不再起下一轮。--now 立刻强关：杀整棵进程树，
 // 替被杀的 run 补一条终态记录、删锁；停在半路的步骤留下什么（改动、外部状态）原样交给人收拾。
-// 按任务找目标：同一任务同时只有一个 run（任务锁）、一个循环（循环标记）。
+// 目标按「任务 + 实例」找：带任务参数只停那一个实例，不带参数停这个任务的全部实例。
 // 停止请求写明对准谁（runId / 循环 pid），过期的请求对不上任何新 run，不会误停。
-function stopFile(HOME, task) {
-  return path.join(HOME, 'logs', `${task}.stop`);
-}
-
-function loopFile(HOME, task) {
-  return path.join(HOME, 'logs', `${task}.loop`);
-}
 
 // 先写临时文件再改名：读的一方不会读到半个
 function writeJson(file, body) {
@@ -484,45 +540,93 @@ function dropIfOwner(file, pid) {
 }
 
 // 这次 run 有没有被要求停：请求对准这个 runId，或对准它所在的 --every 循环
-function stopRequested(HOME, task, runId) {
-  const s = readJson(stopFile(HOME, task));
+function stopRequested(HOME, task, inst, runId) {
+  const s = readJson(stopFile(HOME, task, inst));
   if (!s) return false;
   return (s.runId != null && s.runId === runId)
     || (s.loopPid != null && String(s.loopPid) === process.env.AGENTFLOW_LOOP_PID);
 }
 
-async function stopTask(task, now) {
+// 除了内核开关 --now，还给没给任务参数（如 --dir wt1）
+function hasTaskArgs(args) {
+  return Object.keys(args).some((k) => k !== 'now');
+}
+
+// logs/ 里属于这个任务的全部身份：dev.lock / dev@wt1.loop / dev@wt2.stop …。
+// 标签里没有 `.`（转义过），所以 @ 后面的部分一定到扩展名前为止；返回的是人看的实例名。
+function scanInstances(HOME, task) {
+  let files;
+  try {
+    files = readdirSync(path.join(HOME, 'logs'));
+  } catch {
+    return []; // 还没跑过任何任务
+  }
+  const re = new RegExp(`^${task.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:@([A-Za-z0-9_%-]+))?\\.(?:lock|loop|stop)$`);
+  const insts = new Set();
+  for (const f of files) {
+    const m = re.exec(f);
+    if (m) insts.add(m[1] === undefined ? '' : instanceName(m[1]));
+  }
+  return [...insts];
+}
+
+// 停谁：带任务参数就问任务要实例（只停这一个）；不带参数就扫 logs/ 找这个任务的全部身份，
+// 一个都找不到时也回一条「没实例」的，好把没人认领的旧请求清掉、照旧报「没在跑」。
+async function stopTargets(home, task, args) {
+  if (hasTaskArgs(args)) {
+    const inst = await taskInstance(await loadTask(home, task), args, task);
+    return [inst];
+  }
+  const found = scanInstances(home, task);
+  return found.length ? found : [''];
+}
+
+async function stopTask(task, now, args = {}) {
   if (!task || !NAME.test(task) || RESERVED.has(task)) fail('usage: miworkflow stop <task> [--now]');
   const home = useHome();
-  const lock = readJson(lockFile(home, task));
-  const run = lock && pidAlive(lock.pid) ? lock : null;
-  const loopRec = readJson(loopFile(home, task));
-  const loop = loopRec && pidAlive(loopRec.pid) ? loopRec : null;
-  if (!run && !loop) {
-    rmSync(stopFile(home, task), { force: true }); // 没人认领的旧请求
-    console.log(`${task} 没在跑`);
+
+  const targets = await stopTargets(home, task, args);
+  const live = [];
+  for (const inst of targets) {
+    const lock = readJson(lockFile(home, task, inst));
+    const run = lock && pidAlive(lock.pid) ? lock : null;
+    const loopRec = readJson(loopFile(home, task, inst));
+    const loop = loopRec && pidAlive(loopRec.pid) ? loopRec : null;
+    if (run || loop) live.push({ inst, run, loop });
+    else rmSync(stopFile(home, task, inst), { force: true }); // 没人认领的旧请求
+  }
+  if (!live.length) {
+    console.log(`${identity(task, targets[0])} 没在跑`);
     return;
   }
 
   if (!now) {
-    writeJson(stopFile(home, task), { runId: run?.runId ?? null, loopPid: loop?.pid ?? null, at: new Date().toISOString() });
-    if (run) console.log(`已请求停止：${task} 做完手头这一单就停（pid ${run.pid}，run ${run.runId}）`);
-    if (loop) console.log(`--every 循环（pid ${loop.pid}）${run ? '这一轮跑完' : '马上'}退出，不再起下一轮`);
-    console.log(`要立刻强关：miworkflow stop ${task} --now`);
+    for (const t of live) {
+      writeJson(stopFile(home, task, t.inst), { runId: t.run?.runId ?? null, loopPid: t.loop?.pid ?? null, instance: t.inst || null, at: new Date().toISOString() });
+      const me = identity(task, t.inst);
+      if (t.run) console.log(`已请求停止：${me} 做完手头这一单就停（pid ${t.run.pid}，run ${t.run.runId}）`);
+      if (t.loop) console.log(`${me} 的 --every 循环（pid ${t.loop.pid}）${t.run ? '这一轮跑完' : '马上'}退出，不再起下一轮`);
+    }
+    // 带了任务参数就原样带上：光写 stop <task> --now 会把这个任务的全部实例都杀掉
+    console.log(`要立刻强关：miworkflow ${forward.join(' ')} --now`);
     return;
   }
 
-  for (const p of [loop?.pid, run?.pid]) if (p) killTree(p);
-  const left = await waitDead([loop?.pid, run?.pid].filter(Boolean));
+  const pids = live.flatMap((t) => [t.loop?.pid, t.run?.pid]).filter(Boolean);
+  for (const p of pids) killTree(p);
+  const left = await waitDead(pids);
   if (left.length) fail(`没杀掉：pid ${left.join('、')}（可能没权限），锁和记录都没动`);
-  if (run) closeRun(home, task, run.runId);
-  if (run) dropIfOwner(lockFile(home, task), run.pid);
-  if (loop) dropIfOwner(loopFile(home, task), loop.pid);
-  rmSync(stopFile(home, task), { force: true });
-  if (loop) console.log(`已强关 ${task} 的 --every 循环（pid ${loop.pid}）`);
-  if (run) {
-    console.log(`已强关 ${task}（pid ${run.pid}，run ${run.runId}）`);
-    console.log('停在半路的步骤没有收尾：工作区可能留着改动、外部状态（比如工单标签）可能还是进行中，看这次运行的记录再收拾');
+  for (const t of live) {
+    const me = identity(task, t.inst);
+    if (t.run) closeRun(home, task, t.run.runId);
+    if (t.run) dropIfOwner(lockFile(home, task, t.inst), t.run.pid);
+    if (t.loop) dropIfOwner(loopFile(home, task, t.inst), t.loop.pid);
+    rmSync(stopFile(home, task, t.inst), { force: true });
+    if (t.loop) console.log(`已强关 ${me} 的 --every 循环（pid ${t.loop.pid}）`);
+    if (t.run) {
+      console.log(`已强关 ${me}（pid ${t.run.pid}，run ${t.run.runId}）`);
+      console.log('停在半路的步骤没有收尾：工作区可能留着改动、外部状态（比如工单标签）可能还是进行中，看这次运行的记录再收拾');
+    }
   }
 }
 
@@ -595,13 +699,25 @@ async function runTask(task, args = {}) {
   if (dryRun) process.env.AGENTFLOW_DRY_RUN = '1';
 
   const { log, script, agent, human, HOME } = await import('./core.mjs');
-  const taskFile = path.join(HOME, 'tasks', `${task}.mjs`);
-  if (!existsSync(taskFile)) fail(`task not found: ${task}（在 ${path.join(HOME, 'tasks')} 下找）`);
+  // 实例名要先问任务（锁就按「任务 + 实例」建），所以模块要提前加载。
+  // 加载失败（语法错）也记一条 failed：这是这次 run 的全部交代，人从日志里看得到。
+  let mod;
+  try {
+    mod = await loadTask(HOME, task);
+  } catch (err) {
+    const message = String(err?.message ?? err);
+    log({ primitive: 'run', status: 'failed', title: task, inputs: args, error: message, say: `✖ ${task} 失败：${message}` });
+    console.error(err);
+    process.exitCode = 1;
+    return;
+  }
+  const inst = await taskInstance(mod, args, task);
+  const me = identity(task, inst);
 
-  const lock = acquireLock(HOME, task, process.env.AGENTFLOW_RUN_ID);
+  const lock = acquireLock(HOME, task, inst, process.env.AGENTFLOW_RUN_ID);
   if (!lock.held) {
     // 有意跳过：不是出错，退出码 0（§9）
-    console.log(`${task} 已在跑（pid ${lock.existing.pid}，run ${lock.existing.runId}）`);
+    console.log(`${me} 已在跑（pid ${lock.existing.pid}，run ${lock.existing.runId}）`);
     return;
   }
 
@@ -614,13 +730,12 @@ async function runTask(task, args = {}) {
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
 
-  // 停止请求（miworkflow stop <task>）：任务在自己定的边界查它，比如做完一张单再挑下一张之前
+  // 停止请求（miworkflow stop <task> [任务参数]）：任务在自己定的边界查它，比如做完一张单再挑下一张之前
   const runId = process.env.AGENTFLOW_RUN_ID;
-  const stopping = () => stopRequested(HOME, task, runId);
+  const stopping = () => stopRequested(HOME, task, inst, runId);
 
   let title = task;
   try {
-    const mod = await import(pathToFileURL(taskFile).href);
     title = mod.title ?? task;
     log({ primitive: 'run', status: 'running', title, inputs: args, say: `▶ ${title}` });
     console.log(title); // 人类可见：这次运行在干什么（§13.3）
@@ -636,7 +751,7 @@ async function runTask(task, args = {}) {
     process.removeListener('SIGINT', onSignal);
     process.removeListener('SIGTERM', onSignal);
     // 对准这次 run 的请求到此用完；对准循环的留给循环收
-    if (readJson(stopFile(HOME, task))?.runId === runId && !process.env.AGENTFLOW_LOOP_PID) rmSync(stopFile(HOME, task), { force: true });
+    if (readJson(stopFile(HOME, task, inst))?.runId === runId && !process.env.AGENTFLOW_LOOP_PID) rmSync(stopFile(HOME, task, inst), { force: true });
     releaseLock(lock);
   }
 }

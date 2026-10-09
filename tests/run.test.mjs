@@ -739,3 +739,142 @@ test('--every：缺值 / 格式不对 → 报错退出，不起任何 run', () =
   assert.deepEqual(readRounds(home), []);
   assert.ok(!existsSync(path.join(home, 'logs')));
 });
+
+
+// ── 任务实例（§9）：任务导出 instance(args)，锁 / 循环 / 停止都按「任务 + 实例」 ──
+// 按 --who 分实例：每个实例写自己的文件，跑着的时候查 stopping()
+const INST_TASK = [
+  "import { appendFileSync, writeFileSync } from 'node:fs';",
+  "export const title = '分身';",
+  'export function instance(args) { return args.who ?? ""; }',
+  'export default async function ({ stopping, args }) {',
+  '  const who = args.who ?? "none";',
+  '  const n = args.iter ? Number(args.iter) : 400;',
+  "  writeFileSync(new URL(`../out-${who}.json`, import.meta.url), JSON.stringify({ who }));",
+  '  for (let i = 0; i < n && !stopping(); i++) {',
+  "    appendFileSync(new URL(`../ticks-${who}.txt`, import.meta.url), `${i}\n`);",
+  '    await new Promise((r) => setTimeout(r, 50));',
+  '  }',
+  '}',
+  ''
+].join('\n');
+
+const loopPath = (home, name) => path.join(home, 'logs', `${name}.loop`);
+const readTicks = (home, who) => {
+  try { return readFileSync(path.join(home, `ticks-${who}.txt`), 'utf8').split('\n').filter(Boolean).length; } catch { return 0; }
+};
+
+// 起后台 run / 循环，测试结束时（不管成败）强关：失败时留下的循环会一直跑，测试进程就退不出来
+function bgFor(t, argv, home) {
+  const bg = startBg(argv, home);
+  t.after(() => {
+    cli(['stop', argv[0], '--now'], { env: { AGENTFLOW_HOME: home } });
+    bg.child.kill();
+  });
+  return bg;
+}
+
+test('实例：两个实例各锁各的；同一个实例第二份照旧跳过（退出码 0）', () => {
+  const home = makeHome(tmpDir(), { inst: INST_TASK });
+  writeLock(home, 'inst@wt1', process.pid, 'holder'); // 当前测试进程还活着 → 这个实例的锁有效
+
+  const skip = cli(['inst', '--who', 'wt1'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'second' } });
+  assert.equal(skip.code, 0, skip.stderr);
+  assert.match(skip.stdout, /inst@wt1 已在跑/);
+  assert.equal(existsSync(path.join(home, 'out-wt1.json')), false, '同一个实例不该跑任务体');
+  assert.equal(readLock(home, 'inst@wt1').runId, 'holder', '没抢到锁，不该动锁');
+
+  const other = cli(['inst', '--who', 'wt2', '--iter', '1'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'wt2-run' } });
+  assert.equal(other.code, 0, other.stderr);
+  assert.equal(JSON.parse(readFileSync(path.join(home, 'out-wt2.json'), 'utf8')).who, 'wt2', '另一个实例照跑');
+  assert.equal(readLock(home, 'inst@wt1').runId, 'holder', '不碰别的实例的锁');
+});
+
+test('实例：实例名里的斜杠等字符转义进文件名，消息里还是原名', () => {
+  const home = makeHome(tmpDir(), { inst: INST_TASK });
+  writeLock(home, 'inst@wt%2F2', process.pid, 'holder'); // 转义后的文件名
+
+  const r = cli(['inst', '--who', 'wt/2'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'x' } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /inst@wt\/2 已在跑/);
+  assert.equal(existsSync(path.join(home, 'out-wt/2.json')), false);
+});
+
+test('实例：两个不同实例能同时跑；stop 不带参数把它们都强关', async (t) => {
+  const home = makeHome(tmpDir(), { inst: INST_TASK });
+  const a = bgFor(t, ['inst', '--who', 'wt1'], home);
+  const b = bgFor(t, ['inst', '--who', 'wt2'], home);
+  await waitFor(() => existsSync(lockPath(home, 'inst@wt1')) && existsSync(lockPath(home, 'inst@wt2')));
+  await waitFor(() => readTicks(home, 'wt1') >= 2 && readTicks(home, 'wt2') >= 2);
+
+  const r = cli(['stop', 'inst', '--now'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /已强关 inst@wt1/);
+  assert.match(r.stdout, /已强关 inst@wt2/);
+  await a.exited;
+  await b.exited;
+  assert.ok(!existsSync(lockPath(home, 'inst@wt1')) && !existsSync(lockPath(home, 'inst@wt2')), '两个锁都删掉');
+});
+
+test('实例：stop 带任务参数只停对应实例，其他实例不受影响', async (t) => {
+  const home = makeHome(tmpDir(), { inst: INST_TASK });
+  const a = bgFor(t, ['inst', '--who', 'wt1'], home);
+  const b = bgFor(t, ['inst', '--who', 'wt2'], home);
+  await waitFor(() => readTicks(home, 'wt1') >= 2 && readTicks(home, 'wt2') >= 2);
+
+  const r = cli(['stop', 'inst', '--who', 'wt1'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /已请求停止：inst@wt1 做完手头这一单就停/);
+  assert.equal(await a.exited, 0, a.out());
+  assert.ok(readTicks(home, 'wt1') < 400, 'wt1 停在自己的边界');
+  assert.ok(!existsSync(path.join(home, 'logs', 'inst@wt1.stop')), 'wt1 的请求用完就删');
+  assert.ok(existsSync(lockPath(home, 'inst@wt2')), 'wt2 不受影响，还在跑');
+
+  cli(['stop', 'inst', '--now'], { env: { AGENTFLOW_HOME: home } }); // 收尾
+  await b.exited;
+  assert.ok(!existsSync(lockPath(home, 'inst@wt2')));
+});
+
+test('实例：stop 不带参数停全部实例，请求各写各的', async (t) => {
+  const home = makeHome(tmpDir(), { inst: INST_TASK });
+  const a = bgFor(t, ['inst', '--who', 'wt1'], home);
+  const b = bgFor(t, ['inst', '--who', 'wt2'], home);
+  await waitFor(() => readTicks(home, 'wt1') >= 2 && readTicks(home, 'wt2') >= 2);
+
+  const r = cli(['stop', 'inst'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /已请求停止：inst@wt1/);
+  assert.match(r.stdout, /已请求停止：inst@wt2/);
+  assert.equal(await a.exited, 0, a.out());
+  assert.equal(await b.exited, 0, b.out());
+  assert.ok(!existsSync(lockPath(home, 'inst@wt1')) && !existsSync(lockPath(home, 'inst@wt2')));
+  assert.ok(!existsSync(path.join(home, 'logs', 'inst@wt1.stop')) && !existsSync(path.join(home, 'logs', 'inst@wt2.stop')));
+});
+
+test('实例：两个实例的 --every 循环能同时存在，stop 不带参数两个一起退', async (t) => {
+  const home = makeHome(tmpDir(), { inst: INST_TASK });
+  const a = bgFor(t, ['inst', '--every', '1s', '--who', 'wt1'], home);
+  const b = bgFor(t, ['inst', '--every', '1s', '--who', 'wt2'], home);
+  await waitFor(() => existsSync(loopPath(home, 'inst@wt1')) && existsSync(loopPath(home, 'inst@wt2')));
+  await waitFor(() => readTicks(home, 'wt1') >= 2 && readTicks(home, 'wt2') >= 2);
+
+  const r = cli(['stop', 'inst'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /inst@wt1 的 --every 循环/);
+  assert.match(r.stdout, /inst@wt2 的 --every 循环/);
+  assert.equal(await a.exited, 0, a.out());
+  assert.equal(await b.exited, 0, b.out());
+  assert.ok(!existsSync(loopPath(home, 'inst@wt1')) && !existsSync(loopPath(home, 'inst@wt2')), '循环标记都删掉');
+  assert.ok(!existsSync(path.join(home, 'logs', 'inst@wt1.stop')) && !existsSync(path.join(home, 'logs', 'inst@wt2.stop')));
+});
+
+test('实例：同一实例已有循环在跑 → 不起第二个；另一个实例照起', () => {
+  const home = makeHome(tmpDir(), { inst: INST_TASK });
+  mkdirSync(path.join(home, 'logs'), { recursive: true });
+  writeFileSync(loopPath(home, 'inst@wt1'), JSON.stringify({ pid: process.pid }));
+
+  const r = cli(['inst', '--every', '1s', '--who', 'wt1'], { env: { AGENTFLOW_HOME: home } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /inst@wt1 已有循环在跑/);
+  assert.equal(existsSync(path.join(home, 'out-wt1.json')), false, '没起任何一轮');
+});

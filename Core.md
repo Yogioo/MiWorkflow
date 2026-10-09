@@ -91,8 +91,8 @@ MiWorkflow/
 | `miworkflow init --upgrade [--template <名字>]` | 把模板新版铺回已有的 `.workflow/`（§15）：模板里的文件覆盖、缺的补上；`config.mjs` / `source.mjs` 以模板新版为底、保留项目里一行写完的 `export const`；项目自己的文件、`AGENTS.md`、`.gitignore` 不碰；改动过的旧文件备份到 `logs/upgrade-<时间>/`。不给 `--template` 就认 `.workflow/` 里文件齐全的那个模板 |
 | `miworkflow new <name>` | 建 `tasks/<name>.mjs` 骨架（`title` + 传参的 `default`），不覆盖已有；没有 `.workflow/` 就报错，提示先 `init` |
 | `miworkflow <task> [--key value]` | 跑任务 |
-| `miworkflow <task> --every <间隔> [--key value]` | 常驻循环跑：间隔 `30s` / `5m` / `1h`，必须显式给值，缺值或格式不对报错退出、不起 run。外层循环不是 run（不写日志、不拿锁）；每一轮起一个子进程当全新的 run（新 runId，不继承 `AGENTFLOW_RUN_ID`），其余参数原样传；间隔从上一轮结束算，不会自己重叠；某轮非 0 退出只在终端记下退出码，循环继续；另一个终端在跑同一任务时由按任务锁挡住，该轮跳过。Ctrl+C 不特殊处理（只顺手删掉循环标记），连同正在跑的 run 一起结束；要等手头这一单做完再退，用 `miworkflow stop <task>`。纯 Node，三平台一致；一个命令一个任务，多个任务开多个终端；viewer 的「运行」不提供 |
-| `miworkflow stop <task> [--now]` | 停任务（§9）：缺省**做完手头这一单再停**——任务用 `stopping()` 在自己定的边界停下，不查的任务把这次跑完，`--every` 循环不再起下一轮；`--now` **立刻强关**——杀整棵进程树（循环、run、Agent CLI 和它起的命令），替被杀的 run 补一条 `failed` 终态、删锁，停在半路的改动与外部状态原样留给人收拾。没在跑就说一声、退出 0 |
+| `miworkflow <task> --every <间隔> [--key value]` | 常驻循环跑：间隔 `30s` / `5m` / `1h`，必须显式给值，缺值或格式不对报错退出、不起 run。外层循环不是 run（不写日志、不拿锁）；每一轮起一个子进程当全新的 run（新 runId，不继承 `AGENTFLOW_RUN_ID`），其余参数原样传；间隔从上一轮结束算，不会自己重叠；某轮非 0 退出只在终端记下退出码，循环继续；另一个终端在跑同一任务（同一实例）时由任务锁挡住，该轮跳过。Ctrl+C 不特殊处理（只顺手删掉循环标记），连同正在跑的 run 一起结束；要等手头这一单做完再退，用 `miworkflow stop <task>`。纯 Node，三平台一致；一个命令一个任务，多个任务开多个终端；viewer 的「运行」不提供 |
+| `miworkflow stop <task> [--now] [任务参数]` | 停任务（§9）：缺省**做完手头这一单再停**——任务用 `stopping()` 在自己定的边界停下，不查的任务把这次跑完，`--every` 循环不再起下一轮；`--now` **立刻强关**——杀整棵进程树（循环、run、Agent CLI 和它起的命令），替被杀的 run 补一条 `failed` 终态、删锁，停在半路的改动与外部状态原样留给人收拾。带上和启动时一样的任务参数（如 `stop dev --dir wt1`）只停对应实例，不带参数停这个任务的全部实例（含各自的 `--every` 循环，§9 任务实例）。没在跑就说一声、退出 0 |
 | `miworkflow view` | 用找到的 HOME 起 viewer（§13.6） |
 | `miworkflow skill` | 打印内核的 `SKILL.md`（不需要 `.workflow/`） |
 
@@ -135,6 +135,10 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 
 `stopping()` 不是原语：返回这次运行有没有被 `miworkflow stop <task>` 要求停下（§9）。逐个处理一批东西的任务（`dev` 逐张工单）
 在「做完一个、挑下一个之前」查它，查到就正常收尾返回；不查也行，那就跑完这一次。
+
+`instance(args)` 也不是原语，是可选的：任务导出它就能把「自己」分成多个实例（§9），内核的锁、`--every` 循环、
+停止请求都按「任务 + 实例」区分；返回空值（或不导出）就是没实例，跟只有一份时完全一样。内核只问这个键，
+不知道实例名是怎么算出来的（`dev` 拿 `--dir` 的工位目录名）。
 
 - 任务之间共用的东西仍可相对 import（如 `../config.mjs`）。
 - 项目根目录由任务自己算（`fileURLToPath(new URL('../..', import.meta.url))`），不另外注入。
@@ -379,15 +383,19 @@ async function runTask(task) {
 }
 ```
 
-`runTask` 起跑前按 task 建锁：`logs/<task>.lock`，内容 `{ pid, runId, at }`（`logs/` 不进 Git）。已在跑就打印
-`<task> 已在跑（pid …，run …）` 并退出码 `0`——有意跳过，不是出错，不执行任务体。锁里的 pid 已不在（被杀、断电、
+`runTask` 起跑前按「任务 + 实例」建锁：`logs/<task>.lock`（没实例）或 `logs/<task>@<实例>.lock`，内容 `{ pid, runId, instance, at }`
+（`logs/` 不进 Git）。实例名由任务自己给：导出 `instance(args)` 返回一个名字（`dev` 返回 `--dir` 的目录名），返回空 =
+没实例。实例名进文件名前转义（只留 `A-Za-z0-9_-`，其余按 `%XX`），消息里还是原名。已在跑就打印
+`<task>[@<实例>] 已在跑（pid …，run …）` 并退出码 `0`——有意跳过，不是出错，不执行任务体。锁里的 pid 已不在（被杀、断电、
 Ctrl-C）按陈锁接管；跨平台判活用 `process.kill(pid, 0)` + try/catch。正常结束、任务抛异常、进程收到 `SIGINT`/`SIGTERM`
-都删锁。只有「跑任务」加锁，`init` / `new` / `view` / `skill` / `stop` 不加；不同 task 各锁各的。
+都删锁。只有「跑任务」加锁，`init` / `new` / `view` / `skill` / `stop` 不加；不同任务、同一任务的不同实例都各锁各的：
+同一实例的第二份照旧跳过（退出码 0），两个实例（如 `dev --dir wt1` 和 `dev --dir wt2`）能同时跑。
 
-**停止**（`miworkflow stop <task> [--now]`，viewer 上同一套按钮）按任务找目标：run 看任务锁，`--every` 外层循环另在
-`logs/<task>.loop` 记 `{ pid, at }`（同一任务只留一个循环，已有就不起第二个）。都不在就打印「没在跑」。
+**停止**（`miworkflow stop <task> [--now]`，viewer 上同一套按钮）按「任务 + 实例」找目标：run 看任务锁，`--every` 外层循环另在
+`logs/<task>@<实例>.loop` 记 `{ pid, instance, at }`（同一身份只留一个循环，已有就不起第二个）。
+给了任务参数（如 `stop dev --dir wt1`）问任务要实例，只停那一个；不带参数扫 `logs/` 把这个任务的全部实例都停掉。都不在就打印「没在跑」。
 
-- **缺省：做完手头这一单再停。** 写停止请求 `logs/<task>.stop` = `{ runId, loopPid, at }`（先写临时文件再改名），写明对准哪个 run、哪个循环；
+- **缺省：做完手头这一单再停。** 写停止请求 `logs/<task>@<实例>.stop` = `{ runId, loopPid, instance, at }`（先写临时文件再改名），写明对准哪个 run、哪个循环；
   过期的请求对不上任何新 run，不会误停。run 的 `stopping()` 认「对准我的 runId」或「对准我所在的循环」（循环把自己的 pid 经
   `AGENTFLOW_LOOP_PID` 交给每一轮）；任务正常返回时 run 记 `ok`，`say` 带「收到停止请求，停下了」。循环每轮前后、等下一轮期间都查请求，
   对上了就不再起下一轮、删请求和标记、退出 0。单独的 run 结束时删对准自己的请求，循环里的 run 留给循环删。
@@ -587,7 +595,7 @@ JSONL 最小字段：
 - 一次运行一个 `runId`，三个原语共用，可按运行复盘
 - `seq` 在本次运行内单调递增，是稳定 key；`ref` 指向被解决的那条进行中记录（`human` 的 `pending` / `agent` 的 `running`，§13.1）
 - `primitive: 'run'` 的两条记录（开始 / 结束）由 `run.mjs` 写，`title` 只出现在这里
-- 任务锁落在 `logs/<task>.lock`（占用标记，不是日志、不进 Git），约定见 §9；同类的还有循环标记 `logs/<task>.loop` 与停止请求 `logs/<task>.stop`
+- 任务锁落在 `logs/<task>.lock`（占用标记，不是日志、不进 Git），约定见 §9；有实例时是 `logs/<task>@<实例>.lock`，同类的还有循环标记 `logs/<task>[@<实例>].loop` 与停止请求 `logs/<task>[@<实例>].stop`
 - 不引入错误指纹
 - 不做自动聚类
 - 不做 tokens 统计
@@ -693,7 +701,7 @@ viewer/index.html   单文件视图：任务列表与运行按钮 / 可按任务
 | `GET /api/run/<id>?from=N` | 从第 N 字节起吐日志，只吐完整行；日志还没生成就吐空 |
 | `GET /api/run/<id>/events/<n>?from=N` | Agent 某一步的过程事件；带 `from` 按字节增量吐 `{ next, items }`（半行 / 文件没建都稳），不带 `from` 吐全量数组（§10.1） |
 | `POST /api/decide` | 写决定文件（§13.5） |
-| `POST /api/stop` | `{ task, now? }` 起 `run.mjs stop <task> [--now]`，回 `{ ok, message }`（message 是它打印的话）；页面在跑的 run 上给「做完这单停 / 立刻强关」，强关先确认（§9） |
+| `POST /api/stop` | `{ task, now? }` 起 `run.mjs stop <task> [--now]`（不给任务参数 = 停这个任务的全部实例），回 `{ ok, message }`（message 是它打印的话）；页面在跑的 run 上给「做完这单停 / 立刻强关」，强关先确认（§9） |
 | `GET /health` | 存活探针，给反代 / 脚本用 |
 | `GET /` | 视图页 |
 

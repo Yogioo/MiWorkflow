@@ -61,6 +61,9 @@ export default async function ({ script, agent, human, args }) {
 - 逐个处理一批东西（工单、文件、讨论单）的任务，入参里取 `stopping`，在「做完一个、挑下一个之前」查 `stopping()`，
   是 `true` 就正常收尾返回——人敲 `miworkflow stop <task>`（或在 viewer 点「做完这单停」）时就停在这里。
   测任务时不传它也要能跑：写成 `stopping = () => false`。
+- 同一个任务要同时跑好几份时，导出 `instance(args)` 返回一个实例名（如 `dev` 拿 `--dir` 的工位目录名）：
+  锁 / `--every` 循环 / `stop` 都按「任务 + 实例」各算各的。`miworkflow stop <task> --dir wt1` 只停那一个，
+  `miworkflow stop <task>` 停全部。不导出或返回空 = 跟只有一份时一模一样。
 
 ## 三个原语的契约
 
@@ -117,6 +120,7 @@ await task({
 ```bash
 miworkflow <task> [--key value]    # 项目里任意子目录都行，往上找 .workflow/
 miworkflow stop <task> [--now]     # 停：做完手头这一单再停；--now 立刻强关
+miworkflow stop <task> [任务参数]   # 只停对应实例（如 stop dev --dir wt1）；不带参数停这个任务的全部实例
 miworkflow view                    # 网页：点运行、看每一步、审批、停
 ```
 

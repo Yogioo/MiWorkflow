@@ -34,6 +34,13 @@ import { paceOf, clock } from '../scripts/_pace.mjs';
 
 export const title = '开发：认领工单 → 开发 → 审查 → 验证 → 提交 → 关单';
 
+// 实例名（§9）：一个工位 = 一个工人 = 一份该跑的活。--dir 指的是工位目录，目录名就是实例名，
+// 于是主目录能同时起 dev --dir wt1、dev --dir wt2（锁 / 停止 / --every 都按 dev@wt1、dev@wt2 各算各的）。
+// 不带 --dir 返回空 = 没实例，跟以前一样只有一份。内核只问这个键，不认识工位。
+export function instance(args) {
+  return args.dir ? path.basename(path.resolve(args.dir)) : '';
+}
+
 // .workflow/ 的上一级 = 项目根
 const PROJECT = fileURLToPath(new URL('../..', import.meta.url));
 

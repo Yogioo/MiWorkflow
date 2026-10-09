@@ -150,3 +150,26 @@ test('Agent 自己先提交了 → 不判失败，压成工作流的一笔，照
   assert.match(gitOut(['log', '-1', '--pretty=%s'], s.root), /^#1 加个文件/);
   assert.match(gitOut(['log', '-1', '--pretty=%s', 'origin/main'], s.root), /^#1 加个文件/, '照样要推送');
 });
+
+test('dev：--dir 的目录名是实例名（锁落 dev@<工位>），不带 --dir 还是 dev 一把锁', () => {
+  const s = setup({});
+  mkdirSync(path.join(s.home, 'logs'), { recursive: true });
+  const held = (name) => writeFileSync(path.join(s.home, 'logs', name), JSON.stringify({ pid: process.pid, runId: 'holder', at: new Date().toISOString() }));
+
+  held('dev@wt1.lock');
+  const skip = cli(s, ['dev', '--dir', 'wt1']);
+  assert.equal(skip.code, 0, skip.stderr);
+  assert.match(skip.stdout, /dev@wt1 已在跑/);
+  assert.equal(seen(s).length, 0, '跳过的实例不该叫 Agent');
+
+  // 别的实例不受这把锁影响（队列空，跑一轮就完）
+  const other = cli(s, ['dev', '--dir', 'wt2']);
+  assert.equal(other.code, 0, other.stderr);
+  assert.doesNotMatch(other.stdout, /已在跑/);
+
+  // 不带 --dir = 没实例，落回 dev.lock：已有一把活锁就照旧跳过
+  held('dev.lock');
+  const plain = cli(s, ['dev']);
+  assert.equal(plain.code, 0, plain.stderr);
+  assert.match(plain.stdout, /dev 已在跑/);
+});
