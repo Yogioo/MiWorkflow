@@ -17,8 +17,15 @@ export const LABELS = {
   merging: 'afk-merging',       // 工人在工位里交了单子分支，等 merge 合入（不算交付，依赖它的单仍被挡住）
   delivered: 'afk-delivered',   // 已交付
   failed: 'afk-failed',         // 失败，等人看（摘掉它才重新入队）
-  review: 'needs-review'        // 要审查（REVIEW='auto' 时，贴了才起审查 Agent；见 config.mjs）
+  review: 'needs-review',       // 要审查（REVIEW='auto' 时，贴了才起审查 Agent；见 config.mjs）
+  discuss: 'agent-discuss'      // 讨论单（discuss 任务的入口标签，同 tasks/discuss.mjs 的 ENTER）；它下面拆出来的子需求算 AI 建的单
 };
+
+// 完成（代码已合入主分支并推送）后流转到哪个状态，写工作流里的中文状态名；'' = 不改状态。
+// ai：AI 建的单（父需求是讨论单、自己不是讨论单——discuss 的 /tickets 拆出来的）没人等着验收，直接完成；
+// human：人建的单流转到这里，处理人交回建单人（一般是提需求的策划）去验收。
+// 已在结束类状态（END_STATUSES）的单不动；状态名在工作流里找不到、写失败只在结果里记一句，不判失败（代码已经推上去了）。
+export const DONE_STATUS = { ai: '已完成', human: '' };
 
 // 前后置依赖的满足判据：前置需求贴了 LABELS.delivered，或已到结束类状态。
 // 结束类状态先按项目工作流取：ticket_ready 调 OpenAPI `workflows/last_steps`（system=story），用它给的状态键与中文名；

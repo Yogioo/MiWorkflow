@@ -266,7 +266,10 @@ miworkflow dev                         # 把就绪需求逐个做完；--issue <
 - 工单引用写成 `story <需求ID>`；提交信息按 `source.mjs` 的 `COMMIT_FORMAT`，缺省 `{type}:{short} {summary}`（如 `feat:1004854 背包按品质排序`，
   `short` 是需求 ID 后 7 位即界面上的短号），类型表 `COMMIT_TYPES`；要 TAPD 源码关联可改成 `--story={short} {summary}`
 
-**完成不关单**：做完贴 `afk-delivered`、摘 `afk-claimed`、发评论（`ready-for-agent` 留着，有机器标签就不再入队），需求状态不动——人验收后自己在 TAPD 里流转状态。
+**完成按来源流转**：做完（`merge` 合入并推送，或不带 `--dir` 的 `dev` 推送成功）贴 `afk-delivered`、摘 `afk-claimed`、发评论（`ready-for-agent` 留着，有机器标签就不再入队），
+再按 `source.mjs` 的 `DONE_STATUS` 流转状态：AI 建的单（父需求是讨论单，即 discuss 拆出来的子需求）到 `ai`（缺省「已完成」）；
+人建的单到 `human`、处理人交回建单人验收（缺省空 = 不改，各项目的验收状态名不同，比如配成「策划验收」）。
+已在结束状态的不动；状态名在工作流里找不到、流转被拒只在结果里记一句，不判失败。
 失败、未推送的处理与 GitHub 相同（失败保留 `ready-for-agent`、贴 `afk-failed`；未推送保留 `afk-claimed`、评论注明本地提交）；
 失败分类也相同：Agent 没跑完就退避重试，还不行回滚、撤 `afk-claimed`、不贴 `afk-failed`、评论后整轮停下（不关单、不改状态），下轮重做。
 工单快照里的图片经 `tapd-cli attachment get-image` 下载；回帖稿的图逐张 `upload-image` 后随评论发出。

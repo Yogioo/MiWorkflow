@@ -131,7 +131,7 @@ test('source.mjs：优先级映射与提交信息', async () => {
   const src = await import(`${pathToFileURL(path.join(TPL, 'source.mjs')).href}?t=${Date.now()}`);
   delete process.env.TAPD_NPC_ROLE;
   assert.deepEqual(['高', '中', '', '低', '紧急', undefined].map(src.priorityOf), [1, 2, 2, 3, 2, 2]);
-  assert.deepEqual(Object.values(src.LABELS), ['ready-for-agent', 'afk-claimed', 'afk-merging', 'afk-delivered', 'afk-failed', 'needs-review']);
+  assert.deepEqual(Object.values(src.LABELS), ['ready-for-agent', 'afk-claimed', 'afk-merging', 'afk-delivered', 'afk-failed', 'needs-review', 'agent-discuss']);
   const t = { id: '1152360842001004854', ref: 'story 1152360842001004854', title: '做个按钮' };
   assert.deepEqual(src.commitMessage(t, { type: 'fix', summary: '按钮换色' }), { message: 'fix:1004854 按钮换色' }, '7 位短号、没有正文');
   assert.ok(src.COMMIT_TYPES.includes('feat') && src.COMMIT_TYPES.includes('fix'));
@@ -142,8 +142,8 @@ const HOME = path.join(TMP, 'home');
 mkdirSync(HOME, { recursive: true });
 for (const t of ['_shared', 'tapd']) cpSync(path.join(ROOT, 'templates', t), HOME, { recursive: true });
 
-const runScript = (name, input, env) => {
-  const r = spawnSync(process.execPath, [path.join(HOME, 'scripts', `${name}.mjs`)], {
+const runScript = (name, input, env, home = HOME) => {
+  const r = spawnSync(process.execPath, [path.join(home, 'scripts', `${name}.mjs`)], {
     input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, ...env }
   });
   assert.equal(r.status, 0, r.stderr);
@@ -507,6 +507,59 @@ test('ticket_mark：五种 action 的标签变化，| 分隔；done 不改状态
       }
     });
   }
+});
+
+test('ticket_mark done：按单的来源流转状态——AI 建的单到 ai 状态、处理人不动；人建的单到 human 状态、交回建单人；结束状态 / 工作流里没有的状态名只记一句', async () => {
+  // 项目把人建的单配成交给策划验收（模板缺省 human 为空 = 不改）
+  const humanHome = path.join(TMP, 'home-human');
+  cpSync(HOME, humanHome, { recursive: true });
+  const srcFile = path.join(humanHome, 'source.mjs');
+  writeFileSync(srcFile, readFileSync(srcFile, 'utf8').replace(/export const DONE_STATUS = .*;/, "export const DONE_STATUS = { ai: '已完成', human: '策划验收' };"));
+
+  const STATUS_MAP = { status_11: '实现中', status_5: '策划验收', status_7: '已完成' };
+  const PARENT = '1152360842001004900';
+  const AI = '1152360842001004901';
+  const HUMAN = '1152360842001004902';
+  const flow = async (id, { home = HOME, statusMap = STATUS_MAP, status = 'status_11' } = {}) => {
+    const f = stateFile({
+      stories: [
+        story(PARENT, { label: 'agent-discuss|discuss:ticketed' }),
+        { ...story(AI, { label: 'ready-for-agent|afk-merging', status, owner: 'alice;' }), parent_id: PARENT, creator: 'bot-npc' },
+        { ...story(HUMAN, { label: 'agent-discuss|discuss:spec|ready-for-agent|afk-merging', status, owner: 'bob;' }), parent_id: '0', creator: '丁可' }
+      ],
+      statusMap
+    });
+    const api = await startFakeOpenApi(f);
+    try {
+      const { out } = runScript('ticket_mark', { id, action: 'done', sha: 'abc' }, { ...tapdEnv(f, api.endpoint), TAPD_NPC_ROLE: 'bot-npc' }, home);
+      assert.equal(out.status, 'ok', out.say);
+      const s = readTapdState(f).stories.find((x) => x.id === id);
+      assert.equal(s.label.split('|').includes('afk-delivered'), true, '标签照常写好');
+      return { say: out.say, status: s.status, owner: s.owner };
+    } finally {
+      await api.close();
+    }
+  };
+
+  const ai = await flow(AI);
+  assert.deepEqual([ai.status, ai.owner], ['status_7', 'alice;'], 'AI 建的单直接完成，处理人不动');
+  assert.match(ai.say, /标记完成，流转到「已完成」/);
+
+  const keep = await flow(HUMAN);
+  assert.deepEqual([keep.status, keep.owner], ['status_11', 'bob;'], '模板缺省：人建的单状态与处理人都不动');
+  assert.match(keep.say, /状态不改/);
+
+  const human = await flow(HUMAN, { home: humanHome });
+  assert.deepEqual([human.status, human.owner], ['status_5', '丁可'], '人建的单流转到策划验收、交回建单人');
+  assert.match(human.say, /流转到「策划验收」、交给 丁可 验收/);
+
+  const ended = await flow(HUMAN, { home: humanHome, status: 'status_7' });
+  assert.deepEqual([ended.status, ended.owner], ['status_7', 'bob;'], '已在结束状态的不往回拉');
+  assert.match(ended.say, /已是「已完成」/);
+
+  const missing = await flow(HUMAN, { home: humanHome, statusMap: { status_11: '实现中', status_7: '已完成' } });
+  assert.equal(missing.status, 'status_11');
+  assert.match(missing.say, /工作流里没有「策划验收」/, '只记一句，不判失败（代码已经推上去了）');
 });
 
 test('ticket_mark：回读不一致判失败；缺评论人时标签未被改动；干跑不改 TAPD', async () => {

@@ -833,7 +833,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
   `--issue` 人点名也走这套（被别的工人接了就报错退出，不强做）。锁以后换成远端 ref 就能扩到多机器，流程不变。
 - **工人重启清理**：`dev` 开跑前用 `ticket_ready { claims: true }` 列出贴了 `afk-claimed` 的单（每张带回 `claim`：工单源只读评论认出的有效接单人，不为每张拉整张快照），认出有效接单人是自己、还没交付的那些，回滚工位、发释放评论、摘 `afk-claimed`，让它重新排队。工人挂了不重启时由人摘标签（不做超时接管）。
 - **等合并**（`ticket_mark merging`）：工人在**工位**（`dev --dir <目录>`：git 操作、Agent 工作目录、`VERIFY` 都在工位里，任务 / 配置 / 日志仍在主目录）里做完，把那一笔挂到本地单子分支 `afk/<工单号>`（不推 origin、不碰主分支），摘 `afk-claimed`、贴 `afk-merging`；**不算交付**，依赖它的单仍被挡着，合入交给 `merge`。
-- **`merge` 任务**（`templates/_shared/tasks/merge.mjs`，在主目录跑，是工位产出唯一的合入口）：主目录整个干净 → `fetch` → 本地主分支快进到 origin 上那份（分叉就停下交给人）→ 取本地 `afk/*` 分支里**先交的那张**（按提交时间，`afk-merging` 标签只是给人看的）→ `rebase` 到主分支（冲突交合并 Agent：`config.mjs` 的 `MERGER` / `prompts/merge.md`，只解冲突、两边意图都保留）→ 验证（工人开工以来主分支没动过就跳过，动过跑 `VERIFY`，不过交回合并 Agent 修，最多 `ROUNDS` 轮）→ 快进主分支 → 推 origin → **推送成功才** `ticket_mark done`（GitHub / beads 关单，TAPD 贴 `afk-delivered`）→ 删掉单子分支。合并失败：回到合并前、单子分支备份成 `refs/afk-merge-backup/*` 后删掉、`requeued` 退回就绪队列（工人在最新主分支上重做），同一张单满 `MERGE_FAIL_LIMIT` 次贴 `afk-failed` 转人工；`fetch` / 推送连不上 origin（网络抖动）先按 `GIT_RETRY_DELAYS` 退避重试；推送失败与 `dev` 同款：本地保留、不关单、整轮停下。
+- **`merge` 任务**（`templates/_shared/tasks/merge.mjs`，在主目录跑，是工位产出唯一的合入口）：主目录整个干净 → `fetch` → 本地主分支快进到 origin 上那份（分叉就停下交给人）→ 取本地 `afk/*` 分支里**先交的那张**（按提交时间，`afk-merging` 标签只是给人看的）→ `rebase` 到主分支（冲突交合并 Agent：`config.mjs` 的 `MERGER` / `prompts/merge.md`，只解冲突、两边意图都保留）→ 验证（工人开工以来主分支没动过就跳过，动过跑 `VERIFY`，不过交回合并 Agent 修，最多 `ROUNDS` 轮）→ 快进主分支 → 推 origin → **推送成功才** `ticket_mark done`（GitHub / beads 关单，TAPD 贴 `afk-delivered` 并按 `DONE_STATUS` 流转状态）→ 删掉单子分支。合并失败：回到合并前、单子分支备份成 `refs/afk-merge-backup/*` 后删掉、`requeued` 退回就绪队列（工人在最新主分支上重做），同一张单满 `MERGE_FAIL_LIMIT` 次贴 `afk-failed` 转人工；`fetch` / 推送连不上 origin（网络抖动）先按 `GIT_RETRY_DELAYS` 退避重试；推送失败与 `dev` 同款：本地保留、不关单、整轮停下。
 
 讨论流程同理，也是固定四个脚本名；`discuss` 任务只调它们，不知道背后是哪家。启动时用只校验用法查 `DISCUSS`，配错就不启动（§10.1）。
 任务认的是**规范形状**，源负责与自家存储形态互转——spec 放哪（GitHub：正文的机器区域；TAPD：一条标记评论）、
@@ -885,7 +885,9 @@ AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 
 - `ticket_view`：描述与评论 HTML 转完整 Markdown，图片经 `attachment get-image` 下载、按魔数定扩展名。
 - `ticket_mark`：标签多值用 `|` 分隔，写完回读校验；评论要评论人（`COMMENTER` / `TAPD_NPC_ROLE`），缺了在改标签之前报错；
   回帖稿的图逐张 `upload-image` 换成 TAPD 图片地址再 `comment add`，发完经 OpenAPI 回读（`tapd-cli comment add` 出 `{ ok, id }`；
-  `id` 为空时按创建时间倒序找评论人最新的一条）。`done` **不关单**：只贴 `afk-delivered`，状态由人验收后流转。
+  `id` 为空时按创建时间倒序找评论人最新的一条）。`done` 贴 `afk-delivered` 后按 `source.mjs` 的 `DONE_STATUS` 流转：
+  AI 建的单（父需求贴讨论标签、自己没贴）到 `ai` 状态（缺省「已完成」）；人建的单到 `human` 状态、处理人交回建单人验收（缺省空 = 不改）；
+  已在结束状态不动，流转不成只记一句、不判失败（代码已推送）。
 - `source.mjs`：`WORKSPACE_ID`、`COMMENTER`、`LABELS`、`END_STATUSES`、`PRIORITY`；`ref` 为 `story <需求ID>`；
   提交信息缺省 `{type}:{short} {summary}`（`short` = 需求 ID 后 7 位，即 TAPD 界面上的短号），要源码关联可改成 `--story={short} {summary}`。
 
@@ -974,7 +976,7 @@ AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 
     回滚不销毁提交：`base..HEAD` 的提交先备份成 `refs/afk-backup/*` 再回滚，ref 写进失败评论（TODO B7）。
 16. ✅ 工单源接口（TODO F2）：模板拆成 `_shared` + 工单源、`init` 组合复制；`github_dev` → `dev`；
     `ticket_ready` / `ticket_view` / `ticket_mark`；工单快照 + 回帖稿；机器标签统一（§15）。
-17. ✅ TAPD 开发（TODO F3）：`templates/tapd/`，`dev` 接 TAPD 需求；只接需求、原生前后置依赖、完成不关单（§15）。
+17. ✅ TAPD 开发（TODO F3）：`templates/tapd/`，`dev` 接 TAPD 需求；只接需求、原生前后置依赖、完成按单的来源流转状态（`DONE_STATUS`，§15）。
     测试用假 `tapd-cli` + 假 OpenAPI，与 GitHub 同一套场景；源码关联写法、每日配额、结束类状态待真项目实测。
 
 ---

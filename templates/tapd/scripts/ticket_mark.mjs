@@ -1,5 +1,6 @@
 // 工单源接口：改工单状态。TAPD 实现：认领（claimed）/ 完成（done）/ 未推送留人处理（unpushed）/ 失败待人看（failed）/ 等合并（merging）。
-// 「完成」不关单、不改状态和处理人（属于人和策划的流程）：撤 claimed 与 afk-merging、贴 delivered、评论提交号。
+// 「完成」：撤 claimed 与 afk-merging、贴 delivered、评论提交号，再按单的来源流转状态（source.mjs 的 DONE_STATUS）：
+// AI 建的单（父需求是讨论单）直接到 ai 状态；人建的单到 human 状态、处理人交回建单人验收。流转出问题只记一句，不判失败。
 // failed 保留 ready（人摘掉 failed 就重新入队）；unpushed 只评论、保留 claimed；
 // released（Agent 连接失败）撤 claimed、不贴 failed、保留 ready，下轮自动重做；
 // merging（工人在工位里交了单子分支）摘 claimed、贴 afk-merging，不关单、不改状态——不算交付，依赖它的单仍被挡住；
@@ -17,7 +18,7 @@ import path from 'node:path';
 import { main, readStdin, emit } from './_lib.mjs';
 import { tapdJson, openApi } from './_tapd.mjs';
 import { claimComment, claimWorker, defaultWorker, machineLabels, projectDirOf, stampComment, withClaimLock } from './_claim.mjs';
-import { WORKSPACE_ID, COMMENTER, LABELS, refOf } from '../source.mjs';
+import { WORKSPACE_ID, COMMENTER, LABELS, END_STATUSES, DONE_STATUS, refOf } from '../source.mjs';
 
 const COMMENT_PAGE = 200;
 
@@ -96,6 +97,7 @@ await main(async () => {
   if (changed) did.push(`story update id=${id} label=${want.join('|')}`);
   if (reply) for (const p of reply.refs) did.push(`attachment upload-image ${p}`);
   did.push(`comment add entry_id=${id}（${action === 'claimed' ? '接单标记' : [head && '一段话', reply && '回帖稿'].filter(Boolean).join(' + ')}）`);
+  if (action === 'done' && (DONE_STATUS?.ai || DONE_STATUS?.human)) did.push(`story update id=${id}（按单的来源流转状态，见 DONE_STATUS）`);
 
   if (args.dryRun) {
     emit({ status: 'ok', say: `干跑：会执行 ${did.length} 步（${action} ${ref}）`, data: { id, ref, did } });
@@ -168,9 +170,57 @@ await main(async () => {
     await verifyComment(workspace, id, String(r.id ?? r.data?.Comment?.id ?? ''), body, uploaded);
   }
 
-  const label = { claimed: `接单（${worker}）`, done: '标记完成（不关单）', unpushed: '记录未推送', failed: '标记失败', released: '释放（下轮重做）', merging: '标记等合并', requeued: '退回就绪队列' }[action];
+  let flowed = '';
+  if (action === 'done') {
+    const f = await flowDone(readStory(id), workspace, wsArg);
+    flowed = f.said;
+    if (f.warn) warn = [warn, f.warn].filter(Boolean).join('；');
+  }
+
+  const label = { claimed: `接单（${worker}）`, done: `标记完成${flowed}`, unpushed: '记录未推送', failed: '标记失败', released: '释放（下轮重做）', merging: '标记等合并', requeued: '退回就绪队列' }[action];
   emit({ status: 'ok', say: `${ref} ${label}${warn ? `；${warn}` : ''}`, data: { id, ref, did } });
 });
+
+// 完成后的状态流转（DONE_STATUS）：出 { said: 拼在「标记完成」后面的话, warn: 没流转成的原因 }。
+// 标签和评论已经写好、代码已经推上去了，这里任何一步不成都只交回 warn，不抛错。
+async function flowDone(story, workspace, wsArg) {
+  try {
+    const ai = isAiTicket(story);
+    const name = String((ai ? DONE_STATUS?.ai : DONE_STATUS?.human) ?? '').trim();
+    if (!name) return { said: '（状态不改）', warn: '' };
+    const names = await statusNames(workspace);
+    const current = String(story.status ?? '');
+    if (END_STATUSES.includes(names.get(current) ?? current)) return { said: `（已是「${names.get(current) ?? current}」，状态不改）`, warn: '' };
+    const key = names.has(name) ? name : [...names].find(([, v]) => v === name)?.[0];
+    if (!key) return { said: '', warn: `状态没流转：工作流里没有「${name}」（改 source.mjs 的 DONE_STATUS）` };
+    // 人建的单交回建单人；处理人多值用 ; 分隔，已经只有他一个就不动
+    const owner = ai ? '' : String(story.creator ?? '').trim();
+    const owners = String(story.owner ?? '').split(';').map((o) => o.trim()).filter(Boolean);
+    const reown = Boolean(owner) && !(owners.length === 1 && owners[0] === owner);
+    if (current === key && !reown) return { said: `（已是「${name}」）`, warn: '' };
+    tapdJson(['story', 'update', `id=${story.id}`, `status=${key}`, ...(reown ? [`owner=${owner}`] : []), ...wsArg]);
+    const got = String(readStory(String(story.id)).status ?? '');
+    if (got !== key) return { said: '', warn: `状态没流转成「${name}」：回读是「${names.get(got) ?? got}」（多半是工作流不允许这一步，人去 TAPD 里手动流转）` };
+    return { said: `，流转到「${name}」${owner ? `、交给 ${owner} 验收` : ''}`, warn: '' };
+  } catch (err) {
+    return { said: '', warn: `状态没流转：${String(err?.message ?? err).split('\n')[0]}` };
+  }
+}
+
+// AI 建的单：父需求贴着讨论标签、自己没贴（讨论单自己做成开发单的，是人建的）
+function isAiTicket(story) {
+  if (labelsOf(story).includes(LABELS.discuss)) return false;
+  const parent = String(story.parent_id ?? '').trim();
+  if (!parent || parent === '0') return false;
+  return labelsOf(readStory(parent)).includes(LABELS.discuss);
+}
+
+// 状态键 → 中文名（项目工作流的 status_map）；取不到就是空表，按状态键原样比
+async function statusNames(workspace) {
+  const r = await openApi('/workflows/status_map', { query: { workspace_id: workspace || undefined, system: 'story' } });
+  const data = r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? r.data : {};
+  return new Map(Object.entries(data).map(([k, v]) => [k, String(v)]));
+}
 
 // 写标签 + 回读校验：写逗号会被当成一个新标签名，不报错但会建出垃圾标签；锁里也用它
 function writeLabels(labels, id, ref, wsArg) {
