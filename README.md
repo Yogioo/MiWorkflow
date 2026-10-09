@@ -160,17 +160,29 @@ Agent 不直接碰 GitHub：认领 / 读单 / 标记全由 `.workflow/scripts/` 
 Agent 每次都要写**回帖稿**（同目录的 `reply-<n>.md`，可带图）：做了什么、关键取舍、怎么验证的、遗留风险，提问和失败原因也写这里，由脚本发成评论。
 回帖稿带图时靠 `gh issue comment --attach` 上传，要 `gh` ≥ 2.99.0；版本不够只是图不上传（评论里留占位并提示升级），评论照发。
 
-### 工位与合并：多工人并行，合入只有一个口子
+### 工位与合并：多工位并行，合入只有一个口子
+
+一个**工位**是一份长期存在的 git 工作副本（本机 worktree，别的机器 clone），里面不放 `.workflow/`：任务、配置、提示词、日志只有**主目录**一份。在每个工位上，从主目录起一个**工人**（一个 `dev --dir <工位>` 进程），几个工人同时抢不同的单：
 
 ```bash
-miworkflow dev --dir wt1            # 工人在工位里做单：交本地分支 afk/<工单号>、贴 afk-merging（不推 origin、不关单）
-miworkflow merge --every            # 主目录串行合入：一张合完再合下一张
-miworkflow stop dev --dir wt1       # 只停这一个工位
+# 工位：普通项目让 dev --dir 自己建（不存在就从主分支拉一个 worktree）；Unity 这类项目先用项目自己的脚本建好
+miworkflow dev --dir wt1 --every 5m   # 主目录起工人：在工位 wt1 里做单，交本地分支 afk/<工单号>、贴 afk-merging（不推 origin、不关单）
+miworkflow dev --dir wt2 --every 5m   # 第二个工位另起一份，两个工人同时跑，各接各的单
+miworkflow merge --every 5m           # 主目录串行合入：一张合完再合下一张
+miworkflow stop dev                   # 停这个任务的全部工人（各自的 --every 也不再起下一轮）
+miworkflow stop dev --dir wt1         # 只停 wt1 这一个：做完手头这张单就停
 ```
 
-工位是一份长期存在的 git 工作副本（本机 worktree，别的机器是 clone），里面不放 `.workflow/`：任务、配置、日志只有主目录一份。
-主分支自动认 `origin/HEAD`（不加配置项）；每张单开工前把工位对齐到最新的本地主分支。一个工单只该有一个工人，
-拿不同工单的工人可以同时跑。
+- 工位不存在时 `dev --dir` 用通用做法建（从主分支 `git worktree add --detach` + 初始化子模块）；项目自己有准备工作的先用项目脚本建好，MiWorkflow 不管也替不了——Unity 首次导入要开 Editor（例：DigitDoor 的 `sh Tools/Worktree/new-worktree.sh <名字>`）。
+- 主分支自动认 `origin/HEAD`（不加配置项）；每张单开工前把工位对齐到最新的本地主分支。一个工单只该有一个工人，拿不同工单的工人可以同时跑。
+- `stop dev` 停这个任务的全部实例，`stop dev --dir wt1` 只停一个（`--dir` 跟启动时一样，内核按「任务 + 实例」分辨）。
+
+**运行规范**（不写代码拦，靠人守）：
+
+- **主目录归机器专用**：讨论、合并、工人都从主目录起；人要写代码另外克隆一份，别在主目录里改。
+- **主目录里不带 `--dir` 的 `dev` 别和 `merge` 同时开**：两者都在主目录动 git，会互相搅乱。
+- **撤工位前先停工人**，并确认它手上没有单（工单上还挂着 `afk-claimed` 就是没做完）；删了还挂着单的，没人会回来清理。
+- **工人挂了不回来时，由人摘标签**（`afk-claimed`）：MiWorkflow 不做超时接管。
 
 `merge` 在主目录里当唯一的合入口（不带 `--dir` 的老式 `dev` 也可以并存，但两者别同时开）：取本地所有 `afk/*` 分支，
 **按提交时间先交先合**（`afk-merging` 标签只是给人看的）。每轮开始要求主目录整个干净，再 fetch、把本地主分支快进到 `origin` 上那份

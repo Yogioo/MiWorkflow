@@ -18,7 +18,8 @@
    开发 / 讨论的共用场景与契约测试多跑一家假 `bd`。实测踩到的坑：`bd list` 缺省 50 条、`bd show` 不带评论且依赖形状跟 `list` 不同、
    Windows 上 npm 的 `bd` 是 `.cmd` 包装、`bd create --parent` 缺省继承父单标签）
 7.2 ❌ **I 本机多 worktree 并行开发**（2026-10-08 拍板、同日放弃，见 D）
-7.3 **J 多 worktree / 多机器并行开发：外部工单源直接抢单 + merge 串行合入**（见下文 J，2026-10-08 拍板，2026-10-09 补 J0 工位、再 grill 一轮定细节，实现待做）
+7.3 ✅ **J 多工位并行开发：外部工单源直接抢单 + merge 串行合入**（见下文 J，2026-10-08 拍板，2026-10-09 补 J0 工位、再 grill 一轮定细节；#34–#37、#39 实现，
+   DigitDoor 真项目实测留给人做（J5 第 5 条））
 8. A0 → A1–A4 自进化；E 里的 MiCan 经验，**等真跑出需求再做**（§2.5 失败即需求）
 
 B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项目专用的（如 Unity 跑测试）。
@@ -710,7 +711,7 @@ REVIEWER 那次完整的 Agent 调用（还要重读项目）是白花的开销�
 | `REVIEW` 常量 | 做：`'auto'` / `'always'` |
 | 汇总审查 | 搁置（G3） |
 
-## J. 多 worktree / 多机器并行开发（2026-10-08 提出并拍板，见 J4）
+## J. 多工位并行开发（✅ 已实现；2026-10-08 提出并拍板，见 J4）
 
 **目标**：一台机器开几个 git worktree 并行开发，**同一套做法直接扩到多台机器**。不做内部队列（I 放弃的原因）：
 工单入口仍是外部工单源（GitHub Issues / TAPD / beads 任一家），每个工位上跑一个从它抢单的工人；加机器 = 多几个工位。
@@ -829,9 +830,23 @@ REVIEWER 那次完整的 Agent 调用（还要重读项目）是白花的开销�
 2. ✅ J1 接单协议（#35）：`scripts/_claim.mjs`（接单评论标记 / 有效接单人 / 按工单号的接单锁，锁在 git 共享目录、持有进程死了能接管）+ 三家 `ticket_*`
    （`ticket_view` 多给 `labels` / `claim`、`ticket_mark claimed` 收 `worker` 并按「校验 → 抢锁 → 锁里再校验 → 发接单评论 + 贴标签」写）+ `ticket_ready claims:true`（工人重启清理）+
    `dev` 的接单与重启清理（`config.mjs` 的 `WORKER`，缺省 `<主机名>/<工位目录名>`）；契约测试与三家场景都覆盖抢单、过期锁、`--issue` 撞单、重启清理
-3. J2 工人交单子分支：`dev.mjs` + `config.mjs` 开关 + git 脚本（开工对齐含子模块更新）；三家现有场景原样通过
-4. ✅ J3 `merge` 任务 + MergeAgent 提示词 + 场景测试（临时仓库、真开 worktree、假远端）
-5. 在 DigitDoor 上实测：先用 `new-worktree.sh` 建 2～3 个工位并静音 Unity 噪音，主目录跑 `discuss`、`merge` 和各工位的 `dev --dir`
+3. ✅ J2 工人交单子分支：`dev.mjs` + git 脚本（开工对齐含子模块更新），`--dir` 交 `afk/<工单号>` + 贴 `afk-merging`（#36）
+4. ✅ J3 `merge` 任务 + MergeAgent 提示词 + 场景测试（临时仓库、真开 worktree、假远端）（#37）
+5. ⬜ 在 DigitDoor 上实测（**留给人做**，不算已完成）：先用 `new-worktree.sh` 建 2～3 个工位并静音 Unity 噪音，主目录跑 `discuss`、`merge` 和各工位的 `dev --dir`
+
+### J6. 实现时的取舍（与 J0–J4 方案不同的地方）
+
+- **接单锁只做单机版**：锁文件按工单号建在 git 共享目录（各 worktree 是同一个），排他创建 + 锁里记 pid、持有进程死了算过期可接管；
+  不实现 J1 说的远端 `refs/afk-claims/*`，多机器等真要用时再换（流程不变，只换锁的实现）。
+- **解析层不认识工单 / 工位**：内核只认「任务 + 实例」这个键，实例名由任务导出的 `instance(args)` 给；`dev` 返回 `--dir` 的目录名，
+  于是 `dev@wt1` / `dev@wt2` 各有各的锁、`--every` 循环与停止请求，`stop dev` 停全部、`stop dev --dir wt1` 停一个（#34）。
+- **`--dir` 不加开关**：带 `--dir` 交单子分支，不带就是老行为（主目录提交、推当前分支、关单），两种并存；
+  「主目录里老式 `dev` 别和 `merge` 同时开」只写进运行规范，不写代码拦（J2 末条）。
+- **工位谁建**：不存在时用通用做法建（`git worktree add --detach <主分支>` + `git submodule update --init`）；
+  项目自己的准备工作（Unity 首次导入）交给项目脚本，MiWorkflow 不加「建工位」配置项（#36）。
+- **合并顺序按提交时间先交先合**（`afk-merging` 标签只给人看），不看优先级；第二次验证可省——工人开工以来主分支没动过就跳过（#37）。
+- **合并失败计数**按工单快照里 `afk merge 失败（第 N 次` 这类评论的条数算，做法同 `AGENT_KILL_LIMIT`；满 `MERGE_FAIL_LIMIT` 次贴 `afk-failed` 转人工。
+- **顺手补的一条**（J 之外）：`dev` / `discuss` / `merge` 启动就校验 Agent 配置，配错一次列全并退出，不认领工单、不叫 Agent、不动 git（#39）。
 
 ## E. 来自 MiCan 的经验（先不做，写明什么时候做）
 
