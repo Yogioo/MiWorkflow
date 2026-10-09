@@ -28,6 +28,8 @@ const out = (argv, cwd) => {
 };
 const has = (ref, cwd) => gitOrNull(['rev-parse', '--verify', '--quiet', ref], cwd) !== null;
 const isAncestor = (a, b, cwd) => Boolean(a && b) && gitOrNull(['merge-base', '--is-ancestor', a, b], cwd) !== null;
+// 本地只落后（能快进）或只领先都不算分叉，两边各有对方没有的提交才算
+const diverged = (local, remote, cwd) => Boolean(local && remote) && !isAncestor(local, remote, cwd) && !isAncestor(remote, local, cwd);
 const firstLine = (text) => String(text ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
 
 // 主分支名：origin/HEAD → 主目录当前分支（跟 git_worktree 同一套认法，不加配置项）
@@ -106,7 +108,7 @@ await main(async () => {
         root: repo, main: mainBranch, current: out(['rev-parse', '--abbrev-ref', 'HEAD'], repo),
         sha: out(['rev-parse', 'HEAD'], repo), local, remote,
         clean: dirty.length === 0, dirty: dirty.map((l) => l.trim()),
-        diverged: Boolean(remote && local && !isAncestor(remote, local, repo)),
+        diverged: diverged(local, remote, repo),
         rebase: inRebase(repo)
       }
     });
@@ -139,7 +141,7 @@ await main(async () => {
     const remote = refSha(`refs/remotes/origin/${mainBranch}`, repo);
     if (!remote) throw new Error(`origin 上没有 ${mainBranch}（先 push 一次主分支）`);
     const local = refSha(`refs/heads/${mainBranch}`, repo);
-    if (local && !isAncestor(remote, local, repo)) {
+    if (diverged(local, remote, repo)) {
       throw new Error(`本地 ${mainBranch} 和 origin/${mainBranch} 分叉了（本地 ${local.slice(0, 7)}、远端 ${remote.slice(0, 7)}），交给人处理`);
     }
     const before = local;

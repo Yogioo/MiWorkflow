@@ -201,6 +201,30 @@ export function defineMergeScenarios(src) {
     assert.deepEqual(branches(s), [branchOf(1)], '分支留着，人处理完再合');
   });
 
+  // 别人从另一份克隆推到 origin，本地主分支没跟上（只落后、不分叉）
+  function othersPush(s, files, message = '远端的一笔') {
+    const other = path.join(s.base, 'other');
+    git(['clone', '-q', '-b', 'main', path.join(s.base, 'origin.git'), other], s.base);
+    git(['config', 'user.email', 't@t'], other);
+    git(['config', 'user.name', 't'], other);
+    for (const [name, content] of Object.entries(files)) writeFileSync(path.join(other, name), content);
+    git(['add', '-A'], other);
+    git(['commit', '-qm', message], other);
+    git(['push', '-q', 'origin', 'main'], other);
+  }
+
+  scenario('本地主分支落后 origin（别人推了新提交）→ 快进后照常合入', {
+    tickets: [{ key: 1, labels: READY }], push: true
+  }, (s, view) => {
+    deliver(s, 1, { 'note.txt': 'hi\n' });
+    othersPush(s, { 'remote.txt': 'y\n' });
+    const r = cli(s, ['merge']);
+    assert.equal(r.code, 0, r.stderr + r.stdout);
+    const subjects = gitOut(['log', '--pretty=%s', '-2', 'origin/main'], s.root).split('\n');
+    assert.deepEqual(subjects, [`${src.commitPrefix(1)}改一下`, '远端的一笔'], subjects.join(' / '));
+    assertDelivered(view(1));
+  });
+
   scenario('本地主分支与 origin 分叉 → 停下交给人，不动分支、不改工单', {
     tickets: [{ key: 1, labels: READY }], push: true
   }, (s, view) => {
@@ -208,14 +232,7 @@ export function defineMergeScenarios(src) {
     write(s, { 'local.txt': 'x\n' });
     git(['add', '-A'], s.root);
     git(['commit', '-qm', '本地的一笔'], s.root);
-    const other = path.join(s.base, 'other');
-    git(['clone', '-q', '-b', 'main', path.join(s.base, 'origin.git'), other], s.base);
-    git(['config', 'user.email', 't@t'], other);
-    git(['config', 'user.name', 't'], other);
-    writeFileSync(path.join(other, 'remote.txt'), 'y\n');
-    git(['add', '-A'], other);
-    git(['commit', '-qm', '远端的一笔'], other);
-    git(['push', '-q', 'origin', 'main'], other);
+    othersPush(s, { 'remote.txt': 'y\n' });
 
     const r = cli(s, ['merge']);
     assert.equal(r.code, 1);
