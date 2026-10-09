@@ -81,3 +81,64 @@ test('[tapd] --every 循环里列单失败（额度用完）：本轮失败、�
     await s.close();
   }
 });
+
+test('[tapd] 单跑也服退避：外面套 while 空转不再一轮一轮烧调用；--now 是人的手动放行', async () => {
+  const s = await src.open({ issues: [] });            // 一张讨论单都没有：最典型的空转
+  const paceFile = path.join(s.home, 'logs', 'discuss.pace.json');
+  const pace = () => JSON.parse(readFileSync(paceFile, 'utf8'));
+  const calls = () => readTapdState(s.tapdFile).calls.length + openApiLog(s.tapdFile).length;
+  try {
+    const first = cli(s, ['discuss']);
+    assert.equal(first.code, 0, first.stderr);
+    assert.doesNotMatch(first.stdout, /还没到点/, '第一轮照常查一次');
+    assert.equal(pace().idle, true, '没事干：记退避');
+
+    const before = calls();
+    for (let i = 0; i < 3; i++) {
+      const r = cli(s, ['discuss']);
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stdout, /还没到点/, '后面几轮连工单系统都不碰');
+    }
+    assert.equal(calls(), before, '单跑空转：一次 TAPD 都不调');
+
+    const forced = cli(s, ['discuss', '--now']);
+    assert.equal(forced.code, 0, forced.stderr);
+    assert.doesNotMatch(forced.stdout, /还没到点/, '--now 放行');
+    assert.ok(calls() > before, '--now 真的查了一次');
+  } finally {
+    await s.close();
+  }
+});
+
+test('[tapd] 单跑不抹循环攒下的 cursor；上一轮没事干算出的短退避不拦人', async () => {
+  const s = await src.open({ issues: [{ key: 1, labels: ['agent-discuss'] }] });
+  const paceFile = path.join(s.home, 'logs', 'discuss.pace.json');
+  const pace = () => JSON.parse(readFileSync(paceFile, 'utf8'));
+  try {
+    // 循环里跑一轮，攒下 cursor
+    s.env.AGENTFLOW_LOOP_PID = '1';
+    plan(s, [ask('问一')]);
+    assert.equal(cli(s, ['discuss']).code, 0);
+    const cursor = pace().cursor;
+    assert.ok(cursor, '循环：记下 cursor');
+    assert.equal(pace().idle, false, '干过活：不记退避');
+    delete s.env.AGENTFLOW_LOOP_PID;
+
+    // 单跑一轮：这轮没事干（哈希没变），但不得动 cursor
+    assert.equal(cli(s, ['discuss']).code, 0);
+    assert.deepEqual(pace().cursor, cursor, '单跑不动循环攒下的 cursor');
+    assert.equal(pace().idle, true, '没事干：记退避');
+    const gap = pace().nextAt - Date.now();
+    assert.ok(gap < 5_000, `刚有动静，退避很短（实际 ${gap}ms）`);
+
+    // 短退避不该拦住下一轮：人刚补完内容就重跑，不能被人自己上一轮的退避挡住
+    src.reply(s, 1, '人补的内容');
+    plan(s, [ask('问二')]);
+    const r = cli(s, ['discuss']);
+    assert.equal(r.code, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /还没到点/, '短退避不拦人');
+    assert.match(src.comments(s, 1).at(-1), /问二/, '重跑真的处理了');
+  } finally {
+    await s.close();
+  }
+});
