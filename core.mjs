@@ -125,22 +125,27 @@ let agentCalls = 0;
 function agentCommand(opts) {
   const split = (s) => s.split(/\s+/).filter(Boolean);
   if (opts.cmd) return { argv: split(opts.cmd) };
-  if (opts.agent) return adapterCommand(opts.agent);
+  if (opts.agent) return adapterCommand(opts.agent, opts);
   if (process.env.AGENTFLOW_AGENT_CMD) return { argv: split(process.env.AGENTFLOW_AGENT_CMD) };
-  if (process.env.AGENTFLOW_AGENT) return adapterCommand(process.env.AGENTFLOW_AGENT);
+  if (process.env.AGENTFLOW_AGENT) return adapterCommand(process.env.AGENTFLOW_AGENT, opts);
   return null;
 }
 
 // opts.agent（对象或只写 CLI 名）展开成内核适配器；值原样转交，不翻译、不校验
-function adapterCommand(spec) {
+// opts.check 时在 `--` 之前插一个 --check（§10.1 的只校验用法），不然会被当成给 CLI 的开关转交下去
+function adapterCommand(spec, { check = false } = {}) {
   const a = typeof spec === 'string' ? { cli: spec } : spec;
   const argv = [process.execPath, AGENT_CLI, String(a.cli)];
   for (const k of ['model', 'thinking', 'provider', 'session']) if (a[k]) argv.push(`--${k}`, String(a[k]));
+  if (check) argv.push('--check');
   if (a.args?.length) argv.push('--', ...a.args.map(String));
   return { argv, agent: { cli: a.cli, model: a.model, thinking: a.thinking, session: a.session } };
 }
 
 export async function agent(goal, opts = {}) {
+  // 只校验、不干活（§10.1）：问一句这份配置能不能用，不调模型、不写日志、不占一次 agentCalls
+  if (opts.check) return checkAgent(opts);
+
   const startedAt = Date.now();
   const pkg = {
     goal,
@@ -226,6 +231,43 @@ export async function agent(goal, opts = {}) {
 
   return session === undefined ? { status, choice, reason, data } : { status, choice, reason, data, session };
 }
+
+// 只校验 Agent 配置（§10.1）：起适配器的 --check 用法问一句，不调模型。
+// 自定义命令（opts.cmd / AGENTFLOW_AGENT_CMD）没法校验，直接 ok。
+async function checkAgent(opts) {
+  const command = agentCommand(opts);
+  if (!command) {
+    return {
+      status: 'failed',
+      choice: 'agent_unavailable',
+      reason: '未配置 Agent：设 AGENTFLOW_AGENT=pi|codex|cursor，或传 opts.agent / AGENTFLOW_AGENT_CMD',
+      data: {}
+    };
+  }
+  if (!command.agent) return { status: 'ok', choice: 'ok', reason: '自定义命令，跳过校验', data: {} };
+
+  const [bin, ...rest] = command.argv;
+  const res = await run(bin, rest, '', 60_000);
+  let out;
+  try {
+    out = JSON.parse(res.stdout);
+  } catch {
+    return {
+      status: 'failed',
+      choice: 'agent_cli_failed',
+      reason: `校验 Agent 配置时适配器没交回结论：${firstLine(res.stderr) || `exit_${res.code}`}`,
+      data: {}
+    };
+  }
+  return {
+    status: out.status === 'ok' ? 'ok' : 'failed',
+    choice: typeof out.choice === 'string' ? out.choice : 'agent_bad_config',
+    reason: String(out.reason ?? ''),
+    data: out.data ?? {}
+  };
+}
+
+const firstLine = (text) => String(text ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
 
 // events 一律记成相对 HOME logs/ 的路径（§12）：viewer 按 logs/<events> 拼文件
 function eventsRel(absBase) {

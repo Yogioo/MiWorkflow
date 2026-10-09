@@ -92,7 +92,8 @@ process.stdout.write(JSON.stringify({ status: 'ok', say: '...', data: {} }));
 - **叫什么**：`label` 是 viewer 时间线上的节点短名（如 `'开发Agent'`）；不写就显示 `Agent`。提示词全文只进日志的 `goal`，不当节点名。
 - **超时**：默认 `budget.timeoutSec` 是 7200（2 小时），够改代码、审查这类长活；短活想早点失败就给小一点的值。
   看门狗 `budget.idleSec` 默认 1200：事件流这么久没动静（命令卡住不返回）就结束，`0` 关掉。
-- **失败怎么看**：`agent_unavailable` = 没配 Agent；`agent_cli_failed` = CLI 起不来 / 报错 / 没回话（`reason` 写了原因）；
+- **失败怎么看**：`agent_unavailable` = 没配 Agent；`agent_bad_config` = 配置不对（CLI 名字不认识 / 参数组合不合法 / 本机没这个命令，
+  `reason` 写了哪一项、合法的值有哪些；`dev` / `discuss` 启动时就查，不认领不叫 Agent）；`agent_cli_failed` = CLI 起不来 / 报错 / 没回话（`reason` 写了原因）；
   `agent_idle` / `agent_timeout` = 看门狗判卡死 / 到了超时，被强制结束（`data.stuck` 结束时在跑的工具调用、`data.trace` 过程摘要文件）；
   `agent_invalid_json` / `agent_bad_output` = 回话不合契约。都是 `failed`，不要假装它成功了。
 - 重试时把上一次的 `reason` 放进 `inputs`：每次 `agent()` 都是新上下文。

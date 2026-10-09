@@ -35,6 +35,18 @@ export function defineDiscussScenarios(src) {
   const reply = (s, key, body, opts) => src.reply(s, key, body, opts);
   const specIssue = () => ({ key: 1, labels: ['agent-discuss', 'discuss:spec'], body: '原文', spec: '规格' });
 
+  scenario('DISCUSS 配错 → 启动就报错，不读工单、不发评论、不叫 Agent', {
+    issues: [{ key: 1, labels: ['agent-discuss'] }], discuss: { cli: 'agent' }
+  }, (s) => {
+    plan(s, [ask('不该走到这里')]);
+    const r = cli(s, ['discuss']);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr + r.stdout, /不认识的 Agent CLI：agent（可选：pi \/ codex \/ cursor）/, '说清哪一项错、合法的值有哪些');
+    assert.deepEqual(seen(s), [], '不叫 Agent');
+    assert.equal(bodies(s, 1).length, 0, '不发评论');
+    assert.deepEqual(src.labels(s, 1), ['agent-discuss'], '不贴阶段标签');
+  });
+
   scenario('进入：只挑 agent-discuss 且无阶段或 grilling / spec；首轮贴 discuss:grilling、评论带标记；哈希不变不重复', {
     issues: [{ key: 1, labels: ['agent-discuss'] }, { key: 2, labels: ['agent-discuss', 'discuss:tickets'] }, { key: 3, labels: [] }]
   }, (s) => {

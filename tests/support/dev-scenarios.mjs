@@ -228,6 +228,60 @@ export function defineDevScenarios(src) {
     assert.deepEqual(view(1).comments, []);
   });
 
+  // ── 启动校验（§10.1）：配置不对就不启动——不认领、不评论、不叫 Agent ──
+  scenario('配置不对：REVIEWER 的 CLI 名字不认识 → 启动就报错，没认领、没评论、没叫过 Agent；--dry-run 也报', {
+    tickets: [{ key: 1, labels: READY }], config: { REVIEWER: { cli: 'agent' } }
+  }, (s, view) => {
+    plan(s, DONE_STEPS('x.txt'));
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr + r.stdout, /不认识的 Agent CLI：agent（可选：pi \/ codex \/ cursor）/, '说清哪一项错、合法的值有哪些');
+    assert.deepEqual(seen(s), [], '没叫 Agent');
+    assert.deepEqual(view(1).labels, READY, '没认领');
+    assert.deepEqual(view(1).comments, [], '没评论');
+
+    const dry = cli(s, ['dev', '--dry-run']);
+    assert.equal(dry.code, 1, '干跑也要查配置');
+    assert.match(dry.stderr + dry.stdout, /不认识的 Agent CLI：agent/);
+  });
+
+  scenario('配置不对：DEV 的参数组合非法（cursor 只给 thinking）→ 启动就报错', {
+    tickets: [{ key: 1, labels: READY }], config: { DEV: { cli: 'cursor', thinking: 'high' } }
+  }, (s, view) => {
+    plan(s, []);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr + r.stdout, /DEV：.*只给 thinking/);
+    assert.deepEqual(seen(s), []);
+    assert.deepEqual(view(1).labels, READY);
+  });
+
+  scenario('配置不对：DEV 走内核适配器，但本机没这个命令 → 启动就报错，说清用哪个环境变量指路', {
+    tickets: [{ key: 1, labels: READY }], config: { DEV: { cli: 'pi' } }
+  }, (s, view) => {
+    s.env.PI_BIN = path.join(s.base, 'nope', 'pi.mjs');
+    plan(s, DONE_STEPS('x.txt'));
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr + r.stdout, /DEV：Agent 配置不对：本机找不到 pi 的命令/);
+    assert.match(r.stderr + r.stdout, /PI_BIN/);
+    assert.deepEqual(seen(s), []);
+    assert.deepEqual(view(1).labels, READY);
+  });
+
+  scenario('配置不对：普通常量写错 → 启动就报错，所有错的项一次列全', {
+    tickets: [{ key: 1, labels: READY }], verify: 1, rounds: -1, review: 'sometimes', push: 'yes'
+  }, (s, view) => {
+    plan(s, DONE_STEPS('x.txt'));
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 1);
+    const said = r.stderr + r.stdout;
+    for (const name of ['VERIFY', 'ROUNDS', 'REVIEW', 'PUSH']) assert.match(said, new RegExp(`${name} 只能是`), said);
+    assert.deepEqual(seen(s), []);
+    assert.deepEqual(view(1).labels, READY);
+    assert.deepEqual(view(1).comments, []);
+  });
+
   scenario('回滚要丢掉提交 → 先备份成 ref，评论写明', { tickets: [{ key: 1, labels: READY }] }, (s, view) => {
     plan(s, [
       { choice: 'done', reason: '做完', file: { name: 'bad.txt', content: 'x' }, commit: `${src.commitPrefix(1)}坏提交` },
@@ -298,6 +352,25 @@ export function defineDevScenarios(src) {
     assertReleased(view(1));
     assert.ok(view(1).comments.some((c) => c.includes('未配置 Agent')));
     assert.deepEqual(view(2).labels, READY);
+  });
+
+  scenario('运行中撞上 agent_bad_config → 不按 AGENT_RETRY_DELAYS 重试，回滚释放、整轮停下', {
+    tickets: [{ key: 1, labels: READY }, { key: 2, labels: READY }], retryDelays: [0, 0]
+  }, (s, view) => {
+    plan(s, [
+      { status: 'failed', choice: 'agent_bad_config', reason: 'Agent 配置不对：不认识的 Agent CLI：agent', file: { name: 'half.txt', content: 'x' } },
+      ...DONE_STEPS()
+    ]);
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 1);
+    assert.equal(seen(s).length, 1, '不重试：重试的那一轮没跑');
+    const t = view(1);
+    assert.equal(t.closed, false);
+    assert.deepEqual(t.labels, READY, '释放：摘 afk-claimed、不贴 afk-failed、保留 ready');
+    assert.ok(t.comments.some((c) => c.includes('Agent 配置不对') && c.includes('不认识的 Agent CLI：agent')), t.comments.join('\n'));
+    assert.ok(!existsSync(path.join(s.root, 'half.txt')), '半成品回滚了');
+    assert.deepEqual(view(2).labels, READY, '整轮停下，不挑下一张');
+    assert.match(r.stderr + r.stdout, /Agent 配置不对（工单 [^）]+）：已回滚并释放，整轮停下/);
   });
 
   scenario('Agent 进程什么都没吐（空 stdout）→ 按连不上重试；AGENT_RETRY_DELAYS 为空就不重试', {

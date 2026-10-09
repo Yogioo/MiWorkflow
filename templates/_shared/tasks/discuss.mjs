@@ -31,6 +31,7 @@
 //
 // 省着查（工单系统有调用额度）：退避对所有调用方生效，单跑也读 logs/discuss.pace.json（实现在 scripts/_pace.mjs）。
 //   只管自动循环（--every）的话，外面套一层 while 反复单跑就能把额度烧光——每轮都是实打实两次调用。人的手动放行：--now。
+//   启动校验（§10.1）：DISCUSS 不对就不启动——不读工单、不发评论，也不管退避到没到点。
 //   增量：只在 --every 循环里用（内核给每一轮设 AGENTFLOW_LOOP_PID）——单跑照旧全量看一遍，也不会动循环攒下的 cursor。
 //         discuss_list 交回的 cursor 原样存着，下次带上；源据此给每张单标 changed，没变的不读。
 //         源不支持增量（不交 cursor、不标 changed）就每张都读。本轮有单子没读成，cursor 不前进，下次重看。
@@ -73,6 +74,11 @@ const LABELS = { grilling: '讨论Agent', spec: '规格Agent', tickets: '拆单A
 export default async function ({ script, agent, args, stopping = () => false }) {
   const max = args.max === undefined ? Infinity : Number(args.max);
   if (max !== Infinity && !(Number.isInteger(max) && max >= 1)) throw new Error(`--max 要正整数：${args.max}`);
+  // 启动校验（§10.1）：DISCUSS 配错（名字 / 参数组合 / 本机没这个命令）就不启动——不读工单、不发评论，
+  // 也不管退避到没到点。只校验用法不起模型；自定义命令（AGENTFLOW_AGENT_CMD）没法查，那边直接 ok。
+  const spec = agentSpec();
+  const probe = await agent('校验 Agent 配置', { check: true, ...(spec ? { agent: spec } : {}) });
+  if (probe.status !== 'ok') throw new Error(`配置不对，不启动：\n- DISCUSS：${probe.reason}`);
   // 退避对所有调用方生效（单跑也读）：不然外面套一层 while 反复单跑，每轮都实打实查工单系统。--now 是人的手动放行。
   const loop = Boolean(process.env.AGENTFLOW_LOOP_PID);
   if (!args.now && pace.held()) {

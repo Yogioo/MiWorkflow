@@ -140,6 +140,8 @@ DEV 只能升级不能降级：提示词列了该升级的情形（改公共接�
   按 `config.mjs` 的 `AGENT_RETRY_DELAYS`（缺省 30 秒、2 分钟，空数组 = 不重试）重试同一步，开发重试前先回到本轮起点；
   还不行，或没配 Agent（`agent_unavailable`），就回滚（提交先备份成 `refs/afk-backup/*`）、摘 `afk-claimed`、**不贴** `afk-failed`、
   评论「Agent 连接失败，已回滚并释放，下轮重做：<原因>」，整轮立即停下（退出码非 0，不计入 `--max-failures`），下一轮自动重做。
+- **配置不对**（`agent_bad_config`：CLI 名字不认识 / 参数组合不合法 / 本机没装这个命令）：不重试（重试一百次也不会好）。
+  启动时就会拦下（见下面「改行为」）；运行中配置被人改坏了才走到这里，回滚、释放、整轮停下，等人改配置。
 - **Agent 被强制结束**：卡死（看门狗 `agent_idle`：`config.mjs` 的 `AGENT_IDLE_SEC` 内事件流没动静，缺省 1200 秒，`0` 不看）
   或超时（`agent_timeout`：到 2 小时上限），都不重试，走同一条路：
   先叫诊断 Agent（只读）趁半成品还在查为什么没做完、进展到哪、下次怎么做 → 回滚，半成品另存 `killed-<n>.diff` →
@@ -194,6 +196,8 @@ beads（`--template beads`）存纯文本、HTML 注释原样保留，所以 spe
 本地库没有调用额度，不做增量，每轮每张都读；讨论单由人 `bd close`。
 
 改行为就改 `.workflow/config.mjs`（共用：`DEV` / `REVIEWER` / `REVIEW` / `VERIFY` / `ROUNDS` / `PUSH` / `DISCUSS_IDLE_MAX_SEC`）与 `.workflow/source.mjs`（GitHub：标签名 `LABELS` / `DISCUSS` / 提交信息 `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY`）；
+`DEV` / `REVIEWER` / `DISCUSS` 与这几个普通常量在 `dev` / `discuss` **一启动就校验**：配置不对就直接报错退出，说清哪一项错了、合法的值有哪些，
+一个工单都不认领、不叫 Agent、不动 git（`--dry-run` 也一样查）。
 开发 / 审查 / 验证修正的提示词在 `.workflow/prompts/dev.md` / `review.md` / `fix.md`（模板文件，升级会覆盖）；
 项目自己的要求（比如回帖稿按什么角度写）写进 `.workflow/prompts/local/dev.md` / `review.md` / `fix.md`，各接到对应 Agent 的提示词里，升级不碰。
 

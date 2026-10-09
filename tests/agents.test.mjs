@@ -113,11 +113,14 @@ test('cursor：思考等级折进 model[effort=…]；只给 thinking 就报错'
   assert.equal(applyThinkingToModel('m[effort=max]', 'low'), 'm[effort=max]', '已有 effort 不覆盖');
 });
 
-test('parseCliArgv：三个开关两种写法，-- 之后原样给 CLI', () => {
+test('parseCliArgv：三个开关两种写法，-- 之后原样给 CLI；--check 是布尔开关', () => {
   assert.deepEqual(parseCliArgv(['codex', '--model', 'm', '--thinking=high', '--', '--foo', 'bar']), {
-    cli: 'codex', model: 'm', thinking: 'high', provider: '', session: '', extraArgs: ['--foo', 'bar']
+    cli: 'codex', model: 'm', thinking: 'high', provider: '', session: '', check: false, extraArgs: ['--foo', 'bar']
   });
   assert.equal(parseCliArgv(['pi', '--session', 's-1']).session, 's-1');
+  const check = parseCliArgv(['pi', '--check', '--model', 'm']);
+  assert.equal(check.check, true);
+  assert.equal(check.model, 'm', '--check 是开关，不吞下一个参数');
   assert.throws(() => parseCliArgv(['pi', '--foo']), /不认识的开关/);
 });
 
@@ -341,14 +344,81 @@ test('看门狗：一直有动静（哪怕只是输出增量）就不杀', async
   assert.equal(r.choice, 'done', JSON.stringify(r));
 });
 
-test('不认识的 CLI、cursor 只给 thinking → agent_cli_failed，说清原因', async () => {
+test('不认识的 CLI、cursor 只给 thinking → agent_bad_config，说清原因（不是 agent_cli_failed）', async () => {
   const unknown = (await callAgent('随便', { agent: 'gemini' })).r;
-  assert.equal(unknown.choice, 'agent_cli_failed');
-  assert.match(unknown.reason, /不认识的 Agent CLI：gemini/);
+  assert.equal(unknown.choice, 'agent_bad_config');
+  assert.match(unknown.reason, /不认识的 Agent CLI：gemini（可选：pi \/ codex \/ cursor）/);
 
   const cursor = (await callAgent('随便', { agent: { cli: 'cursor', thinking: 'high' } })).r;
-  assert.equal(cursor.choice, 'agent_cli_failed');
+  assert.equal(cursor.choice, 'agent_bad_config');
   assert.match(cursor.reason, /只给 thinking/);
+});
+
+test('本机没有这个命令 → agent_bad_config，说清用哪个环境变量指路', async () => {
+  process.env.PI_BIN = path.join(HOME, 'nope', 'missing-pi.mjs');
+  try {
+    const { r } = await callAgent('随便', { agent: 'pi' });
+    assert.equal(r.choice, 'agent_bad_config');
+    assert.match(r.reason, /本机找不到 pi 的命令/);
+    assert.match(r.reason, /PI_BIN/);
+  } finally {
+    process.env.PI_BIN = FAKE_PI;
+  }
+});
+
+// ── 只校验用法（opts.check，§10.1）：dev / discuss 启动时用它，不调模型 ──
+
+test('opts.check：配置合法 → ok，不叫模型、不写日志', async () => {
+  const runId = uniq();
+  process.env.AGENTFLOW_TASK = 'unit';
+  process.env.AGENTFLOW_RUN_ID = runId;
+  process.env.FAKE_MODE = 'ok';
+  const { agent } = await import('../core.mjs');
+  const r = await agent('随便', { agent: { cli: 'pi', model: 'sonnet', thinking: 'high' }, check: true });
+  assert.deepEqual(r, { status: 'ok', choice: 'ok', reason: '', data: {} });
+  assert.ok(!existsSync(path.join(LOGS, `${runId}.jsonl`)), '只校验不是一次 Agent 调用，不写日志');
+});
+
+test('opts.check：名字不认识 / 参数组合非法 / 命令找不到 → agent_bad_config，reason 说清哪一项；自定义命令没法查 → ok', async () => {
+  const unknown = (await callAgent('随便', { agent: 'gemini', check: true })).r;
+  assert.equal(unknown.status, 'failed');
+  assert.equal(unknown.choice, 'agent_bad_config');
+  assert.match(unknown.reason, /不认识的 Agent CLI：gemini（可选：pi \/ codex \/ cursor）/);
+
+  const combo = (await callAgent('随便', { agent: { cli: 'cursor', thinking: 'high' }, check: true })).r;
+  assert.equal(combo.choice, 'agent_bad_config');
+  assert.match(combo.reason, /只给 thinking/);
+
+  process.env.PI_BIN = path.join(HOME, 'nope', 'missing-pi.mjs');
+  try {
+    const missing = (await callAgent('随便', { agent: 'pi', check: true })).r;
+    assert.equal(missing.choice, 'agent_bad_config');
+    assert.match(missing.reason, /本机找不到 pi 的命令/);
+  } finally {
+    process.env.PI_BIN = FAKE_PI;
+  }
+
+  // 自定义命令没法校验：直接 ok
+  process.env.AGENTFLOW_AGENT_CMD = 'node bin/cmd.mjs';
+  try {
+    const custom = (await callAgent('随便', { check: true })).r;
+    assert.equal(custom.status, 'ok');
+  } finally {
+    delete process.env.AGENTFLOW_AGENT_CMD;
+  }
+});
+
+test('opts.check：没配 Agent → agent_unavailable，不写日志', async () => {
+  const runId = uniq();
+  process.env.AGENTFLOW_TASK = 'unit';
+  process.env.AGENTFLOW_RUN_ID = runId;
+  delete process.env.AGENTFLOW_AGENT_CMD;
+  delete process.env.AGENTFLOW_AGENT;
+  const { agent } = await import('../core.mjs');
+  const r = await agent('随便', { check: true });
+  assert.equal(r.status, 'failed');
+  assert.equal(r.choice, 'agent_unavailable');
+  assert.ok(!existsSync(path.join(LOGS, `${runId}.jsonl`)));
 });
 
 // ── 端到端：会话进出（§10.1）────────────────────────────────────────────

@@ -21,7 +21,7 @@ const github = {
   name: 'github',
   ref: (key) => `#${key}`,
   markRe: (fields = MARK_FIELDS) => new RegExp(`<!-- miworkflow:discuss hash=[0-9a-f]+ seen=\\d+${fields} -->`),
-  async open({ issues = [] } = {}) {
+  async open({ issues = [], ...opts } = {}) {
     const list = issues.map((t) => {
       const text = `${t.parent ? `## Parent\n\n#${t.parent}\n\n` : ''}${t.body ?? `做 ${t.key}`}`;
       return issue(t.key, {
@@ -29,7 +29,7 @@ const github = {
         body: t.spec === undefined ? text : `${text}\n\n${SPEC_BEGIN}\n${t.spec}\n<!-- miworkflow:spec:end -->`
       });
     });
-    return { ...setup({ source: 'github', issues: list }), close: async () => {} };
+    return { ...setup({ source: 'github', issues: list, ...opts }), close: async () => {} };
   },
   thinkStep: (text) => ({ ghComment: text }),
   comments: (s, key) => ghIssue(s, key).comments.map((c) => c.body),
@@ -66,8 +66,8 @@ const tapd = {
   name: 'tapd',
   ref: (key) => `story ${tapdId(key)}`,
   markRe: (fields = MARK_FIELDS) => new RegExp(`\\[miworkflow:discuss hash=[0-9a-f]+ seen=\\d+${fields}\\]$`),
-  async open({ issues = [] } = {}) {
-    const s = setup({ source: 'tapd' });
+  async open({ issues = [], ...opts } = {}) {
+    const s = setup({ source: 'tapd', ...opts });
     s.tapdFile = path.join(s.base, 'tapd-state.json');
     writeTapdState(s.tapdFile, {
       stories: issues.map((t) => ({
@@ -128,8 +128,8 @@ const beads = {
   name: 'beads',
   ref: beadsId,
   markRe: github.markRe,
-  async open({ issues = [] } = {}) {
-    const s = setup({ source: 'beads' });
+  async open({ issues = [], ...opts } = {}) {
+    const s = setup({ source: 'beads', ...opts });
     s.bdFile = path.join(s.base, 'bd-state.json');
     writeBdState(s.bdFile, {
       issues: issues.map((t) => bdIssue(beadsId(t.key), {

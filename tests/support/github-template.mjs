@@ -171,26 +171,32 @@ export const issue = (number, { title = `issue ${number}`, body = `做 ${number}
 // 审不审（'auto'）另有用例（tests/support/dev-scenarios.mjs 里的「审查分级」）。
 // branch：主分支名（缺省 main）。给别的名字（如 develop）+ push 时 origin/HEAD 指向它，
 // 用来验证 dev --dir 的主分支取自 origin/HEAD 而不是写死 main。
-export const CONFIG = (verify, rounds, push, retryDelays = [0, 0], review = 'always', idleSec = 1200, killLimit = 3, devIdleSec = 600) => [
-  'export const DEV = null;',
-  'export const REVIEWER = null;',
-  'export const WORKER = "";',
-  `export const REVIEW = ${JSON.stringify(review)};`,
-  `export const VERIFY = ${JSON.stringify(verify)};`,
-  `export const ROUNDS = ${rounds};`,
-  `export const PUSH = ${push};`,
-  `export const AGENT_RETRY_DELAYS = ${JSON.stringify(retryDelays)};`,
-  `export const AGENT_IDLE_SEC = ${idleSec};`,
-  `export const AGENT_KILL_LIMIT = ${killLimit};`,
-  'export const DISCUSS_IDLE_MAX_SEC = 600;',
-  // 退避给测试自己控：0 = 关掉，不然连着跑两次 dev 的第二轮会被上一轮队列空记下的退避拦住
-  `export const DEV_IDLE_MAX_SEC = ${devIdleSec};`,
-  ''
-].join('\n');
+// overrides：覆盖 config.mjs 里的任意常量（用例造「配置写错」的场景用，如 REVIEWER / REVIEW）。
+export const CONFIG = (verify, rounds, push, retryDelays = [0, 0], review = 'always', idleSec = 1200, killLimit = 3, devIdleSec = 600, overrides = {}) => {
+  const values = {
+    DEV: null,
+    REVIEWER: null,
+    WORKER: '',
+    REVIEW: review,
+    VERIFY: verify,
+    ROUNDS: rounds,
+    PUSH: push,
+    AGENT_RETRY_DELAYS: retryDelays,
+    AGENT_IDLE_SEC: idleSec,
+    AGENT_KILL_LIMIT: killLimit,
+    DISCUSS_IDLE_MAX_SEC: 600,
+    // 退避给测试自己控：0 = 关掉，不然连着跑两次 dev 的第二轮会被上一轮队列空记下的退避拦住
+    DEV_IDLE_MAX_SEC: devIdleSec,
+    ...overrides
+  };
+  return Object.entries(values).map(([k, v]) => `export const ${k} = ${JSON.stringify(v)};`).join('\n') + '\n';
+};
 
 // repoLabels：给了就只认这些仓库标签（贴没有的会报错，要先 gh label create）；不给 = 什么标签都能贴
 // retryDelays：Agent 基础设施故障的重试间隔，测试里缺省 [0, 0]（不真等）
-export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {}, retryDelays = [0, 0], ticketRetryDelays = [0, 0, 0], review = 'always', idleSec, killLimit, devIdleSec, branch = 'main' } = {}) {
+// config：覆盖 config.mjs 的常量（用例造「配置写错」的场景）
+// discuss：写进 source.mjs 的 DISCUSS（用例造「DISCUSS 配错」的场景）
+export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {}, retryDelays = [0, 0], ticketRetryDelays = [0, 0, 0], review = 'always', idleSec, killLimit, devIdleSec, branch = 'main', config = {}, discuss } = {}) {
   const base = tmpDir();
   const root = path.join(base, 'repo');
   mkdirSync(root, { recursive: true });
@@ -200,10 +206,11 @@ export function setup({ source = 'github', issues = [], repoLabels, verify = '',
   for (const t of templatesOf(source)) cpSync(t, home, { recursive: true });
   // 工单系统故障的退避间隔：测试里缺省全 0（不真等）
   const srcFile = path.join(home, 'source.mjs');
-  writeFileSync(srcFile, readFileSync(srcFile, 'utf8')
-    .replace(/(export const (?:GH|TAPD|BD)_RETRY_DELAYS = )\[[^\]]*\];/, `$1${JSON.stringify(ticketRetryDelays)};`));
-  const withPush = push || remoteAhead;
-  writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush, retryDelays, review, idleSec, killLimit, devIdleSec));
+  let src = readFileSync(srcFile, 'utf8')
+    .replace(/(export const (?:GH|TAPD|BD)_RETRY_DELAYS = )\[[^\]]*\];/, `$1${JSON.stringify(ticketRetryDelays)};`);
+  if (discuss !== undefined) src = src.replace(/(export const DISCUSS = )[^;]*;/, `$1${JSON.stringify(discuss)};`);
+  writeFileSync(srcFile, src);
+  writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, push || remoteAhead, retryDelays, review, idleSec, killLimit, devIdleSec, config));
   writeFileSync(path.join(home, '.gitignore'), 'logs/\n');
 
   git(['init', '-q', `--initial-branch=${branch}`], root);

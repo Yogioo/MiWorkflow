@@ -9,6 +9,8 @@
 //
 // 审查按需：工单贴了 source.mjs 的 LABELS.review（缺省 needs-review）、或 DEV 选 done_review 升级、或 config.mjs 的
 // REVIEW='always' 才起审查 Agent；其余单子 DEV 自测 + VERIFY 就够（TODO G1）。
+// 启动校验配置（§10.1）：配置不对就不启动——一个工单都不认领、不叫 Agent、不动 git；--dry-run 也一样查。
+// Agent 配置（DEV / REVIEWER）走内核的只校验用法，普通常量用 JS 自己查；有一项不对就把错的项一次列全。
 // 只通过工单源接口 ticket_ready / ticket_view / ticket_mark 碰工单系统，不知道背后是哪家（入队、标记的规则见各工单源的脚本）。
 // 失败就回滚 + 贴评论 + 标记失败，等人看完再重新入队。
 // Agent 根本没跑完（基础设施故障）不算工单失败：退避重试，还不行就回滚、释放工单（不贴失败）、整轮停下，下轮重做。
@@ -87,6 +89,9 @@ export default async function ({ script: rawScript, agent, human, args, stopping
   const worker = WORKER || defaultWorker(ctx.station || root);
   ctx.worker = worker;
 
+  // 启动校验（§10.1）：配置不对就不启动——一个工单都不认领、不叫 Agent、不动 git；干跑也一样查。
+  await checkConfig(agent);
+
   // --dry-run：只报「今天会做哪几张工单、哪些被挡住」，不叫 Agent、不改工单、不改 git。
   // （ticket_mark 自己也支持 dryRun，但那挡不住 Agent 改文件，所以这里直接不进流程。）
   // --dry-run 不进 args（§5），从 env 读。
@@ -161,6 +166,11 @@ export default async function ({ script: rawScript, agent, human, args, stopping
       infraStopped = true;
       stop = `Agent 连接失败（工单 ${t.ref}）：已回滚并释放，下轮重做`;
       break;
+    } else if (outcome === 'bad_config') {
+      // 配置不对，重试一百次也不会好；已经启动校验过一遍，运行中把配置改坏了才会走到这里
+      infraStopped = true;
+      stop = `Agent 配置不对（工单 ${t.ref}）：已回滚并释放，整轮停下——先改配置`;
+      break;
     } else if (outcome === 'killed_released') {
       // 释放的单还排在队首，本轮接着挑会立刻重做；停下，下轮（--every）再带着诊断评论重做
       infraStopped = true;
@@ -176,6 +186,27 @@ export default async function ({ script: rawScript, agent, human, args, stopping
   if (failures > 0) throw new Error(`本轮有 ${failures} 个工单失败（停止原因：${stop}）`);
   if (pushStopped || infraStopped) throw new Error(stop);
 }
+
+// 启动校验（§10.1）：配置不对就不启动。Agent 配置（DEV / REVIEWER）走内核的只校验用法
+// （opts.check，不调模型）；普通常量用 JS 自己查。DEV 与 REVIEWER 都查：REVIEW='auto' 时 DEV 也可能升级要审查。
+// 同一份配置只报一次；只要有一项不对就把错的项一次列全。
+async function checkConfig(agent) {
+  const problems = [];
+  const byReason = new Map();
+  for (const [name, spec] of [['DEV', DEV], ['REVIEWER', REVIEWER]]) {
+    const r = await agent('校验 Agent 配置', { check: true, ...(spec ? { agent: spec } : {}) });
+    if (r.status === 'ok') continue;
+    byReason.set(r.reason, [...(byReason.get(r.reason) ?? []), name]);
+  }
+  for (const [reason, names] of byReason) problems.push(`${names.join(' / ')}：${reason}`);
+  if (!(typeof VERIFY === 'string' || Array.isArray(VERIFY))) problems.push(`VERIFY 只能是字符串或数组：${show(VERIFY)}`);
+  if (!(Number.isInteger(ROUNDS) && ROUNDS >= 0)) problems.push(`ROUNDS 只能是非负整数：${show(ROUNDS)}`);
+  if (!['auto', 'always'].includes(REVIEW)) problems.push(`REVIEW 只能是 'auto' 或 'always'：${show(REVIEW)}`);
+  if (typeof PUSH !== 'boolean') problems.push(`PUSH 只能是布尔值：${show(PUSH)}`);
+  if (problems.length) throw new Error(`配置不对，不启动：\n- ${problems.join('\n- ')}`);
+}
+
+const show = (v) => (typeof v === 'string' ? JSON.stringify(v) : String(v));
 
 // 挑下一张要做的工单：--issue 直接读那张；否则列就绪队列取第一张（抢输过的跳过）。
 // 工单系统暂时不可用（出参 data.transient）时交回 { down: 停止原因 }，由主循环停下
@@ -434,12 +465,18 @@ function markQuietly(r, t, what) {
 
 // Agent 基础设施故障重试用完（或不该重试）：回滚到起点，ticket_mark released——摘认领、不贴失败、保留入队，下轮重做
 // r：callAgent 交回的结果（infra 是原因首句）；saved：重试时已经回滚备份过的提交备注
+// 配置不对（agent_bad_config）走同一条路，但话不一样：重试一百次也不会好，整轮停下等人改配置（§10.1）
 async function release(t, r, base, ctx, saved = '') {
   if (KILLED[r.choice]) return killed(t, r, base, ctx, saved);
-  console.error(`✖ ${t.ref} Agent 连接失败：${r.infra}`);
+  const bad = r.choice === 'agent_bad_config';
+  const head = bad ? 'Agent 配置不对' : 'Agent 连接失败';
+  console.error(`✖ ${t.ref} ${head}：${r.infra}`);
   const note = saved + await rollback(base, ctx);
-  markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'released', comment: `Agent 连接失败，已回滚并释放，下轮重做：${r.infra}${note}` }), t, '释放');
-  return 'infra_failed';
+  markQuietly(await ctx.script('ticket_mark', {
+    id: t.id, action: 'released',
+    comment: `${head}，已回滚并释放，${bad ? '整轮停下，先改配置再重跑' : '下轮重做'}：${r.infra}${note}`
+  }), t, '释放');
+  return bad ? 'bad_config' : 'infra_failed';
 }
 
 // 被强制结束的两种情形：名字写进评论；focus 告诉诊断 Agent 该往哪查
@@ -538,6 +575,8 @@ async function callAgent(ctx, goal, opts, beforeRetry) {
 // null：Agent 自己给的结论
 function infraKind(r) {
   if (r.choice === 'agent_unavailable' || KILLED[r.choice]) return 'stop';
+  // 配置不对：重试一百次也不会好（§10.1），直接回滚、释放、整轮停下
+  if (r.choice === 'agent_bad_config') return 'stop';
   if (r.choice === 'agent_cli_failed') return 'retry';
   if (r.choice === 'agent_invalid_json' && !String(r.data?.stdout ?? '').trim()) return 'retry';
   return null;

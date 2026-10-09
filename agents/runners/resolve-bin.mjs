@@ -1,6 +1,6 @@
 // resolve-bin.mjs — Windows 上把 npm 全局命令的包装脚本解析成直接 `node <js>` 起进程
 // （*.cmd / *.ps1 配管道 stdio 在新版 Node 上常见 EINVAL）
-import { existsSync, readdirSync } from 'node:fs';
+import { accessSync, constants, existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 const KNOWN_JS = {
@@ -79,4 +79,43 @@ export function resolveBin(bin, { knownName = '' } = {}) {
   }
 
   return { command: raw, argsPrefix: [], shell: false, display };
+}
+
+// 这个解析结果在本机起不起来（§10.1 的启动校验）：命令带路径就看文件在不在，
+// 裸名字按 PATH（Windows 再拼 PATHEXT）找。只用来提前说清「装没装」，起不起得来仍以 spawn 为准。
+export function binExists(resolved) {
+  const { command, argsPrefix = [] } = resolved;
+  if (/[\\/]/.test(command)) {
+    if (!isFile(command)) return false;
+    return argsPrefix.every((a) => !/[\\/]/.test(a) || isFile(a));
+  }
+  return findOnPath(command);
+}
+
+function findOnPath(name) {
+  const dirs = String(process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  const exts = process.platform === 'win32'
+    ? ['', ...String(process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
+    : [''];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      if (isFile(path.join(dir, name + ext))) return true;
+    }
+  }
+  return false;
+}
+
+function isFile(file) {
+  try {
+    if (!statSync(file).isFile()) return false;
+  } catch {
+    return false;
+  }
+  if (process.platform === 'win32') return true;
+  try {
+    accessSync(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -181,6 +181,8 @@ export async function human(prompt, opts) { /* 等人工确认 */ }
 - 没配 Agent（`opts.cmd` / `opts.agent` / `AGENTFLOW_AGENT_CMD` / `AGENTFLOW_AGENT` 都没有，§10）→ 不假装思考：
   `status: 'failed'`、`choice: 'agent_unavailable'`，`reason` 说明怎么配
 - 内核适配器起不来 / 非 0 退出 / 没回话 → `failed`（`choice: 'agent_cli_failed'`），`reason` 写哪家、原因
+- 配置不对 → `failed`（`choice: 'agent_bad_config'`，`reason` 写哪一项错、合法的值有哪些）：CLI 名字不认识、
+  参数组合不合法、这家的命令在本机找不到（§10.1）。启动校验与正常调用都走这一种，任务据此不重试（§15）
 - 被强制结束 → `failed`：看门狗判卡死（事件流 `budget.idleSec` 秒没动静）是 `choice: 'agent_idle'`，到 `budget.timeoutSec` 是 `choice: 'agent_timeout'`；
   `reason` 写结束时在干什么，`data` 带 `{ idleSec | timeoutSec, stuck, trace, events }`（§10.1）
 - 不输出 actions
@@ -481,12 +483,22 @@ runner 层从 exec-review 技能复制起步，之后**独立演进**，不回�
   - 值**原样转交**，各家换成自己的开关，不翻译、不校验：
     pi → `--model` / `--thinking` / `--provider`；codex → `-m` / `-c model_reasoning_effort=<t>`；
     cursor → `--model <m>[effort=<t>]`，**只给 `thinking` 不给 `model` 就报错**，不静默丢掉。
-    `provider` 只有 pi 认，给别家就报错。值不对由 CLI 自己报错 → `agent_cli_failed`。
+    `provider` 只有 pi 认，给别家就报错。这些组合错在适配器开跑前就判成 `agent_bad_config`（§6.2），
+    不混进 CLI 自己的报错里。
   - `args` 是逃生口：其余开关原样追加给那家 CLI。
   - 可执行文件默认 `pi` / `codex` / `agent`，可用 `PI_BIN` / `CODEX_BIN` / `CURSOR_AGENT_BIN` 覆盖；
     Windows 上绕开 npm 的 `.cmd` / `.ps1` 包装，直接 `node <js>` 起。
 - **默认值按什么顺序找**：`opts.cmd` → `opts.agent` → `AGENTFLOW_AGENT_CMD` → `AGENTFLOW_AGENT`（只写 CLI 名，
   是这台机器的缺省）→ 都没有就 `agent_unavailable`（§6.2）。
+- **只校验、不干活**（`opts.check: true`）：只问一句「这份配置能不能用」，不调模型、不写日志、几秒内返回。
+  查三样：CLI 名字认不认识；参数组合合不合法（拿 `build*Args` 试建一次命令行——参数组合的规矩只有那一份）；
+  这家的命令在本机找不找得到（`PI_BIN` / `CODEX_BIN` / `CURSOR_AGENT_BIN`，或已知安装位置 / PATH）。
+  能用 → `{status:'ok'}`；不能用 → `{status:'failed', choice:'agent_bad_config', reason:'Agent 配置不对：…'}`
+  （几条问题合在一句 reason 里，`data.problems` 是数组）。自定义命令（`opts.cmd` / `AGENTFLOW_AGENT_CMD`）没法校验，直接 `ok`。
+  正常调用撞上这三类错也一律是 `agent_bad_config`，不混进 `agent_cli_failed`——前者重试一百次也不会好，后者才是临时故障。
+  任务据此不重试：`dev` 回滚、释放工单、整轮停下等人改配置（§15）。
+  模板用它在**启动时**校验（`dev` 在工作区检查之后、`--dry-run` 之前查 `DEV` 与 `REVIEWER`，`discuss` 一开始就查 `DISCUSS`），
+  另外 `dev` 还会用 JS 自己查普通常量的类型 —— 配置不对就不启动：不认领工单、不叫 Agent、不动 git。
 - **按任务配、按用途起名字，用的是 JS，不是机制**：内核只认单次调用的 `opts.agent`。
   - 整个任务统一用一个：任务文件里写一个常量，或包一行 `const ask = (g, o) => agent(g, { agent: DEEP, ...o })`。
   - 多个任务共用「快的 / 深度思考的」：HOME 里放一份普通模块，任务 import 它：
@@ -807,7 +819,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 
 三个脚本失败时，若是**工单系统暂时不可用**（5xx、网络、限流，脚本内已退避重试用完），出参 `data` 带 `transient: true`；`dev` 据此整轮停下、不计入失败、不回滚已推送的代码。其他失败不带。
 
-讨论流程同理，也是固定四个脚本名；`discuss` 任务只调它们，不知道背后是哪家。
+讨论流程同理，也是固定四个脚本名；`discuss` 任务只调它们，不知道背后是哪家。启动时用只校验用法查 `DISCUSS`，配错就不启动（§10.1）。
 任务认的是**规范形状**，源负责与自家存储形态互转——spec 放哪（GitHub：正文的机器区域；TAPD：一条标记评论）、
 AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 HTML 注释，得用别的形态）、开发单清单放哪，都是各家自己的事：
 
@@ -829,6 +841,10 @@ AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 
   一张工单一笔（`git_commit` 收 `baseSha`，Agent 自己做的提交先 `reset --soft` 压进来）；提交后回读，标题被钩子改了或带 AI 署名（`Co-authored-by` / `Made-with` 等）判失败回滚。
 - **审查按需**（`config.mjs` 的 `REVIEW`，缺省 `'auto'`）：工单贴了「要审查」标签（`source.mjs` 的 `LABELS.review`）、或 DEV 回话选 `done_review` 主动升级，才起审查 Agent；
   否则 DEV 完成后直接进验证 / 提交。`REVIEW = 'always'` 恢复「每张都审」。DEV 只能升级不能降级，`prompts/dev.md` 列了该升级的情形。
+- **配置不对**（`agent_bad_config`：CLI 名字不认识 / 参数组合不合法 / 本机没装这个命令，§10.1）：`dev` 启动就校验
+  `DEV` / `REVIEWER` 与普通常量（`VERIFY` / `ROUNDS` / `REVIEW` / `PUSH`）——不认领工单、不叫 Agent、不动 git，`--dry-run` 也一样；
+  有一项不对就把错的项一次列全，直接报错退出。运行中撞上（配置被改坏了）不退避重试：回滚、释放工单、整轮停下。
+  自定义命令（`AGENTFLOW_AGENT_CMD`）没法校验，跳过。
 - **被强制结束**（§10.1 的 `agent_idle` 卡死 / `agent_timeout` 超时；卡死阈值 `config.mjs` 的 `AGENT_IDLE_SEC`）：不重试，两种走同一条路。
   诊断 Agent（只读，`prompts/diagnose.md`，自己的看门狗 300 秒）趁半成品还在，读过程摘要查为什么没做完、进展到哪、下次怎么做
   （卡死时重点查那条命令为什么不返回，超时时重点查时间花在哪、要不要拆单），写成诊断稿 →
