@@ -378,8 +378,11 @@ async function runTask(task) {
     await mod.default({ script, agent, human, args });   // §5
     log({ primitive: 'run', status: 'ok', title, say: `✔ ${title} 完成` });
   } catch (err) {
-    log({ primitive: 'run', status: 'failed', title, error: String(err.message),
+    log({ primitive: 'run', status: 'failed', title, error: String(err.message), stack: err.stack,
           say: `✖ ${title} 失败：${err.message}` });
+    // 任务有意 throw 的结论只打一行；其它异常（TypeError、SyntaxError…）是 bug，照旧打完整栈
+    if (err.constructor === Error) console.error(`✖ ${title} 失败：${err.message}`);
+    else console.error(err);
     process.exitCode = 1;
   }
 }
@@ -583,6 +586,7 @@ JSONL 最小字段：
   "reason": "...",
   "say": "...",
   "error": "...",
+  "stack": "...",
   "ref": 3,
   "agent": { "cli": "codex", "model": "...", "thinking": "..." },
   "label": "开发Agent",
@@ -598,6 +602,9 @@ JSONL 最小字段：
 
 `agent` / `events` 只出现在 `agent` 记录上：`agent` 仅在走内核适配器时带上；`events` 在每次有外部命令的 `agent` 调用上都带（开跑前的进行中记录也带），指向 core 预先分配的过程文件，适配器往里写归一事件（§10.1、§13.1）。进化时才看得出「哪个模型在哪类任务上老失败」，
 复盘时能展开 Agent 每一步。
+
+`stack` 只出现在 run 的 `failed` 记录上，存完整 JS 调用栈：终端只对程序 bug（非普通 `Error`）打它，人在终端看结论、
+要查栈时从日志里取。
 
 原则：
 

@@ -690,6 +690,17 @@ function closeRun(HOME, task, runId) {
   appendFileSync(file, `${text.endsWith('\n') ? '' : '\n'}${JSON.stringify(row)}\n`);
 }
 
+// 任务失败：普通 Error（`throw new Error('…')`）是任务有意给人的结论，终端只打一行结论，栈对人没用；
+// 其它异常（TypeError、SyntaxError 等）多半是代码 bug，照旧打完整栈。不管哪种，栈都进 JSONL 事后能查。
+function failRow(title, err, extra = {}) {
+  const message = String(err?.message ?? err);
+  const say = `✖ ${title} 失败：${message}`;
+  // 严格判 `constructor === Error`：子类（SyntaxError 等）和跨模块抛出的都按 bug 处理，宁可多打栈
+  if (err?.constructor === Error) console.error(say);
+  else console.error(err);
+  return { primitive: 'run', status: 'failed', title, error: message, stack: err?.stack, say, ...extra };
+}
+
 // ── 跑任务 ────────────────────────────────────────────────────────────────
 async function runTask(task, args = {}) {
   useHome();
@@ -705,9 +716,7 @@ async function runTask(task, args = {}) {
   try {
     mod = await loadTask(HOME, task);
   } catch (err) {
-    const message = String(err?.message ?? err);
-    log({ primitive: 'run', status: 'failed', title: task, inputs: args, error: message, say: `✖ ${task} 失败：${message}` });
-    console.error(err);
+    log(failRow(task, err, { inputs: args }));
     process.exitCode = 1;
     return;
   }
@@ -743,9 +752,7 @@ async function runTask(task, args = {}) {
     await mod.default({ script, agent, human, args, stopping });
     log({ primitive: 'run', status: 'ok', title, say: `✔ ${title} 完成${stopping() ? '（收到停止请求，停下了）' : ''}` });
   } catch (err) {
-    const message = String(err?.message ?? err);
-    log({ primitive: 'run', status: 'failed', title, error: message, say: `✖ ${title} 失败：${message}` });
-    console.error(err);
+    log(failRow(title, err));
     process.exitCode = 1;
   } finally {
     process.removeListener('SIGINT', onSignal);

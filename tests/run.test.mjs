@@ -113,13 +113,46 @@ test('run：HOME 里没有这个任务 → 报错并说清在哪找', () => {
   assert.ok(r.stderr.includes(path.join(EXAMPLES, 'tasks')), '报错里要带上找的目录');
 });
 
-test('run：任务模块加载失败也记一条 failed', () => {
+test('run：任务模块加载失败也记一条 failed；语法错照旧打完整栈，栈也进日志', () => {
   const home = makeHome(tmpDir(), { bad: 'export default async function ( {\n' });
   const r = cli(['bad', '--yes'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'load-fail' } });
   assert.equal(r.code, 1);
+  assert.match(r.stderr, /SyntaxError/);
+  assert.ok(r.stderr.includes('    at '), `加载失败的 bug 要打栈：${r.stderr}`);
   const rows = readFileSync(path.join(home, 'logs', 'load-fail.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse);
   assert.equal(rows.at(-1).primitive, 'run');
   assert.equal(rows.at(-1).status, 'failed');
+  assert.match(rows.at(-1).stack, /SyntaxError/, 'failed 记录里要留完整栈');
+});
+
+// 任务有意 throw 的结论：终端只打一行，不打栈；栈进 JSONL 事后能查
+test('run：任务 throw new Error → 终端只打一行结论、不打栈，退出码 1，failed 记录带 stack', () => {
+  const home = makeHome(tmpDir(), {
+    refuse: "export const title = '有话说';\nexport default async function () { throw new Error('不行'); }\n"
+  });
+  const r = cli(['refuse'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'refuse-run' } });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /✖ 有话说 失败：不行/);
+  assert.equal(r.stderr.split('\n').filter(Boolean).length, 1, `只打一行：${r.stderr}`);
+  assert.doesNotMatch(r.stderr, /^\s*at /m, `结论不该带栈：${r.stderr}`);
+  const rows = readFileSync(path.join(home, 'logs', 'refuse-run.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse);
+  const failed = rows.at(-1);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.error, '不行');
+  assert.match(failed.stack, /Error: 不行/);
+  assert.match(failed.say, /✖ 有话说 失败：不行/);
+});
+
+test('run：任务里的代码 bug（TypeError）照旧打完整栈', () => {
+  const home = makeHome(tmpDir(), {
+    bug: "export const title = '有 bug';\nexport default async function () { const x = null; return x.y; }\n"
+  });
+  const r = cli(['bug'], { env: { AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'bug-run' } });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /TypeError/);
+  assert.ok(r.stderr.includes('    at '), `bug 要打栈：${r.stderr}`);
+  const rows = readFileSync(path.join(home, 'logs', 'bug-run.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse);
+  assert.match(rows.at(-1).stack, /TypeError/);
 });
 
 test('args：--key value / --key=value / --flag，--yes 与 --dry-run 不进 args；原语传进来', () => {
