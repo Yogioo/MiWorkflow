@@ -2,7 +2,7 @@
 // 断言只在「完成」的含义上按工单源分支，其余共用。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { plan, seen, cli, git, gitOut, runScript } from './github-template.mjs';
@@ -608,19 +608,56 @@ export function defineDevScenarios(src) {
     assert.ok(view(1).labels.includes('afk-merging'), view(1).labels.join(','));
   });
 
-  scenario('工位 --dir：已存在的工位不干净 → 拒跑并说清原因，不动工单、不叫 Agent', {
-    tickets: [{ key: 1, labels: READY }]
+  scenario('工位 --dir：工位不干净、这个工人名下没有没收尾的单 → 拒跑并说清原因，不动工单、不叫 Agent、不回滚人的改动', {
+    tickets: [{ key: 1, labels: READY }, { key: 2, labels: READY }]
   }, (s, view) => {
     const station = path.join(s.base, 'wt3');
     git(['worktree', 'add', '--detach', station, 'main'], s.root);
     writeFileSync(path.join(station, 'dirty.txt'), 'x\n');
+    runScript(s, 'ticket_mark', { id: src.id(2), action: 'claimed', worker: 'wt9' });
     plan(s, DONE_STEPS());
     const r = cli(s, ['dev', '--dir', station]);
     assert.equal(r.code, 1);
-    assert.match(r.stderr + r.stdout, /不干净/);
+    const said = r.stderr + r.stdout;
+    assert.match(said, /不干净/);
+    assert.match(said, /dirty\.txt/, '说清哪些文件');
+    assert.match(said, /不是这个工人没收尾的单留下的/);
+    assert.doesNotMatch(said, /工位用不了/);
     assert.deepEqual(seen(s), [], '没叫 Agent');
     assert.deepEqual(view(1).labels, READY, '工单一个字都没动');
     assert.deepEqual(view(1).comments, []);
+    assert.deepEqual(view(2).labels, [...READY, 'afk-claimed'], '别人接的单不碰');
+    assert.deepEqual(view(2).comments, ['[miworkflow:claim worker=wt9]']);
+    assert.ok(existsSync(path.join(station, 'dirty.txt')), '人的改动没被回滚');
+  });
+
+  scenario('工位 --dir：工人做到一半被强关（工位里留着没提交的改动）→ 重启先回滚并释放自己那张单，再照常做完', {
+    tickets: [{ key: 1, title: '做到一半', labels: READY }]
+  }, (s, view) => {
+    const station = path.join(s.base, 'wt5');
+    git(['worktree', 'add', '--detach', station, 'main'], s.root);
+    const me = `${os.hostname()}/wt5`;
+    runScript(s, 'ticket_mark', { id: src.id(1), action: 'claimed', worker: me, cwd: station });
+    mkdirSync(path.join(station, 'practice'));
+    writeFileSync(path.join(station, 'practice', 'e.md'), '半成品\n');
+    writeFileSync(path.join(station, 'app.txt'), '改了一半\n');
+
+    plan(s, DONE_STEPS('note.txt'));
+    const r = cli(s, ['dev', '--dir', station]);
+    assert.equal(r.code, 0, r.stderr + r.stdout);
+    assert.doesNotMatch(r.stderr + r.stdout, /工位用不了|不干净/);
+    assert.match(r.stdout, /清理自己没收尾的 .*已回滚并释放/);
+
+    const t = view(1);
+    const released = t.comments.findIndex((c) => c.includes('上一轮没做完') && c.includes(me));
+    assert.ok(released >= 0, t.comments.join('\n'));
+    assert.ok(t.comments.findIndex((c, i) => i > released && c.includes(branchOf(1))) > released, '先释放、再重新接单做完');
+    assert.ok(t.labels.includes('afk-merging') && !t.labels.includes('afk-claimed'), t.labels.join(','));
+
+    assert.ok(!existsSync(path.join(station, 'practice', 'e.md')), '未跟踪的半成品被回滚');
+    assert.doesNotMatch(readFileSync(path.join(station, 'app.txt'), 'utf8'), /改了一半/, '改了一半的文件被回滚');
+    assert.equal(gitOut(['status', '--porcelain'], station), '');
+    assert.deepEqual(gitOut(['show', '--name-only', '--pretty=', branchOf(1)], s.root).split('\n'), ['note.txt'], '这一笔不带上一轮的半成品');
   });
 
   scenario('工位 --dir：等合并的单不再被挑中；依赖它的单仍被挡住', {

@@ -2,8 +2,9 @@
 // （本机是 worktree，别的机器是 clone），里面不放 `.workflow/`——任务 / 配置 / 日志只有主目录一份。
 //
 // action=ensure（工人启动时）：目录不存在就从主分支建一个分离 HEAD 的 worktree、初始化子模块（通用做法，项目自己的准备由项目脚本先做）；
-//   已存在就只查两件事——是同一个仓库的工作副本、工作区干净；不干净就 failed 并说清原因，工人据此拒跑。
-// action=align（每张单开工前）：把工位分离 HEAD 到最新的本地主分支，再更新子模块（merge 推进主分支后所有工位立刻可见，各自不用 fetch）。
+//   已存在就只查是不是同一个仓库的工作副本，不查干净：工人被强关后重启，工位里的改动可能正是它自己没收尾的半成品，
+//   得让 dev 先清理自己的单（回滚工位）再查干净，这里拒了就永远走不到清理。
+// action=align（每张单开工前）：工位不干净就 failed；否则把工位分离 HEAD 到最新的本地主分支，再更新子模块（merge 推进主分支后所有工位立刻可见，各自不用 fetch）。
 //
 // 主分支自动认 origin/HEAD 指向的分支（不加配置项）；取不到（没有 origin、克隆时没带）退回主目录当前分支。
 // 入：{ action?: 'ensure' | 'align', dir, cwd? }；cwd = 主目录（`.workflow/` 的上一级）
@@ -66,12 +67,12 @@ await main(async () => {
     if (!theirs || theirs !== commonDir(repo)) {
       throw new Error(`${dir} 不是本仓库的工作副本（${repo}）；工位要是本仓库的 worktree（目录不存在时工人会自己建）`);
     }
-    const dirty = git(['status', '--porcelain'], dir).trim();
-    if (dirty) {
-      const files = dirty.split('\n').filter(Boolean);
-      throw new Error(`工位 ${dir} 不干净（${files.length} 处改动，先处理干净再跑）：${files.slice(0, 5).map((l) => l.trim()).join('、')}${files.length > 5 ? ' 等' : ''}`);
-    }
     if (action === 'align') {
+      const dirty = git(['status', '--porcelain'], dir).trim();
+      if (dirty) {
+        const files = dirty.split('\n').filter(Boolean);
+        throw new Error(`工位 ${dir} 不干净（${files.length} 处改动，先处理干净再跑）：${files.slice(0, 5).map((l) => l.trim()).join('、')}${files.length > 5 ? ' 等' : ''}`);
+      }
       git(['checkout', '--detach', start], dir);
       submodules(dir);
     }
@@ -80,7 +81,7 @@ await main(async () => {
   const sha = out(['rev-parse', 'HEAD'], dir);
   emit({
     status: 'ok',
-    say: `工位 ${dir}：${created ? '从主分支新建（分离 HEAD）' : action === 'align' ? `对齐到 ${name || start}（分离 HEAD）` : '复用（干净）'}`,
+    say: `工位 ${dir}：${created ? '从主分支新建（分离 HEAD）' : action === 'align' ? `对齐到 ${name || start}（分离 HEAD）` : '复用'}`,
     data: { dir, root: dir, main: name, created, sha }
   });
 });

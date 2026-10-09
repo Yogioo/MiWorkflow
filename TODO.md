@@ -743,7 +743,7 @@ REVIEWER 那次完整的 Agent 调用（还要重读项目）是白花的开销�
 - **工位怎么建**：`--dir` 指的目录不存在，`dev` 用通用做法建（`git worktree add --detach <dir> <主分支>` + `git submodule update --init`）；已存在就直接用。
   项目自己的准备工作由项目脚本先建好，MiWorkflow 不管、也替不了（Unity 首次导入要开 Editor）。
   例：DigitDoor 的 `sh Tools/Worktree/new-worktree.sh <名字>`（子模块、本机专用文件链接、自检；之后开 Editor 首次导入约 4.5 分钟）。
-- **工位的要求**只有两条，现有检查就管住：是同一仓库的工作副本；工作区干净（不干净 `dev` 拒跑并说原因）。
+- **工位的要求**只有两条，现有检查就管住：是同一仓库的工作副本；工作区干净（`dev` 先清理自己没收尾的单再查，还不干净就拒跑并说原因，#47）。
   Unity 打开后会多出一批换行噪音改动（DigitDoor 约 22 个），由项目脚本用 `git update-index --skip-worktree` 静音（只影响那个工位）；没静音就在这条检查上报出来，不会被提交。
 - **主分支**自动认：`origin/HEAD` 指向的分支（2026-10-09 查：DigitDoor 是 `develop`，MiWorkflow 是 `main`），不加常量。J 里的「主分支」都指它。
 - **长期存在，不按单新建**：Unity 每个新目录首次导入约 4.5 分钟、`Library/` 几个 G，留着工位下一张单只增量编译。

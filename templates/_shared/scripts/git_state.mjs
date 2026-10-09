@@ -1,7 +1,7 @@
 // 看 git 状态：当前 sha、工作区是否干净、相对某个 sha 改了哪些文件（信 git，不信 Agent 自报）。
 // stat 是相对 baseSha 的 `git diff --shortstat`（如「3 files changed, 10 insertions(+)」，不含未跟踪文件），给评论落款用。
 // 入：{ cwd?, baseSha? }
-// 出：{ status, say, data: { sha, root, clean, changed, stat } }
+// 出：{ status, say, data: { sha, root, clean, dirty, changed, stat } }（dirty：`git status --porcelain` 的各行，干净时为空）
 import { main, readStdin, emit, git } from './_lib.mjs';
 
 await main(async () => {
@@ -10,7 +10,8 @@ await main(async () => {
 
   const sha = git(['rev-parse', 'HEAD'], dir).trim();
   const root = git(['rev-parse', '--show-toplevel'], dir).trim();
-  const clean = git(['status', '--porcelain'], dir).trim() === '';
+  const dirty = git(['status', '--porcelain'], dir).split('\n').map((l) => l.trim()).filter(Boolean);
+  const clean = dirty.length === 0;
 
   let changed = [];
   let stat = '';
@@ -26,6 +27,6 @@ await main(async () => {
     say: clean
       ? `工作区干净（${sha.slice(0, 7)}）`
       : `工作区有未提交改动（${sha.slice(0, 7)}）`,
-    data: { sha, root, clean, changed, stat }
+    data: { sha, root, clean, dirty, changed, stat }
   });
 });

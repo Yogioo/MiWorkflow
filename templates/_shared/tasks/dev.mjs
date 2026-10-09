@@ -111,19 +111,23 @@ export default async function ({ script: rawScript, agent, human, args, stopping
     return;
   }
 
-  // 工位准备：不存在就从主分支建（分离 HEAD + 初始化子模块），已存在就查「同一仓库 + 干净」；不干净/建不出来就拒跑
+  // 工位准备：不存在就从主分支建（分离 HEAD + 初始化子模块），已存在就查「同一仓库」；干净留到清理完自己的单再查
   if (ctx.station) {
     const w = await script('git_worktree', { action: 'ensure', cwd: root, dir: ctx.station });
     if (w.status !== 'ok') throw new Error(`工位用不了：${firstLine(w.error)}`);
     ctx.root = ctx.station;
-    console.log(`工位 ${ctx.station}：${w.data.created ? `从 ${w.data.main || '主分支'} 新建（分离 HEAD）` : '复用（干净）'}`);
+    console.log(`工位 ${ctx.station}：${w.data.created ? `从 ${w.data.main || '主分支'} 新建（分离 HEAD）` : '复用'}`);
   }
 
   // 工人重启：先收拾自己上次没收尾的单（工作区里可能正是那份半成品，清理会把它回滚掉），再要求干净
   await cleanOwnClaims(ctx, worker);
   const start = await script('git_state', { cwd: ctx.root });
   if (start.status !== 'ok') throw new Error(`看不了 git 状态：${start.error}`);
-  if (!start.data.clean) throw new Error('工作区有未提交改动，先处理干净再跑（免得把人改的东西提交或回滚掉）');
+  if (!start.data.clean) {
+    const dirty = start.data.dirty ?? [];
+    throw new Error(`${ctx.station ? `工位 ${ctx.station} 不干净，` : '工作区'}有未提交改动（${dirty.length} 处：${dirty.slice(0, 5).join('、')}${dirty.length > 5 ? ' 等' : ''}），` +
+      '又不是这个工人没收尾的单留下的，先处理干净再跑（免得把人改的东西提交或回滚掉）');
+  }
 
   // 这一轮接单抢输过的工单：别再来回挑（就绪队列里已经不列它们，只剩锁竞争那一瞬的空窗）
   const skipped = new Set();
