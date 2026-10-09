@@ -60,7 +60,7 @@ writeFileSync(FAKE_GH, [
   '  save(state);',
   '  process.stdout.write(`https://github.com/o/r/issues/${number}\\n`);',
   '} else if (action === "list") {',
-  '  out(state.issues.filter((i) => i.state === "OPEN").map((i) => ({ number: i.number, title: i.title, body: i.body, labels: i.labels })));',
+  '  out(state.issues.filter((i) => i.state === "OPEN").map((i) => ({ number: i.number, title: i.title, body: i.body, labels: i.labels, comments: (i.comments ?? []).map((c) => ({ author: { login: c.author }, createdAt: c.at, body: c.body })) })));',
   '} else if (action === "view") {',
   '  const i = find(rest[0]); if (!i) die("no such issue");',
   '  out({ number: i.number, title: i.title, body: i.body, labels: i.labels, comments: (i.comments ?? []).map((c) => ({ author: { login: c.author }, createdAt: c.at, body: c.body })) });',

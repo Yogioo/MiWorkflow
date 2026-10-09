@@ -174,7 +174,7 @@ export function defineTicketContract(src) {
     assert.equal(claim(4), null, '完成之后不算有效接单');
   });
 
-  contract('ticket_ready claims:true：只列认领中的单（工人重启后收拾自己没收尾的单用）', {
+  contract('ticket_ready claims:true：只列认领中的单，带上有效接单人（工人重启后收拾自己没收尾的单用）', {
     tickets: [
       { key: 1, labels: READY },
       { key: 2, labels: READY },
@@ -185,9 +185,9 @@ export function defineTicketContract(src) {
     const r = runScript(s, 'ticket_ready', { claims: true });
     assert.equal(r.status, 'ok', r.say);
     assert.deepEqual(Object.keys(r.data), ['claimed']);
-    assert.deepEqual(r.data.claimed.map((t) => [t.id, t.ref, t.title]), [
-      [src.id(1), src.ref(1), 'issue 1'],
-      [src.id(3), src.ref(3), 'issue 3']
+    assert.deepEqual(r.data.claimed.map((t) => [t.id, t.ref, t.title, t.claim]), [
+      [src.id(1), src.ref(1), 'issue 1', 'wt1'],
+      [src.id(3), src.ref(3), 'issue 3', null]
     ]);
   });
 

@@ -406,13 +406,18 @@ async function cleanOwnClaims(ctx, worker) {
     throw new Error(why);
   }
   for (const c of r.data.claimed ?? []) {
-    // 带 afk-claimed 的单里认自己那份：有效接单人由工单源从评论里的接单标记算出来
-    const v = await script('ticket_view', { id: c.id });
-    if (v.status !== 'ok') {
-      console.error(`  看不了 ${c.ref} 的接单状态，跳过：${firstLine(v.error)}`);
-      continue;
+    // 带 afk-claimed 的单里认自己那份：有效接单人由工单源从评论里的接单标记算出来，claims 模式直接交回
+    // （只读评论；别为每张认领中的单拉整张快照，描述 + 图片很费额度）。项目里老的 ticket_ready 没给才退回读整张单
+    let claim = c.claim;
+    if (claim === undefined) {
+      const v = await script('ticket_view', { id: c.id });
+      if (v.status !== 'ok') {
+        console.error(`  看不了 ${c.ref} 的接单状态，跳过：${firstLine(v.error)}`);
+        continue;
+      }
+      claim = v.data.claim;
     }
-    if (v.data.claim !== worker) continue;
+    if (claim !== worker) continue;
     const base = (await script('git_state', { cwd: ctx.root })).data.sha;
     const note = await rollback(base, ctx);
     const rel = await script('ticket_mark', {

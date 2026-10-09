@@ -2,10 +2,15 @@
 // 断言只在「完成」的含义上按工单源分支，其余共用。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { plan, seen, cli, git, gitOut, runScript } from './github-template.mjs';
+
+// 运行记录里某个脚本的终态行（不含 running 行）
+const logRows = (s, name) => readdirSync(path.join(s.home, 'logs')).filter((f) => f.endsWith('.jsonl'))
+  .flatMap((f) => readFileSync(path.join(s.home, 'logs', f), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)))
+  .filter((r) => r.name === name && r.status !== 'running');
 
 const READY = ['ready-for-agent'];
 const DONE_STEPS = (file = 'note.txt') => [
@@ -479,6 +484,8 @@ export function defineDevScenarios(src) {
 
     assert.deepEqual(view(1).labels, [...READY, 'afk-claimed'], '别人接的单一律不碰');
     assert.deepEqual(view(1).comments, ['[miworkflow:claim worker=wt9]']);
+    // 认接单人只读评论（ticket_ready claims 直接交回），不为每张认领中的单拉整张快照（描述 + 图片，费额度）
+    assert.equal(logRows(s, 'ticket_view').length, 1, '只有真要做的那张读了快照');
   });
 
   scenario('--issue 点到别人接走的单：报错退出，工单上一个字都不写', {

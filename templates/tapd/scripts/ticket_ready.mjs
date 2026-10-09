@@ -8,10 +8,13 @@
 // 前置不认识（缺陷、别的项目、已删除、接口查不到）一律当挡住，reason 写明，由人解开。依赖挡住的不改 TAPD。
 // 入：{ dryRun?, first?, claims? }；AGENTFLOW_DRY_RUN=1 也算干跑
 //     first = 只要第一张可做的（按优先级扫到就停）；不给 = 全扫（干跑、人看全貌用）
-//     claims = 只列「贴了 afk-claimed 的需求」（工人重启后收拾自己上次没收尾的单用，一条轻查询）
-// 出：{ status, say, data: { ready: [...], blocked: [...] } }，id 为字符串；claims 模式出 { claimed: [{ id, ref, title }] }
+//     claims = 只列「贴了 afk-claimed 的需求」（工人重启后收拾自己上次没收尾的单用）：一条按标签的列表，
+//              每张再读一次评论认出有效接单人（不拉描述、不下图片，比逐张 ticket_view 省得多）
+// 出：{ status, say, data: { ready: [...], blocked: [...] } }，id 为字符串；
+//     claims 模式出 { claimed: [{ id, ref, title, claim }] }，claim 同 ticket_view 的有效接单人（没有为 null）
 import { main, readStdin, emit } from './_lib.mjs';
-import { tapdJson, openApi } from './_tapd.mjs';
+import { tapdJson, openApi, commentsOf } from './_tapd.mjs';
+import { claimWorker } from './_claim.mjs';
 import { WORKSPACE_ID, COMMENTER, LABELS, END_STATUSES, priorityOf, knownPriority, refOf } from '../source.mjs';
 
 // TAPD 单页上限 200；满页说明可能还有，提示一句而不是逐页拉
@@ -132,15 +135,20 @@ async function dependencyBlock(s) {
 await main(async () => {
   const args = await readStdin();
 
-  // 认领中的需求：一条按标签查的单，不用拉整条队列（也不查依赖与空壳）
+  // 认领中的需求：一条按标签查的单，不用拉整条队列（也不查依赖与空壳）；接单人只看评论
   if (args.claims) {
     const listed = tapdJson(['story', 'list', `label=${LABELS.claimed}`, `limit=${LIST_LIMIT}`,
       ...(WORKSPACE_ID ? [`workspace_id=${WORKSPACE_ID}`] : [])]);
-    const claimed = (Array.isArray(listed.data) ? listed.data : [])
+    const stories = (Array.isArray(listed.data) ? listed.data : [])
       .map((r) => r?.Story)
       .filter((s) => s && labelsOf(s).includes(LABELS.claimed))
-      .map((s) => ({ id: String(s.id).trim(), ref: refOf(String(s.id).trim()), title: String(s.name || s.id) }))
+      .map((s) => ({ ...s, id: String(s.id).trim() }))
       .sort(byId);
+    const claimed = [];
+    for (const s of stories) {
+      const comments = await commentsOf(ws(s), s.id);
+      claimed.push({ id: s.id, ref: refOf(s.id), title: String(s.name || s.id), claim: claimWorker(comments.map((c) => c.description)) });
+    }
     emit({
       status: 'ok',
       say: claimed.length ? `认领中 ${claimed.length} 张工单` : '没有认领中的工单',

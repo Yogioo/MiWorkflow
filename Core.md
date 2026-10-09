@@ -831,7 +831,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 - **接单**（`ticket_mark claimed`，三家共用 `scripts/_claim.mjs`）：三家的「认领」都不是原子的（GitHub 贴标签幂等、TAPD 读改写、beads 贴标签再改状态），所以走「**校验**（机器标签空、评论里没有还有效的接单评论）→ **抢接单锁**（按工单号建的锁文件放 git 共享目录，各 worktree 是同一个；排他创建，持有进程死了可接管）→ **锁里再校验**（防锁外校验之后别人刚接走）→ 发接单评论 `[miworkflow:claim worker=<工人名>]` + 贴 `afk-claimed`」。
   抢输的**一个字节都不往工单上写**，出 `claimed: false` + `reason`，`dev` 接着挑下一张。工人名缺省 `<主机名>/<工位目录名>`（`config.mjs` 的 `WORKER` 可改），同一个工人重启后靠它认得出自己接的单。
   `--issue` 人点名也走这套（被别的工人接了就报错退出，不强做）。锁以后换成远端 ref 就能扩到多机器，流程不变。
-- **工人重启清理**：`dev` 开跑前用 `ticket_ready { claims: true }` 列出贴了 `afk-claimed` 的单，从 `ticket_view` 的 `claim` 里认有效接单人是自己、还没交付的那些，回滚工位、发释放评论、摘 `afk-claimed`，让它重新排队。工人挂了不重启时由人摘标签（不做超时接管）。
+- **工人重启清理**：`dev` 开跑前用 `ticket_ready { claims: true }` 列出贴了 `afk-claimed` 的单（每张带回 `claim`：工单源只读评论认出的有效接单人，不为每张拉整张快照），认出有效接单人是自己、还没交付的那些，回滚工位、发释放评论、摘 `afk-claimed`，让它重新排队。工人挂了不重启时由人摘标签（不做超时接管）。
 - **等合并**（`ticket_mark merging`）：工人在**工位**（`dev --dir <目录>`：git 操作、Agent 工作目录、`VERIFY` 都在工位里，任务 / 配置 / 日志仍在主目录）里做完，把那一笔挂到本地单子分支 `afk/<工单号>`（不推 origin、不碰主分支），摘 `afk-claimed`、贴 `afk-merging`；**不算交付**，依赖它的单仍被挡着，合入交给 `merge`。
 - **`merge` 任务**（`templates/_shared/tasks/merge.mjs`，在主目录跑，是工位产出唯一的合入口）：主目录整个干净 → `fetch` → 本地主分支快进到 origin 上那份（分叉就停下交给人）→ 取本地 `afk/*` 分支里**先交的那张**（按提交时间，`afk-merging` 标签只是给人看的）→ `rebase` 到主分支（冲突交合并 Agent：`config.mjs` 的 `MERGER` / `prompts/merge.md`，只解冲突、两边意图都保留）→ 验证（工人开工以来主分支没动过就跳过，动过跑 `VERIFY`，不过交回合并 Agent 修，最多 `ROUNDS` 轮）→ 快进主分支 → 推 origin → **推送成功才** `ticket_mark done`（GitHub / beads 关单，TAPD 贴 `afk-delivered`）→ 删掉单子分支。合并失败：回到合并前、单子分支备份成 `refs/afk-merge-backup/*` 后删掉、`requeued` 退回就绪队列（工人在最新主分支上重做），同一张单满 `MERGE_FAIL_LIMIT` 次贴 `afk-failed` 转人工；`fetch` / 推送连不上 origin（网络抖动）先按 `GIT_RETRY_DELAYS` 退避重试；推送失败与 `dev` 同款：本地保留、不关单、整轮停下。
 
