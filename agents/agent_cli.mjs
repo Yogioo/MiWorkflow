@@ -135,7 +135,7 @@ async function runAdapter(opts) {
   const reply = readFileSync(files.outFile, 'utf8');
   if (!reply.trim()) throw new Error(`${cli} 没有给出最后回话`);
   const { text, extracted } = normalizeReply(reply);
-  if (extracted) say('  · 回话里除了 JSON 还有别的字，取了最后一段 JSON');
+  if (extracted) say('  · 回话不是严格 JSON，已归一');
   process.stdout.write(withSession(text, sessionOut(runner.sessionMode, opts.session, res.session)));
 }
 

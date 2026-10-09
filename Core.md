@@ -517,9 +517,11 @@ runner 层从 exec-review 技能复制起步，之后**独立演进**，不回�
   （最后只回一段 `{status, choice, reason, data}`；`choice` 只取 `inputs.choices`，给了的话）。
   三家都靠提示词约束输出形状 —— codex 的 `--output-schema` 走严格模式，要求每个对象 `additionalProperties: false`，
   容不下自由形状的 `data`，所以不用。
-- **出**：取最后一条回话，剥掉至多一层代码围栏；整段不是 JSON 时，**取最后一段能解析的 JSON 对象**
-  （Agent 常先来一段人话总结再给契约 JSON）——只做传输层归一，不补字段、不猜形状。
-  **合不合契约仍由 core 判**（§6.2），适配器不补默认值。CLI 起不来 / 非 0 退出 / 没回话 → 适配器写
+- **出**：取最后一条回话，剥掉至多一层代码围栏；整段不是 JSON 时，**取最后一段带 `status` 的 JSON 对象**
+  （Agent 常先来一段人话总结再给契约 JSON）；候选键名没加引号（`{status: "ok"}`）时，补上引号再看一次
+  ——只做传输层归一，不补字段、不猜形状，字符串里的内容不动。找不到带 `status` 的就把原文交回，
+  不退到里面那段不带 `status` 的小对象。**合不合契约仍由 core 判**（§6.2），适配器不补默认值。
+  CLI 起不来 / 非 0 退出 / 没回话 → 适配器写
   `{status:'failed', choice:'agent_cli_failed', reason}`（这是事实，不是猜）；`reason` 优先取事件流里的错误
   （codex 的错误不走 stderr），其次 stderr 首句。
 - **运行目录**：`inputs.cwd`，缺省项目根（HOME 叫 `.workflow` 时取上一级，否则就是 HOME，如 `examples/`）。

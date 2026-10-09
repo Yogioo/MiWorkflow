@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 
-import { parseCliArgv, renderPrompt, stripFence, normalizeReply, extractJson } from '../agents/prompt.mjs';
+import { parseCliArgv, renderPrompt, stripFence, normalizeReply, extractJson, quoteBareKeys } from '../agents/prompt.mjs';
 import { normalizeEvent, extractSessionFromRaw } from '../agents/normalize-event.mjs';
 import { precheckSession, looksLikeSessionNotFound, sessionNotFound, sessionOut } from '../agents/session.mjs';
 import { buildPiArgs } from '../agents/runners/pi.mjs';
@@ -179,6 +179,60 @@ test('extractJson：串里的花括号、多个 JSON、尾部杂字都不影响'
   assert.equal(extractJson('没有 JSON'), null);
   assert.equal(extractJson('[1, 2, 3]'), null, '没对象就 null');
   assert.equal(extractJson('[{"status":"ok","choice":"x"}]'), '{"status":"ok","choice":"x"}', '包在数组里的对象也认得');
+});
+
+// ── 纯函数：裸键名（键名没加引号）的回话（#48）——————————————————————
+
+test('quoteBareKeys：只给 { 或 , 后面的裸键名补引号，字符串里的内容不动', () => {
+  assert.equal(quoteBareKeys('{status: "ok", choice: "done"}'), '{"status": "ok", "choice": "done"}');
+  assert.equal(quoteBareKeys('{data:{\n  n: 1,\n  ok: true\n}}'), '{"data":{\n  "n": 1,\n  "ok": true\n}}', '换行 / 嵌套也不行');
+  assert.equal(
+    quoteBareKeys('{reason: "注意: 别动", data: {"summary": "a, b: c"}}'),
+    '{"reason": "注意: 别动", "data": {"summary": "a, b: c"}}',
+    '串里的 xxx: 不误改'
+  );
+  assert.equal(
+    quoteBareKeys('{a: "说\\"hi\\", b: c"}'),
+    '{"a": "说\\"hi\\", b: c"}',
+    '转义引号不影响判定'
+  );
+  assert.equal(quoteBareKeys('{"status": "ok"}'), '{"status": "ok"}', '本来就合法的原样');
+  assert.equal(quoteBareKeys('{1: 2}'), '{1: 2}', '数字键不是标识符，不碰');
+});
+
+test('normalizeReply：键名没加引号的回话归一成合法 JSON（#48 的原始回话）', () => {
+  const reply = '{status: "ok", choice: "done", reason: "已新建 practice/e.md（…）", data: {"summary": "新建 practice/e.md"}}';
+  const r = normalizeReply(reply);
+  assert.equal(r.extracted, true);
+  assert.deepEqual(JSON.parse(r.text), {
+    status: 'ok',
+    choice: 'done',
+    reason: '已新建 practice/e.md（…）',
+    data: { summary: '新建 practice/e.md' }
+  });
+
+  // 围栏 / 前面带人话也一样认
+  const fenced = normalizeReply('```json\n' + reply + '\n```');
+  assert.deepEqual(JSON.parse(fenced.text), JSON.parse(r.text));
+  const mixed = normalizeReply('活干完了：\n\n' + reply);
+  assert.deepEqual(JSON.parse(mixed.text), JSON.parse(r.text));
+});
+
+test('normalizeReply：外层修不好就不拿里面那个不带 status 的小对象当回话（#48）', () => {
+  const broken = '{status: "ok", choice: done, data: {"summary": "只剩小对象"}}';
+  assert.equal(extractJson(broken), null, 'choice 的值没引号，补键名也解析不了');
+  const r = normalizeReply(broken);
+  assert.equal(r.extracted, false);
+  assert.equal(r.text, broken, '原样交回，让 core 判 agent_bad_output');
+});
+
+test('extractJson：本来就合法的回话行为不变', () => {
+  assert.equal(extractJson('{"status":"ok","choice":"done"}'), '{"status":"ok","choice":"done"}');
+  assert.equal(
+    extractJson('用 {"pid": 1} 当锁\n{"status":"ok","choice":"done"}'),
+    '{"status":"ok","choice":"done"}',
+    '还是取最后一段带 status 的，不碰前面的小对象'
+  );
 });
 
 test('parseJsonlChunk：半行留到下一块，最后回话取最新的一条', () => {

@@ -84,24 +84,90 @@ function isJsonObject(text) {
   }
 }
 
-// 从一段话里取最后一段能解析的 JSON 对象（没有就 null）。
-// 从后往前扫：先定右括号，再往前找能配平的左括号。优先带 "status" 的，最像契约。
+// 给裸键名补上双引号：只动 `{` 或 `,` 后面紧跟的 `标识符:`，字符串里的内容一个字节都不碰。
+// 便宜模型偶尔把 `{status: "ok"}` 写成这样（#48），这是传输层写法问题，不是契约问题。
+export function quoteBareKeys(text) {
+  const s = String(text ?? '');
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  let afterOpen = false; // 刚过了 `{` 或 `,`，这个位置允许出现裸键名
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      afterOpen = false;
+      out += ch;
+      continue;
+    }
+    if (ch === '{' || ch === ',') {
+      afterOpen = true;
+      out += ch;
+      continue;
+    }
+    if (afterOpen) {
+      if (/\s/.test(ch)) {
+        out += ch;
+        continue;
+      }
+      afterOpen = false;
+      const m = /^[A-Za-z_$][\w$]*/.exec(s.slice(i));
+      const colon = m && /^\s*:/.exec(s.slice(i + m[0].length));
+      if (colon) {
+        out += '"' + m[0] + '"' + colon[0];
+        i += m[0].length + colon[0].length - 1; // for 的 i++ 会往前一格，这里退回去
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
+// 裸 `status` 键的廉价预筛（补引号只对能变成契约回话的候选有意义，别对整篇字反复扫）
+const BARE_STATUS_KEY = /[{,]\s*status\s*:/;
+
+// 能不能当契约回话：是 JSON 对象、且顶层有 status。返回归一后的文本，不是就 null。
+// 只接受带 status 的：没有 status 的小对象不是回话（#48）。
+function contractJson(text) {
+  const t = String(text ?? '').trim();
+  if (!t.startsWith('{') || !t.endsWith('}')) return null;
+  try {
+    const v = JSON.parse(t);
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return null;
+    return Object.hasOwn(v, 'status') ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+// 从一段话里取最后一段能当契约回话的 JSON 对象（没有就 null）。
+// 从后往前扫：先定右括号，再往前找能配平的左括号。键名没加引号的候选补一次引号再看。
+// 取不到带 status 的就把原文交回让 core 判，不退到里面那段不带 status 的小对象（#48）。
 export function extractJson(text) {
   const s = String(text ?? '');
-  if (isJsonObject(s)) return s.trim();
-  let fallback = null;
+  const whole = contractJson(s) ?? (BARE_STATUS_KEY.test(s) ? contractJson(quoteBareKeys(s)) : null);
+  if (whole) return whole;
   for (let end = s.lastIndexOf('}'); end > 0; end = s.lastIndexOf('}', end - 1)) {
     for (let start = s.lastIndexOf('{', end); start >= 0; start = start > 0 ? s.lastIndexOf('{', start - 1) : -1) {
       const candidate = s.slice(start, end + 1).trim();
-      if (!isJsonObject(candidate)) continue;
-      if (candidate.includes('"status"')) return candidate;
-      fallback ??= candidate;
+      const hit = contractJson(candidate)
+        ?? (BARE_STATUS_KEY.test(candidate) ? contractJson(quoteBareKeys(candidate)) : null);
+      if (hit) return hit;
     }
   }
-  return fallback;
+  return null;
 }
 
-// 适配器回话归一（§10.1）：剥一层围栏；整段不是 JSON 就取最后一段 JSON；再没有就原样交回让 core 判（§6.2）。
+// 适配器回话归一（§10.1）：剥一层围栏；整段不是 JSON 就取最后一段带 status 的 JSON（裸键名补引号后也算）；
+// 再没有就原样交回让 core 判（§6.2）。
 // 只做传输层归一，不补字段、不猜形状。`extracted` 只用来在 stderr 说明一句。
 export function normalizeReply(text) {
   const fenced = stripFence(text);
