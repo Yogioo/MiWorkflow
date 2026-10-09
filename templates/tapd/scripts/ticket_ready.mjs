@@ -6,9 +6,10 @@
 // 给了 first 就按优先级 → 工单号扫到第一张可做的为止（dev 只用第一张，不为后面整条队列付钱）；不给就全扫。
 // 前置贴了 delivered 或到了结束类状态（见 source.mjs 的 END_STATUSES）才算满足；未满足进 blocked，reason 指出前置。
 // 前置不认识（缺陷、别的项目、已删除、接口查不到）一律当挡住，reason 写明，由人解开。依赖挡住的不改 TAPD。
-// 入：{ dryRun?, first? }；AGENTFLOW_DRY_RUN=1 也算干跑
+// 入：{ dryRun?, first?, claims? }；AGENTFLOW_DRY_RUN=1 也算干跑
 //     first = 只要第一张可做的（按优先级扫到就停）；不给 = 全扫（干跑、人看全貌用）
-// 出：{ status, say, data: { ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] } }，id 为字符串
+//     claims = 只列「贴了 afk-claimed 的需求」（工人重启后收拾自己上次没收尾的单用，一条轻查询）
+// 出：{ status, say, data: { ready: [...], blocked: [...] } }，id 为字符串；claims 模式出 { claimed: [{ id, ref, title }] }
 import { main, readStdin, emit } from './_lib.mjs';
 import { tapdJson, openApi } from './_tapd.mjs';
 import { WORKSPACE_ID, COMMENTER, LABELS, END_STATUSES, priorityOf, knownPriority, refOf } from '../source.mjs';
@@ -130,6 +131,24 @@ async function dependencyBlock(s) {
 
 await main(async () => {
   const args = await readStdin();
+
+  // 认领中的需求：一条按标签查的单，不用拉整条队列（也不查依赖与空壳）
+  if (args.claims) {
+    const listed = tapdJson(['story', 'list', `label=${LABELS.claimed}`, `limit=${LIST_LIMIT}`,
+      ...(WORKSPACE_ID ? [`workspace_id=${WORKSPACE_ID}`] : [])]);
+    const claimed = (Array.isArray(listed.data) ? listed.data : [])
+      .map((r) => r?.Story)
+      .filter((s) => s && labelsOf(s).includes(LABELS.claimed))
+      .map((s) => ({ id: String(s.id).trim(), ref: refOf(String(s.id).trim()), title: String(s.name || s.id) }))
+      .sort(byId);
+    emit({
+      status: 'ok',
+      say: claimed.length ? `认领中 ${claimed.length} 张工单` : '没有认领中的工单',
+      data: { claimed }
+    });
+    return;
+  }
+
   const dryRun = Boolean(args.dryRun) || process.env.AGENTFLOW_DRY_RUN === '1';
   const notes = [];
 

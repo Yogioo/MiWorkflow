@@ -19,8 +19,8 @@ test('推送失败 → 不关单、整轮停下、本地提交保留', () => {
   assert.ok(labelsOf(s, 1).includes('afk-claimed'), '留着 afk-claimed 提醒人处理');
   assert.match(gitOut(['log', '-1', '--pretty=%s'], s.root), /^#1 /, '本地提交要保留');
   assert.match(r.stdout, /推送失败/);
-  const c = comments(issueState(s, 1));
-  assert.match(c, /^已本地提交 [0-9a-f]{7}，但推送失败，工单保持打开，等人处理：push_failed/);
+  const c = issueState(s, 1).comments.at(-1).body;
+  assert.match(c, /^\[miworkflow:unpushed\]\n\n已本地提交 [0-9a-f]{7}，但推送失败，工单保持打开，等人处理：push_failed/);
   assert.match(c, /改动 1 个文件/);
 });
 
@@ -43,8 +43,8 @@ test('PUSH=false → 本地提交保留、不关单、整轮停、退出码 1', 
   assert.ok(!labelsOf(s, 1).includes('afk-failed'), '故意不推不是 issue 失败，不贴 afk-failed');
   assert.ok(labelsOf(s, 1).includes('afk-claimed'), '留着 afk-claimed 提醒人处理');
   assert.match(gitOut(['log', '-1', '--pretty=%s'], s.root), /^#1 /, '本地提交要保留');
-  assert.match(comments(issueState(s, 1)), /^已本地提交 [0-9a-f]{7}，没有推送（PUSH=false）/);
-  assert.match(comments(issueState(s, 1)), /（未推送）$/m);
+  assert.match(issueState(s, 1).comments.at(-1).body, /^\[miworkflow:unpushed\]\n\n已本地提交 [0-9a-f]{7}，没有推送（PUSH=false）/);
+  assert.match(issueState(s, 1).comments.at(-1).body, /（未推送）$/m);
   assert.match(r.stdout, /未推送/);
   // 整轮停下：不再动下一个 issue
   assert.equal(issueState(s, 2).state, 'OPEN');

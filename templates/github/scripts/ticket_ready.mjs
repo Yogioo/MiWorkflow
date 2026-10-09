@@ -1,7 +1,9 @@
 // 工单源接口：列就绪工单。GitHub 实现：贴 ready 标签、没贴任何机器标签；依赖（正文 `- [ ] #N`）都满足（关单或贴 delivered）才算就绪，
 // 否则进 blocked 并写明被哪张单挡住。就绪的按 P 优先级 → 工单号排序。标签取自 source.mjs 的 LABELS。
-// 入：{ repo? }
-// 出：{ status, say, data: { ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] } }，id 为字符串
+// 入：{ repo?, first?, claims? }
+//     claims = 只列「贴了 afk-claimed 的单」（工人重启后收拾自己上次没收尾的单用，一条轻查询不查依赖）
+// 出：{ status, say, data: { ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] } }，id 为字符串；
+//     claims 模式出 { claimed: [{ id, ref, title }] }
 import { main, readStdin, emit } from './_lib.mjs';
 import { runGh, hasLabel, priorityFromLabels, parseTaskList, refOf } from './_gh.mjs';
 import { LABELS } from '../source.mjs';
@@ -11,6 +13,25 @@ const LIST_LIMIT = 1000;
 await main(async () => {
   const args = await readStdin();
   const repoArg = args.repo ? ['--repo', args.repo] : [];
+
+  // 认领中的单：一条按标签查的单，不用拉整条队列（也不查依赖）
+  if (args.claims) {
+    const raw = runGh(['issue', 'list', '--state', 'open', '--label', LABELS.claimed,
+      '--limit', String(LIST_LIMIT), '--json', 'number,title,labels', ...repoArg]);
+    const rows = JSON.parse(raw);
+    if (!Array.isArray(rows)) throw new Error('gh issue list 返回的不是数组');
+    // 假 gh / 旧 gh 可能不按 --label 过滤，这里再过一遍
+    const claimed = rows
+      .filter((i) => hasLabel(i, LABELS.claimed))
+      .map((i) => ({ id: String(i.number), ref: refOf(Number(i.number)), title: i.title || String(i.number) }))
+      .sort((a, b) => Number(a.id) - Number(b.id));
+    emit({
+      status: 'ok',
+      say: claimed.length ? `认领中 ${claimed.length} 张工单` : '没有认领中的工单',
+      data: { claimed }
+    });
+    return;
+  }
 
   const raw = runGh([
     'issue', 'list', '--state', 'open', '--limit', String(LIST_LIMIT),

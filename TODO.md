@@ -419,9 +419,9 @@ B1 随 B2 消解。首个工作流选通用的 GitHub 开发，不选某个项�
 
 | 脚本 | 入 | 出 | 说明 |
 |---|---|---|---|
-| `ticket_ready` | `{}` | `{ ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] }` | 就绪 + 依赖都满足 + 已排序（优先级 → 工单号）；`blocked` 给 `--dry-run` 看原因 |
-| `ticket_view` | `{ id }` | `{ id, ref, title, file, review }` | 写出工单快照，`file` 是它的路径（见下）；`review` 是这张单有没有「要审查」标签 |
-| `ticket_mark` | `{ id, action, commentFile?, comment?, sha? }` | — | `claimed` / `done` / `failed` / `unpushed`；`done` 的含义各家自定（GitHub 关单，TAPD 不关单） |
+| `ticket_ready` | `{}` / `{ first: true }` / `{ claims: true }` | `{ ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] }`；`claims` 模式出 `{ claimed: [{ id, ref, title }] }` | 就绪 + 依赖都满足 + 已排序（优先级 → 工单号）；`blocked` 给 `--dry-run` 看原因；`claims` 只列贴了 `afk-claimed` 的单（工人重启清理用，一条轻查询） |
+| `ticket_view` | `{ id }` | `{ id, ref, title, file, review, labels, claim }` | 写出工单快照，`file` 是它的路径（见下）；`review` 是这张单有没有「要审查」标签；`labels` 与 `claim`（当前有效接单人，见 J1）给接单校验用 |
+| `ticket_mark` | `{ id, action, commentFile?, comment?, sha?, worker? }` | — | `claimed` / `done` / `failed` / `unpushed`；`done` 的含义各家自定（GitHub 关单，TAPD 不关单）。`claimed` 走接单协议（见 J1）：抢不到时出参 `data.claimed: false` + `reason`，工单上一个字都不写 |
 
 - **工单快照（读）**：`ticket_view` 把正文 + 全部评论转成 **Markdown**，写到 `logs/<runId>/tickets/<id>/ticket.md`，
   内嵌图片下载到同目录 `images/`，正文里用相对路径（`images/1.png`）引用。放 `logs/<runId>/`：被 `.gitignore` 忽略、
@@ -825,8 +825,10 @@ REVIEWER 那次完整的 Agent 调用（还要重读项目）是白花的开销�
 
 ### J5. 实现顺序（确认后）
 
-1. J0 工位：内核锁 / 循环 / 停止按「任务 + 实例」（`run.mjs`，`node --test` 全绿）+ `dev --dir`（目录不存在就建）+ 主分支自动认；三家现有场景原样通过
-2. J1 接单协议：三家 `ticket_*` + 契约测试（两个工人抢同一张）
+1. ✅ J0 工位：内核锁 / 循环 / 停止按「任务 + 实例」（`run.mjs`，`node --test` 全绿）+ `dev --dir`（目录不存在就建）+ 主分支自动认；三家现有场景原样通过
+2. ✅ J1 接单协议（#35）：`scripts/_claim.mjs`（接单评论标记 / 有效接单人 / 按工单号的接单锁，锁在 git 共享目录、持有进程死了能接管）+ 三家 `ticket_*`
+   （`ticket_view` 多给 `labels` / `claim`、`ticket_mark claimed` 收 `worker` 并按「校验 → 抢锁 → 锁里再校验 → 发接单评论 + 贴标签」写）+ `ticket_ready claims:true`（工人重启清理）+
+   `dev` 的接单与重启清理（`config.mjs` 的 `WORKER`，缺省 `<主机名>/<工位目录名>`）；契约测试与三家场景都覆盖抢单、过期锁、`--issue` 撞单、重启清理
 3. J2 工人交单子分支：`dev.mjs` + `config.mjs` 开关 + git 脚本（开工对齐含子模块更新）；三家现有场景原样通过
 4. J3 `merge` 任务 + MergeAgent 提示词 + 场景测试（临时仓库、真开 worktree、假远端）
 5. 在 DigitDoor 上实测：先用 `new-worktree.sh` 建 2～3 个工位并静音 Unity 噪音，主目录跑 `discuss`、`merge` 和各工位的 `dev --dir`

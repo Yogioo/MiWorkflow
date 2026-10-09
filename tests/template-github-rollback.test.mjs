@@ -76,8 +76,8 @@ test('Agent need_human 没写回帖稿 → 评论与原来一致（一句话）�
   const s = setup({ issues: [issue(1, { labels: ['ready-for-agent'] }), issue(2, { labels: ['ready-for-agent'] })] });
   plan(s, [{ status: 'need_human', choice: 'ask', reason: '请补充接口文档' }]);
   cli(s, ['dev', '--issue', '1']);
-  const [c1] = issueState(s, 1).comments;
-  assert.equal(c1.body, 'afk failed：Agent 提问：请补充接口文档');
+  const c1 = issueState(s, 1).comments.at(-1);
+  assert.equal(c1.body, '[miworkflow:failed]\n\nafk failed：Agent 提问：请补充接口文档');
   assert.deepEqual(c1.attach ?? [], []);
 
   plan(s, [{ status: 'need_human', choice: 'ask', reason: '要接口文档', reply: '## 问题\n\n接口文档在哪？' }]);
@@ -85,6 +85,6 @@ test('Agent need_human 没写回帖稿 → 评论与原来一致（一句话）�
   const last = seen(s).at(-1);
   assert.equal(path.basename(last.reply), 'reply-1.md');
   assert.equal(path.dirname(last.reply), path.dirname(last.ticket), '回帖稿放快照同目录');
-  const [c2] = issueState(s, 2).comments;
-  assert.equal(c2.body, 'afk failed：Agent 提问：要接口文档\n\n## 问题\n\n接口文档在哪？');
+  const c2 = issueState(s, 2).comments.at(-1);
+  assert.equal(c2.body, '[miworkflow:failed]\n\nafk failed：Agent 提问：要接口文档\n\n## 问题\n\n接口文档在哪？');
 });

@@ -48,7 +48,9 @@ test('ticket_view：入 { id }，出 { id, ref, title, file, review }；快照�
 
   const r = runScript(s, 'ticket_view', { id: '7' }, { AGENTFLOW_RUN_ID: 'run-1' });
   assert.equal(r.status, 'ok', r.error);
-  assert.deepEqual(keys(r.data), ['file', 'id', 'ref', 'review', 'title']);
+  assert.deepEqual(keys(r.data), ['claim', 'file', 'id', 'labels', 'ref', 'review', 'title']);
+  assert.deepEqual(r.data.labels, ['afk-failed'], '出参给出机器标签（校验用）');
+  assert.equal(r.data.claim, null, '没人接过的单：有效接单人是 null');
   assert.equal(r.data.id, '7');
   assert.equal(r.data.ref, '#7');
   assert.equal(r.data.title, '读我');
@@ -119,30 +121,31 @@ test('ticket_view：超过 30 张只下 30 张并写明还有 N 张；单张下�
 test('ticket_mark：入 { id, action, comment?, sha? }；四种 action 按 GitHub 规则落标签 / 评论 / 关单；comment 原样发', () => {
   const s = setup({ issues: [1, 2, 3].map((n) => issue(n, { labels: ['ready-for-agent'] })), repoLabels: ['ready-for-agent'] });
 
-  const claimed = runScript(s, 'ticket_mark', { id: '1', action: 'claimed' });
+  const claimed = runScript(s, 'ticket_mark', { id: '1', action: 'claimed', worker: 'wt1' });
   assert.equal(claimed.status, 'ok', claimed.error);
   assert.equal(claimed.data.id, '1');
   assert.equal(claimed.data.ref, '#1');
   assert.deepEqual(labelsOf(s, 1), ['ready-for-agent', 'afk-claimed'], '仓库里没有的标签先建再贴');
+  assert.equal(comments(issueState(s, 1)), '[miworkflow:claim worker=wt1]', '认领要发一条带工人名的接单评论');
 
   assert.equal(runScript(s, 'ticket_mark', { id: '1', action: 'done', sha: 'abc123' }).status, 'ok');
   assert.equal(issueState(s, 1).state, 'CLOSED');
   assert.deepEqual(labelsOf(s, 1), ['afk-delivered']);
   assert.match(comments(issueState(s, 1)), /提交：abc123/);
 
-  runScript(s, 'ticket_mark', { id: '2', action: 'claimed' });
+  runScript(s, 'ticket_mark', { id: '2', action: 'claimed', worker: 'wt1' });
   assert.equal(runScript(s, 'ticket_mark', { id: '2', action: 'unpushed', sha: 'def456' }).status, 'ok');
   assert.equal(issueState(s, 2).state, 'OPEN');
   assert.deepEqual(labelsOf(s, 2), ['ready-for-agent', 'afk-claimed'], '未推送不动标签');
   assert.match(comments(issueState(s, 2)), /未推送.*def456/);
 
-  runScript(s, 'ticket_mark', { id: '3', action: 'claimed' });
+  runScript(s, 'ticket_mark', { id: '3', action: 'claimed', worker: 'wt1' });
   assert.equal(runScript(s, 'ticket_mark', { id: '3', action: 'failed', comment: '原因' }).status, 'ok');
   assert.deepEqual(labelsOf(s, 3), ['ready-for-agent', 'afk-failed']);
-  assert.equal(comments(issueState(s, 3)), '原因', '调用方给整段评论，不加前缀、不截断');
+  assert.equal(issueState(s, 3).comments.at(-1).body, '[miworkflow:failed]\n\n原因', '调用方给整段评论，前面贴状态标记、不截断');
 
   assert.equal(runScript(s, 'ticket_mark', { id: '3', action: 'nope' }).status, 'failed');
-  assert.equal(runScript(s, 'ticket_mark', { action: 'claimed' }).status, 'failed', '缺 id');
+  assert.equal(runScript(s, 'ticket_mark', { action: 'claimed', worker: 'wt1' }).status, 'failed', '缺 id');
 });
 
 test('ticket_mark commentFile：带图回帖稿 → gh 在回帖稿目录执行、--attach 与正文引用逐字一致；备份 ref 那句话保留', () => {
@@ -161,10 +164,10 @@ test('ticket_mark commentFile：带图回帖稿 → gh 在回帖稿目录执行�
   const [c] = st.issues[0].comments;
   assert.equal(path.resolve(c.cwd), path.resolve(dir), 'gh 的 cwd 是回帖稿目录');
   assert.deepEqual(c.attach, ['images/red.png', './blue.png']);
-  assert.equal(c.body, `afk failed：挂了\n（回滚掉的 1 笔提交备份在 refs/afk/backup/x：abc）\n\n${md}`);
+  assert.equal(c.body, `[miworkflow:failed]\n\nafk failed：挂了\n（回滚掉的 1 笔提交备份在 refs/afk/backup/x：abc）\n\n${md}`);
 
   assert.equal(runScript(s, 'ticket_mark', { id: '1', action: 'done', sha: 'abc', commentFile: path.join(dir, 'reply-1.md') }).status, 'ok');
-  assert.equal(readState(s).issues[0].comments.at(-1).body, md, 'done 也带回帖稿；只给 commentFile 时评论就是回帖稿原文');
+  assert.equal(readState(s).issues[0].comments.at(-1).body, `[miworkflow:done]\n\n${md}`, 'done 也带回帖稿；只给 commentFile 时评论就是标记 + 回帖稿原文');
 });
 
 test('ticket_mark commentFile：不带图不查版本；gh 版本过低 → 图片换成降级文案、say 提示升级、评论照发', () => {
@@ -178,18 +181,18 @@ test('ticket_mark commentFile：不带图不查版本；gh 版本过低 → 图�
 
   assert.equal(runScript(s, 'ticket_mark', { id: '1', action: 'failed', comment: 'a', commentFile: path.join(dir, 'plain.md') }).status, 'ok');
   assert.equal(readState(s).versionChecks ?? 0, 0, '不带图不查版本');
-  assert.equal(issueState(s, 1).comments[0].body, 'a\n\n只有字');
+  assert.equal(issueState(s, 1).comments[0].body, '[miworkflow:failed]\n\na\n\n只有字');
 
   const r = runScript(s, 'ticket_mark', { id: '2', action: 'failed', comment: 'b', commentFile: path.join(dir, 'img.md') });
   assert.equal(r.status, 'ok', r.error);
   assert.match(r.say, /2\.97\.0.*升级 gh/);
   const [c] = issueState(s, 2).comments;
   assert.deepEqual(c.attach, []);
-  assert.equal(c.body, 'b\n\n看 （图片未上传：red.png） 这里');
+  assert.equal(c.body, '[miworkflow:failed]\n\nb\n\n看 （图片未上传：red.png） 这里');
   assert.deepEqual(labelsOf(s, 2), ['afk-failed']);
 
   assert.equal(runScript(s, 'ticket_mark', { id: '1', action: 'failed', comment: 'c', commentFile: path.join(dir, 'none.md') }).status, 'ok');
-  assert.equal(issueState(s, 1).comments.at(-1).body, 'c', '没写回帖稿就只发 comment');
+  assert.equal(issueState(s, 1).comments.at(-1).body, '[miworkflow:failed]\n\nc', '没写回帖稿就只发 comment');
   assert.equal(runScript(s, 'ticket_mark', { id: '1', action: 'failed' }).status, 'ok');
-  assert.equal(issueState(s, 1).comments.at(-1).body, 'afk failed', '什么都没给才用缺省一句');
+  assert.equal(issueState(s, 1).comments.at(-1).body, '[miworkflow:failed]\n\nafk failed', '什么都没给才用缺省一句');
 });

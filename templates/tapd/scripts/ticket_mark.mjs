@@ -5,14 +5,19 @@
 // 标签多值用 | 分隔（写逗号不报错，TAPD 会把整串建成一个新标签），每次写完经 `story list` 回读，不对就判失败。
 // 要发评论却缺评论人时，在动标签之前就报错。
 // 评论正文由调用方给整段：comment 在前、commentFile（回帖稿）在后，原样发；两样都没给才用 DEFAULT_COMMENT 的一句话。
-// 回帖稿里引用的本地图片逐张 `attachment upload-image`，引用换成线上地址（见文件末尾）。claimed 不发评论。
-// 入：{ id, action, commentFile?, comment?, sha?, dryRun? }
-// 出：{ status, say, data: { id, ref, did: string[] } }，id 为字符串
+// 每段评论开头贴一个状态标记（[miworkflow:done] 等），工单源靠它判定「有效接单」（见 _claim.mjs）。
+// 回帖稿里引用的本地图片逐张 `attachment upload-image`，引用换成线上地址（见文件末尾）。
+// 认领不是原子操作（读改写），claimed 走「校验 → 抢接单锁 → 锁里再校验 → 先发接单评论再改标签」，抢输的什么都不写。
+// 入：{ id, action, commentFile?, comment?, sha?, worker?, cwd?, dryRun? }
+// 出：{ status, say, data: { id, ref, did } }（认领没抢到：data 是 { id, ref, claimed: false, reason }），id 为字符串
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { main, readStdin, emit } from './_lib.mjs';
 import { tapdJson, openApi } from './_tapd.mjs';
+import { claimComment, claimWorker, defaultWorker, machineLabels, projectDirOf, stampComment, withClaimLock } from './_claim.mjs';
 import { WORKSPACE_ID, COMMENTER, LABELS, refOf } from '../source.mjs';
+
+const COMMENT_PAGE = 200;
 
 const IMAGE_EXTS = new Set(['.png', '.gif', '.jpg', '.jpeg', '.bmp']);
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -53,9 +58,13 @@ await main(async () => {
     throw new Error(`不认识的 action：${action}（claimed / done / unpushed / failed / released）`);
   }
   const posts = action !== 'claimed';
-  const reply = posts && args.commentFile ? readReply(args.commentFile) : null;
-  const head = posts ? String(args.comment ?? '').trim() || (reply ? '' : DEFAULT_COMMENT[action](args)) : null;
-  if (posts && !COMMENTER && !args.dryRun) {
+  // 工人名（接单评论里带）：调用方（dev）按 config.mjs 传进来，单独手动跑就用缺省
+  const worker = String(args.worker ?? '').trim() || defaultWorker(projectDirOf(args.cwd));
+  // 认领也要发评论（就一行接单标记）；其余动作发状态标记 + 调用方给的整段
+  const reply = args.commentFile ? readReply(args.commentFile) : null;
+  const head = posts
+    ? stampComment(action, String(args.comment ?? '').trim() || (reply ? '' : DEFAULT_COMMENT[action](args)))
+    : claimComment(worker);  if (!COMMENTER && !args.dryRun) {
     throw new Error('缺评论人：设 TAPD_NPC_ROLE 或 source.mjs 的 COMMENTER（在改标签之前报错，工单未被改动）');
   }
 
@@ -63,25 +72,73 @@ await main(async () => {
   const workspace = String(before.workspace_id || WORKSPACE_ID || '');
   const wsArg = workspace ? [`workspace_id=${workspace}`] : [];
   const current = labelsOf(before);
-  const want = [...current.filter((l) => !remove.includes(l)), ...add.filter((l) => !current.includes(l))];
+  // 目标标签：去掉要摘的、加上要贴的（锁里重读一遍也要用同一套算法）
+  const nextLabels = (story) => {
+    const cur = labelsOf(story);
+    return [...cur.filter((l) => !remove.includes(l)), ...add.filter((l) => !cur.includes(l))];
+  };
+  const want = nextLabels(before);
   const changed = want.join('|') !== current.join('|');
 
   const did = [];
   if (changed) did.push(`story update id=${id} label=${want.join('|')}`);
   if (reply) for (const p of reply.refs) did.push(`attachment upload-image ${p}`);
-  if (posts) did.push(`comment add entry_id=${id}（${[head && '一段话', reply && '回帖稿'].filter(Boolean).join(' + ')}）`);
+  did.push(`comment add entry_id=${id}（${action === 'claimed' ? '接单标记' : [head && '一段话', reply && '回帖稿'].filter(Boolean).join(' + ')}）`);
 
   if (args.dryRun) {
     emit({ status: 'ok', say: `干跑：会执行 ${did.length} 步（${action} ${ref}）`, data: { id, ref, did } });
     return;
   }
 
-  if (changed) {
-    tapdJson(['story', 'update', `id=${id}`, `label=${want.join('|')}`, ...wsArg]);
-    const got = labelsOf(readStory(id));
-    if (got.join('|') !== want.join('|')) {
-      throw new Error(`${ref} 改标签后回读不一致：想要「${want.join('|')}」，实际「${got.join('|')}」`);
+  // 校验：没有任何机器标签，也没有还有效的接单评论
+  const refuse = async () => {
+    // 先看接单评论（谁接的报得出来），再看机器标签
+    const holder = claimWorker(await recentComments(workspace, id));
+    if (holder) return holder === worker ? `已经是我（${worker}）接的单` : `已被 ${holder} 接走`;
+    const machine = machineLabels(labelsOf(readStory(id)));
+    if (machine.length) return `已经贴了 ${machine.join('、')}`;
+    return null;
+  };
+
+  // 没抢到 / 校验不过：工单上什么都没写
+  const lost = (why) => emit({ status: 'ok', say: `${ref} 没接单：${why}`, data: { id, ref, claimed: false, reason: why } });
+
+  // 接单评论只有一行标记（认领不带图、不带回帖稿）
+  const postClaimComment = async () => {
+    const body = hardBreaks(head);
+    const r = tapdJson(['comment', 'add', 'entry_type=stories', `entry_id=${id}`, `description=${body}`, `author=${COMMENTER}`, ...wsArg]);
+    await verifyComment(workspace, id, String(r.id ?? r.data?.Comment?.id ?? ''), body, 0);
+  };
+
+  if (action === 'claimed') {
+    // 校验 → 抢接单锁 → 锁里再校验 → 先发接单评论、再改标签（中间挂了也还认得出是谁接的）
+    const first = await refuse();
+    if (first) {
+      lost(first);
+      return;
     }
+    const locked = await withClaimLock({ cwd: projectDirOf(args.cwd), ref, worker }, async () => {
+      const why = await refuse();
+      if (why) return { lost: why };
+      await postClaimComment();
+      const labels = nextLabels(readStory(id));
+      if (labels.join('|') !== labelsOf(readStory(id)).join('|')) writeLabels(labels, id, ref, wsArg);
+      return {};
+    });
+    if (!locked.ok) {
+      lost(`接单锁在 ${locked.holder} 手里`);
+      return;
+    }
+    if (locked.result.lost) {
+      lost(locked.result.lost);
+      return;
+    }
+    emit({ status: 'ok', say: `${ref} 接单（${worker}）`, data: { id, ref, did } });
+    return;
+  }
+
+  if (changed) {
+    writeLabels(want, id, ref, wsArg);
   }
 
   let warn = '';
@@ -99,9 +156,29 @@ await main(async () => {
     await verifyComment(workspace, id, String(r.id ?? r.data?.Comment?.id ?? ''), body, uploaded);
   }
 
-  const label = { claimed: '认领', done: '标记完成（不关单）', unpushed: '记录未推送', failed: '标记失败', released: '释放（下轮重做）' }[action];
+  const label = { claimed: `接单（${worker}）`, done: '标记完成（不关单）', unpushed: '记录未推送', failed: '标记失败', released: '释放（下轮重做）' }[action];
   emit({ status: 'ok', say: `${ref} ${label}${warn ? `；${warn}` : ''}`, data: { id, ref, did } });
 });
+
+// 写标签 + 回读校验：写逗号会被当成一个新标签名，不报错但会建出垃圾标签；锁里也用它
+function writeLabels(labels, id, ref, wsArg) {
+  tapdJson(['story', 'update', `id=${id}`, `label=${labels.join('|')}`, ...wsArg]);
+  const got = labelsOf(readStory(id));
+  if (got.join('|') !== labels.join('|')) {
+    throw new Error(`${ref} 改标签后回读不一致：想要「${labels.join('|')}」，实际「${got.join('|')}」`);
+  }
+}
+
+// 这张单最近的评论（接单标记在评论里）：默认只给一页，按创建时间排好序再判定
+async function recentComments(workspace, id) {
+  const r = await openApi('/comments', {
+    query: { workspace_id: workspace || undefined, entry_type: 'stories', entry_id: id, limit: COMMENT_PAGE, order: 'created desc' }
+  });
+  const rows = (Array.isArray(r.data) ? r.data : []).map((x) => x?.Comment).filter(Boolean);
+  return rows
+    .sort((a, b) => String(a.created ?? '').localeCompare(String(b.created ?? '')))
+    .map((c) => String(c.description ?? ''));
+}
 
 function readStory(id) {
   const listed = tapdJson(['story', 'list', `id=${id}`, ...(WORKSPACE_ID ? [`workspace_id=${WORKSPACE_ID}`] : [])]);

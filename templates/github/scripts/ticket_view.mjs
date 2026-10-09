@@ -1,12 +1,14 @@
 // 工单源接口：读一张工单，写成工单快照（正文 + 全部评论的 Markdown，图片下载到同目录 images/）。GitHub 实现。
 // 入：{ id, repo? }
-// 出：{ status, say, data: { id, ref, title, file, review } }，id 为字符串，file 是快照路径，review 是「要不要审查」
+// 出：{ status, say, data: { id, ref, title, file, review, labels, claim } }，id 为字符串，file 是快照路径，review 是「要不要审查」，
+// labels 是这张单上的标签，claim 是当前有效接单人（评论里还有效的接单标记，没有就是 null；见 scripts/_claim.mjs）。
 // 快照放 logs/<runId>/tickets/<id>/ticket.md：被 .gitignore 忽略、回滚不删、跑完可复盘。
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { main, readStdin, emit, imageExt } from './_lib.mjs';
 import { viewIssue, issueNumber, refOf, ghToken, fetchImpl, downloadImage, anyNeedsToken } from './_gh.mjs';
+import { claimWorker } from './_claim.mjs';
 import { LABELS } from '../source.mjs';
 
 const MAX_IMAGES = 30;
@@ -52,7 +54,15 @@ await main(async () => {
   emit({
     status: 'ok',
     say: `读工单 ${ref}：${issue.title}${urls.length ? `（图片 ${urls.length} 张）` : ''}`,
-    data: { id, ref, title: issue.title, file, review: issue.labels.includes(LABELS.review) }
+    data: {
+      id,
+      ref,
+      title: issue.title,
+      file,
+      review: issue.labels.includes(LABELS.review),
+      labels: issue.labels,
+      claim: claimWorker(issue.comments.map((c) => c.body))
+    }
   });
 });
 

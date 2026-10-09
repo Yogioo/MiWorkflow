@@ -13,6 +13,10 @@ export const REVIEWER = null;
 // 'always'：每张单都审（跟以前一样）。
 export const REVIEW = 'auto';
 
+// 工人名：接单评论里写谁接的、重启后靠它认自己没收尾的单。空 = `<主机名>/<工位目录名>`
+// （不带 --dir 时是主目录的目录名）；几台机器共用一套工单源时改成一眼认得出是哪台的。
+export const WORKER = '';
+
 // 验证命令：跑在项目根，退出码 0 算过。空字符串 = 不验证，直接进提交流程。
 // 字符串走 shell（可有管道、&&）；也可以写数组精确到参数，如 ['npm', 'test']。
 export const VERIFY = '';

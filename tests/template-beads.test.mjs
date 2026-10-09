@@ -51,7 +51,7 @@ test('[beads] ticket_mark：状态跟着标签走——认领 in_progress，失�
   const s = open([1, 2, 3].map((k) => bdIssue(`demo-${k}`, { labels: READY })));
   const mark = (id, input) => runScript(s, 'ticket_mark', { id, ...input });
 
-  for (const id of ['demo-1', 'demo-2', 'demo-3']) assert.equal(mark(id, { action: 'claimed' }).status, 'ok');
+  for (const id of ['demo-1', 'demo-2', 'demo-3']) assert.equal(mark(id, { action: 'claimed', worker: 'wt1' }).status, 'ok');
   assert.deepEqual(['demo-1', 'demo-2', 'demo-3'].map((id) => issueOf(s, id).status), ['in_progress', 'in_progress', 'in_progress']);
 
   mark('demo-1', { action: 'done', sha: 'abc1234' });
@@ -61,7 +61,7 @@ test('[beads] ticket_mark：状态跟着标签走——认领 in_progress，失�
   assert.equal(issueOf(s, 'demo-2').status, 'open');
   mark('demo-3', { action: 'released' });
   assert.equal(issueOf(s, 'demo-3').status, 'open');
-  assert.deepEqual(issueOf(s, 'demo-3').comments.map((c) => c.text), ['Agent 连接失败，已回滚并释放，下轮重做']);
+  assert.deepEqual(issueOf(s, 'demo-3').comments.map((c) => c.text), ['[miworkflow:claim worker=wt1]', '[miworkflow:released]\n\nAgent 连接失败，已回滚并释放，下轮重做']);
 });
 
 test('[beads] ticket_mark：评论经 bd comments add -f 发，多行原样；回帖稿里的本地图片换成绝对路径，网址不动', () => {
@@ -73,7 +73,7 @@ test('[beads] ticket_mark：评论经 bd comments add -f 发，多行原样；�
   assert.equal(r.status, 'ok', r.error);
   const [c] = issueOf(s, 'demo-1').comments;
   const abs = (rel) => path.join(dir, rel).split(path.sep).join('/');
-  assert.equal(c.text, `afk failed：原因\n第二行\n\n改了背包。\n\n![截图](${abs('images/1.png')})\n<img src="${abs('images/2.png')}" alt="x">\n![外链](https://example.com/a.png)`);
+  assert.equal(c.text, `[miworkflow:failed]\n\nafk failed：原因\n第二行\n\n改了背包。\n\n![截图](${abs('images/1.png')})\n<img src="${abs('images/2.png')}" alt="x">\n![外链](https://example.com/a.png)`);
   const add = calls(s).find((a) => a[0] === 'comments');
   assert.deepEqual(add.slice(0, 4), ['comments', 'add', 'demo-1', '-f'], '评论不走命令行参数');
 });

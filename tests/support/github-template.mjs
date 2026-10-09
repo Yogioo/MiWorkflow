@@ -172,6 +172,7 @@ export const issue = (number, { title = `issue ${number}`, body = `做 ${number}
 export const CONFIG = (verify, rounds, push, retryDelays = [0, 0], review = 'always', idleSec = 1200, killLimit = 3, devIdleSec = 600) => [
   'export const DEV = null;',
   'export const REVIEWER = null;',
+  'export const WORKER = "";',
   `export const REVIEW = ${JSON.stringify(review)};`,
   `export const VERIFY = ${JSON.stringify(verify)};`,
   `export const ROUNDS = ${rounds};`,

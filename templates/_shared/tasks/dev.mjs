@@ -1,4 +1,7 @@
-// 开发工作流：把就绪工单逐个「认领 → 开发 →（审查）→ 验证 → 提交 → 关单」。
+// 开发工作流：把就绪工单逐个「接单 → 开发 →（审查）→ 验证 → 提交 → 关单」。
+// 接单（认领）不是原子操作：`ticket_mark claimed` 内部走「校验 → 抢接单锁 → 锁里再校验 → 发接单评论 + 贴 afk-claimed」，
+// 抢输的什么都不写，这里接着挑下一张（共用层见 scripts/_claim.mjs）。工人开跑前先收拾自己上次没收尾的单。
+//
 // 审查按需：工单贴了 source.mjs 的 LABELS.review（缺省 needs-review）、或 DEV 选 done_review 升级、或 config.mjs 的
 // REVIEW='always' 才起审查 Agent；其余单子 DEV 自测 + VERIFY 就够（TODO G1）。
 // 只通过工单源接口 ticket_ready / ticket_view / ticket_mark 碰工单系统，不知道背后是哪家（入队、标记的规则见各工单源的脚本）。
@@ -11,7 +14,7 @@
 //   miworkflow dev                    按队列一直跑到空
 //   miworkflow dev --max 3            最多做 3 个
 //   miworkflow dev --max-failures 1   连续失败 1 次就停（默认 3）
-//   miworkflow dev --issue 42         只做工单 42（不看入队和依赖，人点名就跑）
+//   miworkflow dev --issue 42         只做工单 42（不看入队和依赖，人点名就跑；被别的工人接走就报错退出、不动这张单）
 //   miworkflow dev --confirm          每次提交（+ 推送 + 标记完成）前 human 确认
 //   miworkflow dev --dry-run          只报会做哪些工单、哪些被挡住，不改工单、不改 git
 //   miworkflow dev --now              忽略退避，立刻就列一次队（队列空过一阵之后不想等）
@@ -28,9 +31,10 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, REVIEW, AGENT_RETRY_DELAYS, AGENT_IDLE_SEC, AGENT_KILL_LIMIT, DEV_IDLE_MAX_SEC } from '../config.mjs';
+import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, REVIEW, AGENT_RETRY_DELAYS, AGENT_IDLE_SEC, AGENT_KILL_LIMIT, DEV_IDLE_MAX_SEC, WORKER } from '../config.mjs';
 import * as source from '../source.mjs';
 import { paceOf, clock } from '../scripts/_pace.mjs';
+import { defaultWorker } from '../scripts/_claim.mjs';
 
 export const title = '开发：认领工单 → 开发 → 审查 → 验证 → 提交 → 关单';
 
@@ -61,12 +65,12 @@ export default async function ({ script: rawScript, agent, human, args, stopping
     console.log(`还没到点：${clock(devPace.read().nextAt)} 再查（上一轮队列空；要立刻就做用 --now）`);
     return;
   }
-  const ctx = { script, agent, human, args };
+  // 工人名（config.mjs 的 WORKER 可改）：写进接单评论，重启后靠它认自己没收尾的单
+  const worker = WORKER || defaultWorker(args.dir ? path.resolve(args.dir) : PROJECT);
+  const ctx = { script, agent, human, args, worker };
 
-  // 开跑前工作区必须干净，免得把人的改动混进提交或被回滚掉
   const pre = await script('git_state', { cwd: PROJECT });
   if (pre.status !== 'ok') throw new Error(`看不了 git 状态：${pre.error}`);
-  if (!pre.data.clean) throw new Error('工作区有未提交改动，先处理干净再跑（免得把人改的东西提交或回滚掉）');
   const root = pre.data.root || PROJECT;
   ctx.root = root;
 
@@ -89,6 +93,14 @@ export default async function ({ script: rawScript, agent, human, args, stopping
     return;
   }
 
+  // 工人重启：先收拾自己上次没收尾的单（工作区里可能正是那份半成品，清理会把它回滚掉），再要求干净
+  await cleanOwnClaims(ctx, worker);
+  const start = await script('git_state', { cwd: root });
+  if (start.status !== 'ok') throw new Error(`看不了 git 状态：${start.error}`);
+  if (!start.data.clean) throw new Error('工作区有未提交改动，先处理干净再跑（免得把人改的东西提交或回滚掉）');
+
+  // 这一轮接单抢输过的工单：别再来回挑（就绪队列里已经不列它们，只剩锁竞争那一瞬的空窗）
+  const skipped = new Set();
   let done = 0;
   let failures = 0;
   let pushStopped = false;
@@ -101,11 +113,13 @@ export default async function ({ script: rawScript, agent, human, args, stopping
     if (only && done + failures > 0) break;
     if (stopping()) { stop = '收到停止请求（miworkflow stop dev）'; break; }
 
-    const t = await pick(only, ctx);
+    const t = await pick(only, ctx, skipped);
     if (t?.down) { infraStopped = true; stop = t.down; break; }
     if (!t) { stop = '队列空'; break; }
 
     const outcome = await runTicket(t, ctx);
+    // 接单抢输了：这张单已经被别人接走，什么都不写，接着挑下一张
+    if (outcome === 'skipped') { skipped.add(t.id); continue; }
     if (outcome === 'ticket_down') {
       // 工单系统暂时不可用：同 Agent 连接失败，不计入 failures、立即停
       infraStopped = true;
@@ -142,19 +156,20 @@ export default async function ({ script: rawScript, agent, human, args, stopping
   if (pushStopped || infraStopped) throw new Error(stop);
 }
 
-// 挑下一张要做的工单：--issue 直接读那张；否则列就绪队列取第一张。
+// 挑下一张要做的工单：--issue 直接读那张；否则列就绪队列取第一张（抢输过的跳过）。
 // 工单系统暂时不可用（出参 data.transient）时交回 { down: 停止原因 }，由主循环停下
-async function pick(only, ctx) {
+async function pick(only, ctx, skipped = new Set()) {
   const { script } = ctx;
   let id = only;
   if (id === null) {
-    // first：只要第一张可做的就行——别为后面整条队列（每张一次依赖查询、每个前置一次 /stories）付钱
-    const r = await script('ticket_ready', { first: true });
+    // first：只要第一张可做的就行——别为后面整条队列（每张一次依赖查询、每个前置一次 /stories）付钱。
+    // 抢输过一次就得看整条队列，才能跳过那张（只在锁竞争那一瞬的窗口里发生，平时走上面那条便宜路）
+    const r = await script('ticket_ready', skipped.size ? {} : { first: true });
     if (r.status !== 'ok') {
       if (transient(r)) return { down: `工单系统暂时不可用（列就绪工单）：${firstLine(r.error)}` };
       throw new Error(`列就绪工单失败：${r.error}`);
     }
-    id = r.data.ready[0]?.id ?? null;
+    id = (r.data.ready ?? []).find((x) => !skipped.has(x.id))?.id ?? null;
   }
   if (id === null) return null;
   const v = await script('ticket_view', { id });
@@ -169,16 +184,24 @@ const transient = (r) => r?.data?.transient === true;
 
 // 一张工单走完全程；返回 'done' | 'failed' | 'push_failed' | 'unpushed' | 'infra_failed' | 'killed_released' | 'ticket_down'（停止原因在 ctx.down）
 async function runTicket(t, ctx) {
-  const { script, human, args, root } = ctx;
+  const { script, human, args, root, worker } = ctx;
 
-  const claim = await script('ticket_mark', { id: t.id, action: 'claimed' });
+  const claim = await script('ticket_mark', { id: t.id, action: 'claimed', worker, cwd: root });
   if (claim.status !== 'ok') {
-    console.error(`${t.ref} 认领失败：${claim.error}`);
+    console.error(`${t.ref} 接单失败：${claim.error}`);
     if (transient(claim)) {
-      ctx.down = `工单系统暂时不可用（认领 ${t.ref}）：下轮重做`;
+      ctx.down = `工单系统暂时不可用（接单 ${t.ref}）：下轮重做`;
       return 'ticket_down';
     }
     return 'failed';
+  }
+  // 工单源交回 claimed:false = 这一单没抢到（别人刚接走 / 锁在别人手里），工单上一个字都没写
+  if (claim.data?.claimed === false) {
+    const why = String(claim.data.reason ?? '已被别的工人接走');
+    // 人点名的（--issue）就报错退出、不动这张单；队列里挑的接着挑下一张
+    if (args.issue) throw new Error(`${t.ref} ${why}`);
+    console.log(`跳过 ${t.ref}：${why}`);
+    return 'skipped';
   }
 
   const base = (await script('git_state', { cwd: root })).data.sha;
@@ -300,6 +323,36 @@ async function runTicket(t, ctx) {
   return 'done';
 }
 
+// 工人开跑前的重启清理：有效接单人是我、又还没交出去（没有释放 / 完成 / 失败 / 等合并评论）的单，回滚工作目录、
+// 发释放评论、摘 afk-claimed，让它重新排队。别人接的、已经交付的一概不碰。
+async function cleanOwnClaims(ctx, worker) {
+  const { script } = ctx;
+  const r = await script('ticket_ready', { claims: true });
+  if (r.status !== 'ok') {
+    const why = `查自己没收尾的单失败：${firstLine(r.error)}`;
+    if (transient(r)) throw new Error(`工单系统暂时不可用（${why}）`);
+    throw new Error(why);
+  }
+  for (const c of r.data.claimed ?? []) {
+    // 带 afk-claimed 的单里认自己那份：有效接单人由工单源从评论里的接单标记算出来
+    const v = await script('ticket_view', { id: c.id });
+    if (v.status !== 'ok') {
+      console.error(`  看不了 ${c.ref} 的接单状态，跳过：${firstLine(v.error)}`);
+      continue;
+    }
+    if (v.data.claim !== worker) continue;
+    const base = (await script('git_state', { cwd: ctx.root })).data.sha;
+    const note = await rollback(base, ctx);
+    const rel = await script('ticket_mark', {
+      id: c.id,
+      action: 'released',
+      comment: `工人 ${worker} 上一轮没做完（重启），已回滚并释放，重新排队${note}`
+    });
+    console.log(`清理自己没收尾的 ${c.ref}：已回滚并释放`);
+    markQuietly(rel, c, '释放');
+  }
+}
+
 // 提交成功但没发布（PUSH=false 或推送失败）：评论注明未推送、保留 afk-claimed、不关单，整轮停下留给人处理
 async function notPublished(outcome, t, sha, ctx, commentFile) {
   markQuietly(await ctx.script('ticket_mark', { id: t.id, action: 'unpushed', sha, commentFile }), t, '记录未推送');
@@ -341,7 +394,8 @@ const KILLED = {
 
 // 被强制结束（卡死 / 超时）：趁半成品还在先让诊断 Agent 查原因 → 回滚（半成品另存 diff）→ 评论（适配器记的事实 + 诊断 + diff 位置）→
 // 没满 AGENT_KILL_LIMIT 次就释放，下轮的 Agent 读快照里的评论换个做法；满了就标失败转人工。
-// 第几次 = 快照里以前的这类评论数 + 1（评论开头是 KILL_MARK，卡死、超时合并计数），不另加标签
+// 第几次 = 快照里以前这类评论出现的次数 + 1（评论开头是 KILL_MARK，卡死、超时合并计数），不另加标签。
+// 按出现次数数、不按行首：TAPD 的快照里评论的换行会被抹成空格（htmlToMarkdown），标记会落在行中间
 const KILL_MARK = 'Agent 被强制结束（第';
 async function killed(t, r, base, ctx, saved) {
   const kind = KILLED[r.choice];
@@ -369,7 +423,7 @@ async function killed(t, r, base, ctx, saved) {
 function countKilled(ticketFile) {
   let text = '';
   try { text = readFileSync(ticketFile, 'utf8'); } catch { /* 读不到当 0 次 */ }
-  return text.split('\n').filter((l) => l.trimStart().startsWith(KILL_MARK)).length;
+  return text.split(KILL_MARK).length - 1;
 }
 
 // 诊断 Agent：只读，查上一个 Agent 为什么没做完、进展到哪、下次怎么做；没跑成就只留适配器记的事实

@@ -401,8 +401,8 @@ test('ticket_view：快照含描述 + 全部评论（走 OpenAPI），HTML 转 M
     const { out, stderr } = runScript('ticket_view', { id }, { ...tapdEnv(f, api.endpoint), AGENTFLOW_HOME: home, AGENTFLOW_RUN_ID: 'run1' });
     assert.equal(out.status, 'ok');
     const file = path.join(home, 'logs', 'run1', 'tickets', id, 'ticket.md');
-    assert.deepEqual(out.data, { id, ref: `story ${id}`, title: '做个按钮', file, review: false });
-    assert.deepEqual(Object.keys(out.data), ['id', 'ref', 'title', 'file', 'review'], '出参形状与 GitHub 相同');
+    assert.deepEqual(out.data, { id, ref: `story ${id}`, title: '做个按钮', file, review: false, labels: [], claim: null });
+    assert.deepEqual(Object.keys(out.data), ['id', 'ref', 'title', 'file', 'review', 'labels', 'claim'], '出参形状与 GitHub 相同');
 
     const md = readFileSync(file, 'utf8');
     assert.match(md, /^# story 1152360842001004201 做个按钮/);
@@ -481,10 +481,10 @@ async function withMark(label, fn, patch) {
 test('ticket_mark：四种 action 的标签变化，| 分隔；done 不改状态与处理人；出参形状同 GitHub；comment 原样发', async () => {
   const long = `afk failed：${'很长的原因'.repeat(300)}`;
   const cases = [
-    ['claimed', 'ready-for-agent', 'ready-for-agent|afk-claimed', {}, null],
-    ['done', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-delivered', {}, '提交：abc123'],
-    ['failed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-failed', { comment: long }, long],
-    ['unpushed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-claimed', {}, '本地提交（未推送）：abc123']
+    ['claimed', 'ready-for-agent', 'ready-for-agent|afk-claimed', { worker: 'wt1' }, '[miworkflow:claim worker=wt1]'],
+    ['done', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-delivered', {}, '[miworkflow:done]\n\n提交：abc123'],
+    ['failed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-failed', { comment: long }, `[miworkflow:failed]\n\n${long}`],
+    ['unpushed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-claimed', {}, '[miworkflow:unpushed]\n\n本地提交（未推送）：abc123']
   ];
   for (const [action, from, to, input, comment] of cases) {
     await withMark(from, async (mark, f) => {
@@ -510,7 +510,7 @@ test('ticket_mark：四种 action 的标签变化，| 分隔；done 不改状态
 
 test('ticket_mark：回读不一致判失败；缺评论人时标签未被改动；干跑不改 TAPD', async () => {
   await withMark('ready-for-agent', (mark) => {
-    const { out } = mark({ action: 'claimed' });
+    const { out } = mark({ action: 'claimed', worker: 'wt1' });
     assert.equal(out.status, 'failed');
     assert.match(out.say, /回读不一致/);
   }, { ignoreUpdate: true });
@@ -536,7 +536,7 @@ test('ticket_mark：回读不一致判失败；缺评论人时标签未被改动
   await withMark('ready-for-agent|afk-claimed', (mark, f) => {
     const { out } = mark({ action: 'done', sha: 'abc' });
     assert.equal(out.status, 'ok', `comment add 没回 id 也能按评论人回读到：${out.say}`);
-    assert.equal(readTapdState(f).comments.at(-1).description, '提交：abc');
+    assert.equal(readTapdState(f).comments.at(-1).description, '[miworkflow:done]\n\n提交：abc');
     assert.ok(openApiLog(f).some((l) => /order=created(\+|%20)desc/.test(l.url)), '没 id 时按创建时间倒序查');
   }, { noCommentId: true, comments: old });
 
@@ -568,7 +568,7 @@ test('ticket_mark：回帖稿传图替换引用、保留 alt；不支持的格�
     assert.equal(st.uploads.length, 1);
     assert.equal(path.resolve(st.uploads[0].file), path.join(dir, 'images', 'a.png'));
     const c = st.comments[0].description;
-    assert.ok(c.startsWith('afk failed：做不成\n\n## 为什么失败\n\n- 第一行\n- 第二行'), c);
+    assert.ok(c.startsWith('[miworkflow:failed]\n\nafk failed：做不成\n\n## 为什么失败\n\n- 第一行\n- 第二行'), c);
     assert.ok(!c.includes('\\n'));
     assert.match(c, /!\[红色 截图\]\(\/tfl\/pictures\/1\.png\)/);
     assert.match(c, /（图片未上传：`images\/b\.webp`）/);
@@ -586,14 +586,14 @@ test('ticket_mark：回帖稿传图替换引用、保留 alt；不支持的格�
   await withMark('ready-for-agent|afk-claimed', (mark, f) => {
     const { out } = mark({ action: 'failed', comment: 'afk failed：只有一句', commentFile: path.join(dir, 'none.md') });
     assert.equal(out.status, 'ok');
-    assert.equal(readTapdState(f).comments[0].description, 'afk failed：只有一句');
+    assert.equal(readTapdState(f).comments[0].description, '[miworkflow:failed]\n\nafk failed：只有一句');
   });
 
   await withMark('ready-for-agent|afk-claimed', (mark, f) => {
     const { out } = mark({ action: 'done', sha: 'abc', commentFile: reply });
     assert.equal(out.status, 'ok', out.say);
     const c = readTapdState(f).comments[0].description;
-    assert.ok(c.startsWith('## 为什么失败'), `done 也带回帖稿；只给 commentFile 时不加开头：${c}`);
+    assert.ok(c.startsWith('[miworkflow:done]\n\n## 为什么失败'), `done 也带回帖稿；只给 commentFile 时不加开头：${c}`);
   });
 
   const prose = path.join(dir, 'prose.md');
@@ -601,7 +601,7 @@ test('ticket_mark：回帖稿传图替换引用、保留 alt；不支持的格�
   await withMark('ready-for-agent|afk-claimed', (mark, f) => {
     assert.equal(mark({ action: 'done', comment: '开头', commentFile: prose }).out.status, 'ok');
     assert.equal(readTapdState(f).comments[0].description,
-      '开头\n\n第一行  \n第二行\n\n- 列表一\n- 列表二\n\n```\ncode a\ncode b\n```\n\n| a | b |\n| - | - |', '普通文字的单个换行转硬换行，列表、代码块、表格不动');
+      '[miworkflow:done]\n\n开头\n\n第一行  \n第二行\n\n- 列表一\n- 列表二\n\n```\ncode a\ncode b\n```\n\n| a | b |\n| - | - |', '普通文字的单个换行转硬换行，列表、代码块、表格不动');
     assert.equal(readTapdState(f).stories[0].label, 'ready-for-agent|afk-delivered');
   });
 });

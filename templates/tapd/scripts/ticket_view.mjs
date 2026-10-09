@@ -2,13 +2,15 @@
 // 描述走 `story list id=… with_v_status=1`；评论直接调 OpenAPI（`tapd-cli comment list` 会剥掉 HTML）。
 // 图片：`/tfl/...` 站内路径经 `attachment get-image` 换 300 秒有效的 download_url 再下；绝对 URL 直接下。
 // 入：{ id }
-// 出：{ status, say, data: { id, ref, title, file, review } }，id 为字符串，file 是快照路径，review 是「要不要审查」
+// 出：{ status, say, data: { id, ref, title, file, review, labels, claim } }，id 为字符串，file 是快照路径，review 是「要不要审查」，
+// labels 是这张单上的标签，claim 是当前有效接单人（评论里还有效的接单标记，没有就是 null；见 scripts/_claim.mjs）。
 // 快照放 logs/<runId>/tickets/<id>/ticket.md：被 .gitignore 忽略、回滚不删、跑完可复盘。
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { main, readStdin, emit, imageExt } from './_lib.mjs';
 import { tapdJson, openApi, htmlToMarkdown, IMG_SRC, imgSrcOf, mask } from './_tapd.mjs';
+import { claimWorker } from './_claim.mjs';
 import { WORKSPACE_ID, LABELS, refOf } from '../source.mjs';
 
 const labelList = (label) => String(label ?? '').split('|').map((l) => l.trim()).filter(Boolean);
@@ -60,7 +62,16 @@ await main(async () => {
   emit({
     status: 'ok',
     say: `读工单 ${ref}：${title}${srcs.length ? `（图片 ${srcs.length} 张）` : ''}`,
-    data: { id, ref, title, file, review: labelList(story.label).includes(LABELS.review) }
+    data: {
+      id,
+      ref,
+      title,
+      file,
+      review: labelList(story.label).includes(LABELS.review),
+      labels: labelList(story.label),
+      // 接单标记是评论正文里的纯文本，只看最近这些评论就够（标记不会被 HTML 转义掉）
+      claim: claimWorker(comments.map((c) => c.description))
+    }
   });
 });
 

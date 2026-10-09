@@ -2,9 +2,10 @@
 // 断言只在「完成」的含义上按工单源分支，其余共用。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { plan, seen, cli, gitOut } from './github-template.mjs';
+import os from 'node:os';
+import { plan, seen, cli, gitOut, runScript } from './github-template.mjs';
 
 const READY = ['ready-for-agent'];
 const DONE_STEPS = (file = 'note.txt') => [
@@ -380,9 +381,56 @@ export function defineDevScenarios(src) {
     const last = seen(s).at(-1);
     assert.equal(path.basename(last.reply), 'reply-1.md');
     assert.equal(path.dirname(last.reply), path.dirname(last.ticket));
-    const [c] = view(1).comments;
+    const c = view(1).comments.at(-1);
     assert.ok(c.indexOf('要接口文档') >= 0 && c.indexOf('要接口文档') < c.indexOf('## 问题'), c);
     assert.ok(c.includes('接口文档在哪？'), c);
+  });
+
+  // ── 接单（J1）：接单评论 + 接单锁；重启清理自己的单，别人接的不碰 ──
+  const ME = `${os.hostname()}/repo`;
+
+  scenario('工人重启：自己上次没收尾的单被回滚、释放、重新排队做完；别人接的单不碰', {
+    tickets: [{ key: 1, title: '别人接的单', labels: READY }, { key: 2, title: '我上次没收尾', labels: READY }],
+    push: true
+  }, (s, view) => {
+    runScript(s, 'ticket_mark', { id: src.id(1), action: 'claimed', worker: 'wt9' });
+    runScript(s, 'ticket_mark', { id: src.id(2), action: 'claimed', worker: ME });
+    writeFileSync(path.join(s.root, 'half.txt'), '上次跑了一半\n');
+
+    plan(s, DONE_STEPS('note.txt'));
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 0, r.stderr + r.stdout);
+    assert.equal(view(2).closed, src.closes, '清理后重新排队、这一轮就做完了');
+    assert.ok(view(2).comments.some((c) => c.includes('上一轮没做完') && c.includes(ME)), view(2).comments.join('\n'));
+    assert.ok(!existsSync(path.join(s.root, 'half.txt')), '清理时回滚了上一轮的工作目录');
+
+    assert.deepEqual(view(1).labels, [...READY, 'afk-claimed'], '别人接的单一律不碰');
+    assert.deepEqual(view(1).comments, ['[miworkflow:claim worker=wt9]']);
+  });
+
+  scenario('--issue 点到别人接走的单：报错退出，工单上一个字都不写', {
+    tickets: [{ key: 1, labels: READY }]
+  }, (s, view) => {
+    runScript(s, 'ticket_mark', { id: src.id(1), action: 'claimed', worker: 'wt9' });
+    plan(s, []);
+    const r = cli(s, ['dev', '--issue', src.id(1)]);
+    assert.equal(r.code, 1);
+    assert.deepEqual(seen(s), [], '没叫 Agent');
+    assert.match(r.stderr + r.stdout, /已被 wt9 接走/);
+    assert.deepEqual(view(1).labels, [...READY, 'afk-claimed']);
+    assert.deepEqual(view(1).comments, ['[miworkflow:claim worker=wt9]']);
+  });
+
+  scenario('没抢到的单不挡后面的：队列里第一张被别的工人接走，就接着做下一张', {
+    tickets: [{ key: 1, title: '别人接了', labels: READY }, { key: 2, title: '后面的', labels: READY }], push: true
+  }, (s, view) => {
+    runScript(s, 'ticket_mark', { id: src.id(1), action: 'claimed', worker: 'wt9' });
+    plan(s, DONE_STEPS('two.txt'));
+    const r = cli(s, ['dev']);
+    assert.equal(r.code, 0, r.stderr + r.stdout);
+    assert.equal(view(2).closed, src.closes);
+    assert.ok(existsSync(path.join(s.root, 'two.txt')));
+    assert.deepEqual(view(1).comments, ['[miworkflow:claim worker=wt9]'], '别人接的那张不碰');
   });
 
   // ── 审查分级（TODO G1）：REVIEW='auto' 时按工单标签 + DEV 升级决定审不审 ──

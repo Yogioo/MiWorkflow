@@ -116,7 +116,7 @@ test('认领一直 500：不叫 Agent、不改 git、主循环停下、退出码
   plan(s, DONE_STEPS);
   const r = cli(s, ['dev']);
   assert.notEqual(r.code, 0);
-  assert.match(r.stdout + r.stderr, /工单系统暂时不可用（认领 #1）：下轮重做/);
+  assert.match(r.stdout + r.stderr, /工单系统暂时不可用（接单 #1）：下轮重做/);
   assert.match(r.stdout, /失败 0 个/);
   assert.equal(seen(s).length, 0, '没叫 Agent');
   assert.equal(gitOut(['rev-parse', 'HEAD'], s.root), head);
