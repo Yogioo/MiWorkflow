@@ -169,6 +169,8 @@ export const issue = (number, { title = `issue ${number}`, body = `做 ${number}
 
 // review：config.mjs 的 REVIEW。缺省 'always'——既有场景大多在验审查路径，保持它们照旧覆盖；
 // 审不审（'auto'）另有用例（tests/support/dev-scenarios.mjs 里的「审查分级」）。
+// branch：主分支名（缺省 main）。给别的名字（如 develop）+ push 时 origin/HEAD 指向它，
+// 用来验证 dev --dir 的主分支取自 origin/HEAD 而不是写死 main。
 export const CONFIG = (verify, rounds, push, retryDelays = [0, 0], review = 'always', idleSec = 1200, killLimit = 3, devIdleSec = 600) => [
   'export const DEV = null;',
   'export const REVIEWER = null;',
@@ -188,7 +190,7 @@ export const CONFIG = (verify, rounds, push, retryDelays = [0, 0], review = 'alw
 
 // repoLabels：给了就只认这些仓库标签（贴没有的会报错，要先 gh label create）；不给 = 什么标签都能贴
 // retryDelays：Agent 基础设施故障的重试间隔，测试里缺省 [0, 0]（不真等）
-export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {}, retryDelays = [0, 0], ticketRetryDelays = [0, 0, 0], review = 'always', idleSec, killLimit, devIdleSec } = {}) {
+export function setup({ source = 'github', issues = [], repoLabels, verify = '', rounds = 2, push = false, dirty = false, remoteAhead = false, fetchRoutes = {}, retryDelays = [0, 0], ticketRetryDelays = [0, 0, 0], review = 'always', idleSec, killLimit, devIdleSec, branch = 'main' } = {}) {
   const base = tmpDir();
   const root = path.join(base, 'repo');
   mkdirSync(root, { recursive: true });
@@ -204,7 +206,7 @@ export function setup({ source = 'github', issues = [], repoLabels, verify = '',
   writeFileSync(path.join(home, 'config.mjs'), CONFIG(verify, rounds, withPush, retryDelays, review, idleSec, killLimit, devIdleSec));
   writeFileSync(path.join(home, '.gitignore'), 'logs/\n');
 
-  git(['init', '-q', '--initial-branch=main'], root);
+  git(['init', '-q', `--initial-branch=${branch}`], root);
   git(['config', 'user.email', 't@t'], root);
   git(['config', 'user.name', 't'], root);
   writeFileSync(path.join(root, 'app.txt'), 'base\n');
@@ -213,14 +215,16 @@ export function setup({ source = 'github', issues = [], repoLabels, verify = '',
 
   if (push || remoteAhead) {
     const bare = path.join(base, 'origin.git');
-    git(['init', '-q', '--bare', '--initial-branch=main', bare]);
+    git(['init', '-q', '--bare', `--initial-branch=${branch}`, bare]);
     git(['remote', 'add', 'origin', bare], root);
-    git(['push', '-q', '-u', 'origin', 'main'], root);
+    git(['push', '-q', '-u', 'origin', branch], root);
+    // origin/HEAD 指向 origin 上的主分支：dev --dir 靠它自动认主分支（真仓库由 clone 建立这个符号 ref）
+    git(['remote', 'set-head', 'origin', '-a'], root);
     if (remoteAhead) {
       writeFileSync(path.join(root, 'upstream.txt'), 'x\n');
       git(['add', '-A'], root);
       git(['commit', '-qm', 'upstream'], root);
-      git(['push', '-q', 'origin', 'main'], root);
+      git(['push', '-q', 'origin', branch], root);
       git(['reset', '--hard', 'HEAD~1'], root);
     }
   }

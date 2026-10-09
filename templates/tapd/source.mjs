@@ -14,6 +14,7 @@ export const COMMENTER = process.env.TAPD_NPC_ROLE ?? '';
 export const LABELS = {
   ready: 'ready-for-agent',     // 入队
   claimed: 'afk-claimed',       // 认领中
+  merging: 'afk-merging',       // 工人在工位里交了单子分支，等 merge 合入（不算交付，依赖它的单仍被挡住）
   delivered: 'afk-delivered',   // 已交付
   failed: 'afk-failed',         // 失败，等人看（摘掉它才重新入队）
   review: 'needs-review'        // 要审查（REVIEW='auto' 时，贴了才起审查 Agent；见 config.mjs）

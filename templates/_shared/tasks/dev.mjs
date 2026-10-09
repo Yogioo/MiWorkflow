@@ -2,6 +2,11 @@
 // 接单（认领）不是原子操作：`ticket_mark claimed` 内部走「校验 → 抢接单锁 → 锁里再校验 → 发接单评论 + 贴 afk-claimed」，
 // 抢输的什么都不写，这里接着挑下一张（共用层见 scripts/_claim.mjs）。工人开跑前先收拾自己上次没收尾的单。
 //
+// 工位（--dir <目录>）：git 操作、Agent 工作目录、VERIFY 都挪到工位里，工单快照 / 回帖稿 / 日志仍在主目录
+// （工位的建与对齐见 scripts/git_worktree.mjs）。每张单开工前工位分离 HEAD 到最新本地主分支；做完把那一笔挂到
+// 本地分支 afk/<工单号> 上、贴 afk-merging 标「等合并」——不推 origin、不碰主分支，合入交给主目录的 merge。
+// 不带 --dir 一切照旧：在主目录提交、推当前分支、标记完成。两种用法之间不加开关。
+//
 // 审查按需：工单贴了 source.mjs 的 LABELS.review（缺省 needs-review）、或 DEV 选 done_review 升级、或 config.mjs 的
 // REVIEW='always' 才起审查 Agent；其余单子 DEV 自测 + VERIFY 就够（TODO G1）。
 // 只通过工单源接口 ticket_ready / ticket_view / ticket_mark 碰工单系统，不知道背后是哪家（入队、标记的规则见各工单源的脚本）。
@@ -15,6 +20,7 @@
 //   miworkflow dev --max 3            最多做 3 个
 //   miworkflow dev --max-failures 1   连续失败 1 次就停（默认 3）
 //   miworkflow dev --issue 42         只做工单 42（不看入队和依赖，人点名就跑；被别的工人接走就报错退出、不动这张单）
+//   miworkflow dev --dir wt1          在工位 wt1 里做单：交本地分支 afk/<工单号> + 标「等合并」，不推 origin
 //   miworkflow dev --confirm          每次提交（+ 推送 + 标记完成）前 human 确认
 //   miworkflow dev --dry-run          只报会做哪些工单、哪些被挡住，不改工单、不改 git
 //   miworkflow dev --now              忽略退避，立刻就列一次队（队列空过一阵之后不想等）
@@ -35,6 +41,7 @@ import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, REVIEW, AGENT_RETRY_DELAYS, AGENT_
 import * as source from '../source.mjs';
 import { paceOf, clock } from '../scripts/_pace.mjs';
 import { defaultWorker } from '../scripts/_claim.mjs';
+import { branchOf } from '../scripts/_lib.mjs';
 
 export const title = '开发：认领工单 → 开发 → 审查 → 验证 → 提交 → 关单';
 
@@ -65,14 +72,20 @@ export default async function ({ script: rawScript, agent, human, args, stopping
     console.log(`还没到点：${clock(devPace.read().nextAt)} 再查（上一轮队列空；要立刻就做用 --now）`);
     return;
   }
-  // 工人名（config.mjs 的 WORKER 可改）：写进接单评论，重启后靠它认自己没收尾的单
-  const worker = WORKER || defaultWorker(args.dir ? path.resolve(args.dir) : PROJECT);
-  const ctx = { script, agent, human, args, worker };
+  const ctx = { script, agent, human, args };
 
   const pre = await script('git_state', { cwd: PROJECT });
   if (pre.status !== 'ok') throw new Error(`看不了 git 状态：${pre.error}`);
   const root = pre.data.root || PROJECT;
+  // 工位（--dir）：项目根换成工位——git 操作 / Agent 工作目录 / VERIFY 都在里面做；
+  // 任务 / 配置 / 日志 / 工单快照仍在主目录（PROJECT = `.workflow/` 的上一级）
+  ctx.main = root;
+  ctx.station = args.dir ? path.resolve(root, String(args.dir)) : '';
   ctx.root = root;
+  // 工人名（config.mjs 的 WORKER 可改）：写进接单评论，重启后靠它认自己上次没收尾的单；
+  // 缺省 `<主机名>/<工位目录名>`（不带 --dir 时是主目录的目录名）
+  const worker = WORKER || defaultWorker(ctx.station || root);
+  ctx.worker = worker;
 
   // --dry-run：只报「今天会做哪几张工单、哪些被挡住」，不叫 Agent、不改工单、不改 git。
   // （ticket_mark 自己也支持 dryRun，但那挡不住 Agent 改文件，所以这里直接不进流程。）
@@ -93,9 +106,17 @@ export default async function ({ script: rawScript, agent, human, args, stopping
     return;
   }
 
+  // 工位准备：不存在就从主分支建（分离 HEAD + 初始化子模块），已存在就查「同一仓库 + 干净」；不干净/建不出来就拒跑
+  if (ctx.station) {
+    const w = await script('git_worktree', { action: 'ensure', cwd: root, dir: ctx.station });
+    if (w.status !== 'ok') throw new Error(`工位用不了：${firstLine(w.error)}`);
+    ctx.root = ctx.station;
+    console.log(`工位 ${ctx.station}：${w.data.created ? `从 ${w.data.main || '主分支'} 新建（分离 HEAD）` : '复用（干净）'}`);
+  }
+
   // 工人重启：先收拾自己上次没收尾的单（工作区里可能正是那份半成品，清理会把它回滚掉），再要求干净
   await cleanOwnClaims(ctx, worker);
-  const start = await script('git_state', { cwd: root });
+  const start = await script('git_state', { cwd: ctx.root });
   if (start.status !== 'ok') throw new Error(`看不了 git 状态：${start.error}`);
   if (!start.data.clean) throw new Error('工作区有未提交改动，先处理干净再跑（免得把人改的东西提交或回滚掉）');
 
@@ -204,6 +225,16 @@ async function runTicket(t, ctx) {
     return 'skipped';
   }
 
+  // 开工：工位分离 HEAD 到最新的本地主分支 + 更新子模块（每张单重新对齐，不在上一单的落点上叠）
+  if (ctx.station) {
+    const a = await script('git_worktree', { action: 'align', cwd: ctx.main, dir: ctx.station });
+    if (a.status !== 'ok') {
+      // 工位用不了（主分支取不到 / 工位脏了）：这张单没开工，释放回队列，整轮停下留给人看
+      markQuietly(await script('ticket_mark', { id: t.id, action: 'released', comment: `工位对齐不了，这张单没开工：${firstLine(a.error)}` }), t, '释放');
+      throw new Error(`${t.ref} 的工位对齐不了：${firstLine(a.error)}`);
+    }
+  }
+
   const base = (await script('git_state', { cwd: root })).data.sha;
   // 每次调 Agent 的回帖稿与回话，完成时拼进评论
   const notes = [];
@@ -279,14 +310,17 @@ async function runTicket(t, ctx) {
     if (h.status !== 'ok') return fail(t, '人工拒绝提交', base, ctx);
   }
 
-  // 6. 提交 + 推送：一张工单一笔（Agent 自己做的提交压进来），提交信息按工单源格式拼
+  // 6. 提交（+ 推送）：一张工单一笔（Agent 自己做的提交压进来），提交信息按工单源格式拼。
+  //    带 --dir 的工位用法只交本地单子分支 afk/<工单号>（同名覆盖）、不推 origin——合入交给主目录的 merge
   const msg = source.commitMessage(t, commitInfo(t, notes));
+  const branch = ctx.station ? branchOf(t.id) : '';
   const c = await script('git_commit', {
     message: msg.message,
     ...(msg.body ? { body: msg.body } : {}),
     baseSha: base,
-    push: PUSH,
-    cwd: root
+    push: branch ? false : PUSH,
+    cwd: root,
+    ...(branch ? { branch } : {})
   });
   if (c.status !== 'ok') {
     // 推送失败：本地提交保留，不关单、保留 afk-claimed、整轮停下
@@ -297,6 +331,9 @@ async function runTicket(t, ctx) {
     }
     return fail(t, `提交失败：${c.error}`, base, ctx);
   }
+
+  // 工位交单：标记「等合并」——不算交付（依赖这张单的单仍被挡住），不推 origin
+  if (branch) return submitted(t, ctx, notes, { base, sha: c.data.sha, subject: msg.message, round, branch });
 
   // 提交成功但没推送（PUSH=false）：跟推送失败同款语义——没发布就不算做完
   if (c.data.pushed === false) {
@@ -351,6 +388,25 @@ async function cleanOwnClaims(ctx, worker) {
     console.log(`清理自己没收尾的 ${c.ref}：已回滚并释放`);
     markQuietly(rel, c, '释放');
   }
+}
+
+// 工位交单的收尾：本地提交已挂到 afk/<工单号> 上，标记「等合并」——不算交付，等主目录的 merge 合入
+// 落款里写明分支名，merge 那边靠它 rebase；不推 origin、不关单
+async function submitted(t, ctx, notes, { base, sha, subject, round, branch }) {
+  const file = await report(t, ctx, notes, { base, sha, subject, round, branch, pushed: false,
+    head: `已完成：提交 ${short(sha)} 挂在本地分支 \`${branch}\` 上，等合并（没有推送）。` });
+  const marked = await ctx.script('ticket_mark', { id: t.id, action: 'merging', sha, branch, commentFile: file });
+  if (marked.status !== 'ok') {
+    // 提交和分支都已经在了，改回失败反而更糟；留着让人看
+    console.error(`${t.ref} 已提交但标记等合并失败：${marked.error}`);
+    if (transient(marked)) {
+      ctx.down = `已提交 ${short(sha)}（${branch}），工单 ${t.ref} 标记等合并失败：工单系统暂时不可用，需人补标记`;
+      return 'ticket_down';
+    }
+    return 'failed';
+  }
+  console.log(`✔ ${t.ref} ${t.title}（${short(sha)}，等合并 ${branch}）`);
+  return 'done';
 }
 
 // 提交成功但没发布（PUSH=false 或推送失败）：评论注明未推送、保留 afk-claimed、不关单，整轮停下留给人处理
@@ -528,7 +584,7 @@ function cleanSummary(text, t, types) {
 
 // ── 完成 / 未推送的评论：开头一句 + 各份回帖稿（没写就用回话 reason）+ 工作流落款 ──
 // 写成工单快照同目录的 comment.md（回帖稿里的相对图片路径照样能解析），交给 ticket_mark 的 commentFile
-async function report(t, ctx, notes, { head, base, sha, subject, round, pushed = false }) {
+async function report(t, ctx, notes, { head, base, sha, subject, round, pushed = false, branch = '' }) {
   const st = await ctx.script('git_state', { cwd: ctx.root, baseSha: base });
   const files = st.data?.changed ?? [];
   const parts = [head];
@@ -549,7 +605,7 @@ async function report(t, ctx, notes, { head, base, sha, subject, round, pushed =
     '',
     `审查：${!reviewed ? `没审查（REVIEW=${REVIEW}：工单没贴 ${source.LABELS?.review ?? 'needs-review'}，DEV 也没升级）` : review === 'refined' ? '审查者做了修正' : '审查者看过，没有改动'}`,
     `验证：${VERIFY ? `\`${Array.isArray(VERIFY) ? VERIFY.join(' ') : VERIFY}\` 通过${round ? `（验证不过后修了 ${round} 轮）` : ''}` : '没配验证命令，工作流没有跑编译或测试'}`,
-    `提交：${short(sha)} ${subject}（${pushed ? '已推送' : '未推送'}）`
+    `提交：${short(sha)} ${subject}（${branch ? `等合并，本地分支 \`${branch}\`` : pushed ? '已推送' : '未推送'}）`
   ].join('\n'));
   const file = path.join(path.dirname(t.file), 'comment.md');
   writeFileSync(file, `${parts.join('\n\n')}\n`);

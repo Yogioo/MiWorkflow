@@ -159,7 +159,7 @@ await main(async () => {
   const rows = Array.isArray(listed.data) ? listed.data : [];
   if (rows.length >= LIST_LIMIT) notes.push(`候选满 ${LIST_LIMIT} 条，可能没列全`);
 
-  const machine = [LABELS.claimed, LABELS.delivered, LABELS.failed];
+  const machine = [LABELS.claimed, LABELS.merging, LABELS.delivered, LABELS.failed];
   // 先按优先级 → 工单号排：懒扫描（first）要按这个顺序扫，扫到的第一张就是 dev 会挑的那张
   const candidates = rows
     .map((r) => r?.Story)

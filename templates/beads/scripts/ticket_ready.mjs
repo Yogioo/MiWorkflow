@@ -42,7 +42,7 @@ await main(async () => {
     if (p) children.set(p, [...(children.get(p) ?? []), i.id]);
   }
 
-  const machine = [LABELS.claimed, LABELS.delivered, LABELS.failed];
+  const machine = [LABELS.claimed, LABELS.merging, LABELS.delivered, LABELS.failed];
   const queued = issues
     .filter((i) => i.status === 'open' && hasLabel(i, LABELS.ready) && !machine.some((l) => hasLabel(i, l)))
     .map((i) => ({

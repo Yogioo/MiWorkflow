@@ -131,7 +131,7 @@ test('source.mjs：优先级映射与提交信息', async () => {
   const src = await import(`${pathToFileURL(path.join(TPL, 'source.mjs')).href}?t=${Date.now()}`);
   delete process.env.TAPD_NPC_ROLE;
   assert.deepEqual(['高', '中', '', '低', '紧急', undefined].map(src.priorityOf), [1, 2, 2, 3, 2, 2]);
-  assert.deepEqual(Object.values(src.LABELS), ['ready-for-agent', 'afk-claimed', 'afk-delivered', 'afk-failed', 'needs-review']);
+  assert.deepEqual(Object.values(src.LABELS), ['ready-for-agent', 'afk-claimed', 'afk-merging', 'afk-delivered', 'afk-failed', 'needs-review']);
   const t = { id: '1152360842001004854', ref: 'story 1152360842001004854', title: '做个按钮' };
   assert.deepEqual(src.commitMessage(t, { type: 'fix', summary: '按钮换色' }), { message: 'fix:1004854 按钮换色' }, '7 位短号、没有正文');
   assert.ok(src.COMMIT_TYPES.includes('feat') && src.COMMIT_TYPES.includes('fix'));
@@ -478,13 +478,14 @@ async function withMark(label, fn, patch) {
   }
 }
 
-test('ticket_mark：四种 action 的标签变化，| 分隔；done 不改状态与处理人；出参形状同 GitHub；comment 原样发', async () => {
+test('ticket_mark：五种 action 的标签变化，| 分隔；done 不改状态与处理人；出参形状同 GitHub；comment 原样发', async () => {
   const long = `afk failed：${'很长的原因'.repeat(300)}`;
   const cases = [
     ['claimed', 'ready-for-agent', 'ready-for-agent|afk-claimed', { worker: 'wt1' }, '[miworkflow:claim worker=wt1]'],
     ['done', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-delivered', {}, '[miworkflow:done]\n\n提交：abc123'],
     ['failed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-failed', { comment: long }, `[miworkflow:failed]\n\n${long}`],
-    ['unpushed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-claimed', {}, '[miworkflow:unpushed]\n\n本地提交（未推送）：abc123']
+    ['unpushed', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-claimed', {}, '[miworkflow:unpushed]\n\n本地提交（未推送）：abc123'],
+    ['merging', 'ready-for-agent|afk-claimed', 'ready-for-agent|afk-merging', { branch: 'afk/1' }, '[miworkflow:merging]\n\n提交 abc123 在本地分支 afk/1，等合并']
   ];
   for (const [action, from, to, input, comment] of cases) {
     await withMark(from, async (mark, f) => {

@@ -49,7 +49,7 @@ await main(async () => {
 
   // 依赖满足 = 勾上了，或那张单已经不在打开列表里（关了），或贴了 delivered
   const pending = new Set(issues.filter((i) => !hasLabel(i, LABELS.delivered)).map((i) => i.number));
-  const machine = [LABELS.claimed, LABELS.delivered, LABELS.failed];
+  const machine = [LABELS.claimed, LABELS.merging, LABELS.delivered, LABELS.failed];
   const queued = issues
     .filter((i) => hasLabel(i, LABELS.ready) && !machine.some((l) => hasLabel(i, l)))
     .map((i) => ({ ...i, waiting: parseTaskList(i.body).filter((r) => !r.checked && pending.has(r.number)) }));

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { plan, seen, cli, gitOut, runScript } from './github-template.mjs';
+import { plan, seen, cli, git, gitOut, runScript } from './github-template.mjs';
 
 const READY = ['ready-for-agent'];
 const DONE_STEPS = (file = 'note.txt') => [
@@ -485,5 +485,84 @@ export function defineDevScenarios(src) {
     assert.equal(r.code, 0, r.stderr);
     assert.equal(seen(s).length, 2, '开发 + 审查');
     assertDelivered(view(1));
+  });
+
+  // ── 工位（J0 / J2）：`dev --dir <工位>` 在工位里做单，交本地单子分支 + 标「等合并」（不推 origin、不动主分支） ──
+  const branchOf = (key) => `afk/${src.id(key)}`;
+
+  scenario('工位 --dir：目录不存在就建 worktree；做完留 afk/<工单号> 分支、贴 afk-merging、评论写明分支，不推 origin、不动主分支', {
+    tickets: [{ key: 1, title: '加个文件', labels: READY }], push: true
+  }, (s, view) => {
+    const station = path.join(s.base, 'wt1');
+    plan(s, DONE_STEPS('note.txt'));
+    const r = cli(s, ['dev', '--dir', station]);
+    assert.equal(r.code, 0, r.stderr + r.stdout);
+    assert.ok(existsSync(station), '工位目录建出来了');
+    assert.equal(gitOut(['rev-parse', '--abbrev-ref', 'HEAD'], station), 'HEAD', '工位是分离 HEAD');
+    assert.equal(gitOut(['status', '--porcelain'], station), '', '工位干净');
+
+    const branch = branchOf(1);
+    assert.equal(gitOut(['rev-parse', branch], s.root), gitOut(['rev-parse', 'HEAD'], station), '那一笔挂在 afk/<工单号> 上');
+    const subject = gitOut(['log', '-1', '--pretty=%s', branch], s.root);
+    assert.ok(subject.startsWith(src.commitPrefix(1)) && subject.endsWith('加个文件'), subject);
+
+    const t = view(1);
+    assert.equal(t.closed, false, '等合并不关单');
+    assert.ok(t.labels.includes('afk-merging') && !t.labels.includes('afk-claimed'), t.labels.join(','));
+    assert.ok(!t.labels.includes('afk-delivered'), t.labels.join(','));
+    assert.ok(t.comments.at(-1).includes(branch), t.comments.at(-1));
+
+    assert.equal(gitOut(['rev-parse', '--abbrev-ref', 'HEAD'], s.root), 'main', '主分支没被碰');
+    assert.equal(gitOut(['log', '-1', '--pretty=%s', 'origin/main'], s.root), 'init', '没推 origin');
+    assert.ok(existsSync(path.join(s.root, 'note.txt')) === false, '改动只落在工位，主目录没有');
+  });
+
+  scenario('工位 --dir：主分支取自 origin/HEAD（当前分支挪到别处也一样），开工时对齐到最新的本地主分支', {
+    tickets: [{ key: 1, title: '加个文件', labels: READY }], push: true, branch: 'develop'
+  }, (s, view) => {
+    const station = path.join(s.base, 'wt2');
+    // 当前分支不是主分支、还比主分支多一笔：工位仍要认 origin/HEAD 指向的 develop
+    git(['checkout', '-q', '-b', 'scratch'], s.root);
+    writeFileSync(path.join(s.root, 'scratch.txt'), 'x\n');
+    git(['add', '-A'], s.root);
+    git(['commit', '-qm', 'scratch 上的一笔'], s.root);
+    plan(s, DONE_STEPS('one.txt'));
+    const r = cli(s, ['dev', '--dir', station]);
+    assert.equal(r.code, 0, r.stderr + r.stdout);
+    assert.ok(!existsSync(path.join(station, 'scratch.txt')), '工位从 develop 建，不带当前分支的改动');
+    assert.equal(gitOut(['log', '-1', '--pretty=%s', `${branchOf(1)}~1`], s.root), 'init', '这一笔直接基于 develop 顶端');
+    assert.equal(gitOut(['rev-parse', '--abbrev-ref', 'HEAD'], s.root), 'scratch', '主目录当前分支没动');
+    assert.ok(view(1).labels.includes('afk-merging'), view(1).labels.join(','));
+  });
+
+  scenario('工位 --dir：已存在的工位不干净 → 拒跑并说清原因，不动工单、不叫 Agent', {
+    tickets: [{ key: 1, labels: READY }]
+  }, (s, view) => {
+    const station = path.join(s.base, 'wt3');
+    git(['worktree', 'add', '--detach', station, 'main'], s.root);
+    writeFileSync(path.join(station, 'dirty.txt'), 'x\n');
+    plan(s, DONE_STEPS());
+    const r = cli(s, ['dev', '--dir', station]);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr + r.stdout, /不干净/);
+    assert.deepEqual(seen(s), [], '没叫 Agent');
+    assert.deepEqual(view(1).labels, READY, '工单一个字都没动');
+    assert.deepEqual(view(1).comments, []);
+  });
+
+  scenario('工位 --dir：等合并的单不再被挑中；依赖它的单仍被挡住', {
+    tickets: [{ key: 1, title: '等合并', labels: READY }, { key: 2, title: '依赖它', labels: READY, deps: [1] }]
+  }, (s, view) => {
+    const station = path.join(s.base, 'wt4');
+    plan(s, DONE_STEPS('one.txt'));
+    assert.equal(cli(s, ['dev', '--dir', station, '--max', '1']).code, 0);
+    assert.ok(view(1).labels.includes('afk-merging'), view(1).labels.join(','));
+
+    const calls = seen(s).length;
+    plan(s, []);
+    const r = cli(s, ['dev', '--dir', station]);
+    assert.equal(r.code, 0, r.stderr + r.stdout);
+    assert.equal(seen(s).length, calls, '等合并的不再挑、被挡住的也做不了，一个 Agent 都不叫');
+    assert.deepEqual(view(2).labels, READY, '依赖它的单仍被挡住');
   });
 }

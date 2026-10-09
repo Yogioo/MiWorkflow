@@ -43,9 +43,19 @@ export function imageExt(buf) {
   return 'bin';
 }
 
+// 单子分支名：工人在工位里做完一单，把那一笔挂到 `afk/<工单号>` 上，等 merge 合入主分支。
+// 工单号里的 # / 空格等不能出现在 ref 里，换成 -（三家现在都是干净 ID，这一步只兜底）。
+// 这是 dev 与 merge 之间唯一的命名约定，两边都用它算，别各写一份。
+export const branchOf = (id) => `afk/${String(id).replace(/[^\w.-]+/g, '-')}`;
+
 // ── git ───────────────────────────────────────────────────────────────────
 export function git(argv, cwd) {
   return execFileSync('git', argv, {
     cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
   });
+}
+
+// 跑一条 git、失败就交回 null（问「有没有」而不是「必须有」的场合用它）
+export function gitOrNull(argv, cwd) {
+  try { return git(argv, cwd); } catch { return null; }
 }

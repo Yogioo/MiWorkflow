@@ -1,5 +1,6 @@
 // 工单源接口：改工单状态。beads 实现：认领（claimed）/ 完成关单（done）/ 未推送留人处理（unpushed）/ 失败待人看（failed）/
-// Agent 连接失败释放（released：摘认领、不贴失败、保留 ready）。标签取自 source.mjs 的 LABELS；
+// Agent 连接失败释放（released：摘认领、不贴失败、保留 ready）/ 等合并（merging：工人在工位里交了单子分支，
+// 摘认领、贴 afk-merging、不关单——不算交付，依赖它的单仍被挡住）。标签取自 source.mjs 的 LABELS；
 // 状态跟着标签走：认领改 in_progress，失败 / 释放改回 open，完成 bd close。
 // 评论正文由调用方给整段：comment 在前、commentFile（回帖稿）在后，原样发；两样都没给才用 DEFAULT_COMMENT 的一句话。
 // 每段评论开头贴一个状态标记（[miworkflow:done] 等），工单源靠它判定「有效接单」（见 _claim.mjs）。
@@ -22,7 +23,8 @@ const DEFAULT_COMMENT = {
   done: (a) => `提交：${a.sha || '(未记录)'}`,
   unpushed: (a) => `本地提交（未推送）：${a.sha || '(未记录)'}`,
   failed: () => 'afk failed',
-  released: () => 'Agent 连接失败，已回滚并释放，下轮重做'
+  released: () => 'Agent 连接失败，已回滚并释放，下轮重做',
+  merging: (a) => `提交 ${a.sha || '(未记录)'} 在本地分支 ${a.branch || '(未记录)'}，等合并`
 };
 
 await main(async () => {
@@ -32,7 +34,7 @@ await main(async () => {
   const id = issueId(args.id);
   const ref = refOf(id);
   if (!['claimed', ...Object.keys(DEFAULT_COMMENT)].includes(action)) {
-    throw new Error(`不认识的 action：${action}（claimed / done / unpushed / failed / released）`);
+    throw new Error(`不认识的 action：${action}（claimed / done / unpushed / failed / released / merging）`);
   }
   // 工人名（接单评论里带）：调用方（dev）按 config.mjs 传进来，单独手动跑就用缺省
   const worker = String(args.worker ?? '').trim() || defaultWorker(projectDirOf(args.cwd));
@@ -60,7 +62,9 @@ await main(async () => {
     unpushed: () => [COMMENT],
     failed: () => [COMMENT, add(LABELS.failed), remove(LABELS.claimed), status('open')],
     // Agent 基础设施故障：摘认领、不贴失败、保留 ready，下轮自动重做
-    released: () => [COMMENT, remove(LABELS.claimed), status('open')]
+    released: () => [COMMENT, remove(LABELS.claimed), status('open')],
+    // 工位交单：摘认领、贴等合并；不关单、状态不改（不算交付）
+    merging: () => [COMMENT, add(LABELS.merging), remove(LABELS.claimed)]
   }[action]();
 
   const desc = plan.map((a) => `bd ${a.join(' ')}`);
@@ -94,7 +98,7 @@ await main(async () => {
     runPlan(plan);
   }
 
-  const label = { claimed: `接单（${worker}）`, done: '完成关单', unpushed: '记录未推送', failed: '标记失败', released: '释放（下轮重做）' }[action];
+  const label = { claimed: `接单（${worker}）`, done: '完成关单', unpushed: '记录未推送', failed: '标记失败', released: '释放（下轮重做）', merging: '标记等合并' }[action];
   emit({ status: 'ok', say: `${ref} ${label}`, data: { id, ref, did: desc } });
 
   // 校验：没有任何机器标签，也没有还有效的接单评论

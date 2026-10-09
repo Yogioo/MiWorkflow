@@ -7,7 +7,8 @@
 // 不许带 AI 署名（钩子或全局配置加进来的 Co-authored-by / Made-with 等），不合规判失败（committed=false），交给调用方回滚。
 //
 // 不给 baseSha（旧用法）：工作区已经干净不当失败，直接用当前 HEAD 走推送（2026-09-29 实遇，TODO B7）。
-// 入：{ message, body?, push?, cwd?, baseSha?, dryRun? }
+// 给 branch（工位用法）：提交后把这一笔挂到本地单子分支上（同名分支直接覆盖），交给 merge 合入；推不推由 push 单独决定。
+// 入：{ message, body?, push?, cwd?, baseSha?, branch?, dryRun? }
 // 出：{ status, say, data: { committed, pushed, sha, already, squashed } }
 import { main, readStdin, emit, git } from './_lib.mjs';
 
@@ -80,6 +81,9 @@ await main(async () => {
       return;
     }
   }
+
+  // 单子分支：工位做完把这一笔交出去（一张单一个分支，各自从最新主分支拉出；上次没合成留下的同名分支直接覆盖）
+  if (args.branch) git(['branch', '-f', args.branch, sha], dir);
 
   if (args.push) {
     try {

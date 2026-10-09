@@ -27,12 +27,13 @@ export function defineTicketContract(src) {
       { key: 3, title: '没排队' },
       { key: 4, title: '被挡住', labels: READY, deps: [3] },
       { key: 5, title: '认领中', labels: [...READY, 'afk-claimed'] },
-      { key: 6, title: '失败过', labels: [...READY, 'afk-failed'] }
+      { key: 6, title: '失败过', labels: [...READY, 'afk-failed'] },
+      { key: 7, title: '等合并', labels: [...READY, 'afk-merging'] }
     ]
   }, (s) => {
     const r = runScript(s, 'ticket_ready', {});
     assert.equal(r.status, 'ok', r.say);
-    assert.deepEqual(r.data.ready.map((t) => t.id), [src.id(1), src.id(2)], '按工单号排序、带机器标签的不入队');
+    assert.deepEqual(r.data.ready.map((t) => t.id), [src.id(1), src.id(2)], '按工单号排序、带机器标签的不入队（等合并的单也不列）');
     for (const t of r.data.ready) {
       assert.deepEqual(Object.keys(t).sort(), ['id', 'priority', 'ref', 'title']);
       assert.equal(typeof t.id, 'string');
@@ -188,6 +189,25 @@ export function defineTicketContract(src) {
       [src.id(1), src.ref(1), 'issue 1'],
       [src.id(3), src.ref(3), 'issue 3']
     ]);
+  });
+
+  contract('ticket_mark merging：摘 afk-claimed、贴 afk-merging、评论写明分支；不算交付（不关单，依赖它的单仍被挡住）', {
+    tickets: [{ key: 1, title: '等合并', labels: READY }, { key: 2, title: '依赖它', labels: READY, deps: [1] }]
+  }, (s, view) => {
+    runScript(s, 'ticket_mark', { id: src.id(1), action: 'claimed', worker: 'wt1' });
+    const r = runScript(s, 'ticket_mark', { id: src.id(1), action: 'merging', sha: 'abc1234', branch: `afk/${src.id(1)}` });
+    assert.equal(r.status, 'ok', r.say);
+
+    const t = view(1);
+    assert.equal(t.closed, false, '等合并不关单');
+    assert.ok(t.labels.includes('afk-merging') && !t.labels.includes('afk-claimed'), t.labels.join(','));
+    assert.ok(!t.labels.includes('afk-delivered'), '等合并不算交付');
+    assert.ok(t.comments.at(-1).includes('abc1234') && t.comments.at(-1).includes(`afk/${src.id(1)}`), t.comments.join('\n'));
+
+    const q = runScript(s, 'ticket_ready', {});
+    assert.equal(q.status, 'ok', q.say);
+    assert.ok(!q.data.ready.some((x) => x.id === src.id(1)), '等合并的单不再被挑中');
+    assert.ok(q.data.blocked.some((x) => x.id === src.id(2) && x.reason.includes(src.ref(1))), JSON.stringify(q.data.blocked));
   });
 
   contract('工单系统一直 5xx：ticket_ready / ticket_view / ticket_mark 出 failed + data.transient', {
