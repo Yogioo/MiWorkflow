@@ -186,6 +186,7 @@ export const CONFIG = (verify, rounds, push, retryDelays = [0, 0], review = 'alw
     AGENT_IDLE_SEC: idleSec,
     AGENT_KILL_LIMIT: killLimit,
     MERGE_FAIL_LIMIT: 3,
+    GIT_RETRY_DELAYS: [0, 0],
     DISCUSS_IDLE_MAX_SEC: 600,
     // 退避给测试自己控：0 = 关掉，不然连着跑两次 dev 的第二轮会被上一轮队列空记下的退避拦住
     DEV_IDLE_MAX_SEC: devIdleSec,

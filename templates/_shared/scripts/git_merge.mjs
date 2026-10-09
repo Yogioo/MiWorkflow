@@ -5,14 +5,14 @@
 // 动作（都作用在主目录里）：
 //   queue   列 `afk/*` 分支，按 tip 的提交时间升序（先交先合）——工单号就是分支名去掉 afk/ 前缀
 //   status  主分支名、当前分支、本地/远端主分支 sha、工作区是否干净、有没有分叉、有没有 rebase 没结束
-//   fetch   git fetch origin
+//   fetch   git fetch origin；连不上（网络）= failed + data.transient，任务据此按 GIT_RETRY_DELAYS 重试
 //   sync    切到本地主分支并快进到 origin 上那份（分叉就 failed，交给人）
 //   rebase  切到单子分支、rebase 到主分支；冲突不算错：ok + conflict:true + 冲突文件，交给合并 Agent；
 //           rebased:false = 主分支是分支的祖先（rebase 是空操作，工人开工以来主分支没动过）
 //   continue Agent 解完冲突后接着走 rebase（还有冲突就再交回 conflict:true）
 //   amend   把 Agent 修验证时改的东西并进那一笔提交（一张单还是一笔）
 //   ff      切到主分支、快进到单子分支
-//   push    推 origin 上主分支；失败 = failed + data.pushed:false（本地保留，任务据此整轮停下）
+//   push    推 origin 上主分支；失败 = failed + data.pushed:false（本地保留，任务据此整轮停下）；连不上另带 data.transient
 //   abort   回到合并前：结束 rebase → 切回主分支 → reset --hard 到 sha → 分支备份成 ref → 删掉单子分支
 //   drop    删掉单子分支
 // 入：{ action, cwd?, branch?, main?, sha?, backup?, drop?, dryRun? }
@@ -31,6 +31,15 @@ const isAncestor = (a, b, cwd) => Boolean(a && b) && gitOrNull(['merge-base', '-
 // 本地只落后（能快进）或只领先都不算分叉，两边各有对方没有的提交才算
 const diverged = (local, remote, cwd) => Boolean(local && remote) && !isAncestor(local, remote, cwd) && !isAncestor(remote, local, cwd);
 const firstLine = (text) => String(text ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+// 连 origin 时网络层的失败（握手被掐、超时、DNS、连接被重置）：重试可能就好。
+// 被拒（non-fast-forward、权限、仓库不存在）不算——重试也一样
+const NETWORK = /kex_exchange_identification|connection (?:abort|reset|refused|closed|timed out)|timed out|could not resolve host|temporary failure in name resolution|network is unreachable|no route to host|remote end hung up unexpectedly|early eof|rpc failed|ssl_error|gnutls|failed to connect/i;
+const networkError = (err) => NETWORK.test(String(err?.stderr || err?.message || ''));
+// 报错的那一行：跳过 ssh 的 `** WARNING` 横幅、git 的 `warning:` 和 push 开头的 `To <远端>`，不然真正的原因被挤到后面
+const gitErrorLine = (err) => {
+  const lines = String(err?.stderr || err?.message || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  return lines.find((l) => !/^(\*\*|warning:|To )/i.test(l)) ?? lines[0] ?? '';
+};
 
 // 主分支名：origin/HEAD → 主目录当前分支（跟 git_worktree 同一套认法，不加配置项）
 function mainBranchOf(repo) {
@@ -127,9 +136,14 @@ await main(async () => {
     try {
       git(['fetch', 'origin'], repo);
     } catch (err) {
-      const e = new Error(`fetch 失败：${firstLine(err.stderr || err.message)}`);
-      e.transient = true;
-      throw e;
+      const transient = networkError(err);
+      emit({
+        status: 'failed',
+        say: transient ? '连不上 origin，fetch 没成' : 'fetch 失败',
+        error: `fetch 失败：${gitErrorLine(err)}`,
+        data: { transient }
+      });
+      return;
     }
     emit({ status: 'ok', say: '已 fetch origin', data: { remote: refSha(`refs/remotes/origin/${mainBranch}`, repo) } });
     return;
@@ -241,8 +255,8 @@ await main(async () => {
       emit({
         status: 'failed',
         say: `已合到本地 ${mainBranch}（${sha.slice(0, 7)}），但推送失败，留给人处理`,
-        error: `push_failed: ${firstLine(err.stderr || err.message)}`,
-        data: { pushed: false, sha, main: mainBranch }
+        error: `push_failed: ${gitErrorLine(err)}`,
+        data: { pushed: false, sha, main: mainBranch, transient: networkError(err) }
       });
       return;
     }

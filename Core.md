@@ -833,7 +833,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
   `--issue` 人点名也走这套（被别的工人接了就报错退出，不强做）。锁以后换成远端 ref 就能扩到多机器，流程不变。
 - **工人重启清理**：`dev` 开跑前用 `ticket_ready { claims: true }` 列出贴了 `afk-claimed` 的单，从 `ticket_view` 的 `claim` 里认有效接单人是自己、还没交付的那些，回滚工位、发释放评论、摘 `afk-claimed`，让它重新排队。工人挂了不重启时由人摘标签（不做超时接管）。
 - **等合并**（`ticket_mark merging`）：工人在**工位**（`dev --dir <目录>`：git 操作、Agent 工作目录、`VERIFY` 都在工位里，任务 / 配置 / 日志仍在主目录）里做完，把那一笔挂到本地单子分支 `afk/<工单号>`（不推 origin、不碰主分支），摘 `afk-claimed`、贴 `afk-merging`；**不算交付**，依赖它的单仍被挡着，合入交给 `merge`。
-- **`merge` 任务**（`templates/_shared/tasks/merge.mjs`，在主目录跑，是工位产出唯一的合入口）：主目录整个干净 → `fetch` → 本地主分支快进到 origin 上那份（分叉就停下交给人）→ 取本地 `afk/*` 分支里**先交的那张**（按提交时间，`afk-merging` 标签只是给人看的）→ `rebase` 到主分支（冲突交合并 Agent：`config.mjs` 的 `MERGER` / `prompts/merge.md`，只解冲突、两边意图都保留）→ 验证（工人开工以来主分支没动过就跳过，动过跑 `VERIFY`，不过交回合并 Agent 修，最多 `ROUNDS` 轮）→ 快进主分支 → 推 origin → **推送成功才** `ticket_mark done`（GitHub / beads 关单，TAPD 贴 `afk-delivered`）→ 删掉单子分支。合并失败：回到合并前、单子分支备份成 `refs/afk-merge-backup/*` 后删掉、`requeued` 退回就绪队列（工人在最新主分支上重做），同一张单满 `MERGE_FAIL_LIMIT` 次贴 `afk-failed` 转人工；推送失败与 `dev` 同款：本地保留、不关单、整轮停下。
+- **`merge` 任务**（`templates/_shared/tasks/merge.mjs`，在主目录跑，是工位产出唯一的合入口）：主目录整个干净 → `fetch` → 本地主分支快进到 origin 上那份（分叉就停下交给人）→ 取本地 `afk/*` 分支里**先交的那张**（按提交时间，`afk-merging` 标签只是给人看的）→ `rebase` 到主分支（冲突交合并 Agent：`config.mjs` 的 `MERGER` / `prompts/merge.md`，只解冲突、两边意图都保留）→ 验证（工人开工以来主分支没动过就跳过，动过跑 `VERIFY`，不过交回合并 Agent 修，最多 `ROUNDS` 轮）→ 快进主分支 → 推 origin → **推送成功才** `ticket_mark done`（GitHub / beads 关单，TAPD 贴 `afk-delivered`）→ 删掉单子分支。合并失败：回到合并前、单子分支备份成 `refs/afk-merge-backup/*` 后删掉、`requeued` 退回就绪队列（工人在最新主分支上重做），同一张单满 `MERGE_FAIL_LIMIT` 次贴 `afk-failed` 转人工；`fetch` / 推送连不上 origin（网络抖动）先按 `GIT_RETRY_DELAYS` 退避重试；推送失败与 `dev` 同款：本地保留、不关单、整轮停下。
 
 讨论流程同理，也是固定四个脚本名；`discuss` 任务只调它们，不知道背后是哪家。启动时用只校验用法查 `DISCUSS`，配错就不启动（§10.1）。
 任务认的是**规范形状**，源负责与自家存储形态互转——spec 放哪（GitHub：正文的机器区域；TAPD：一条标记评论）、
@@ -869,7 +869,7 @@ AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 
   下轮接单的 Agent 从工单快照的评论里读到诊断，`prompts/dev.md` 要它换个做法。第几次 = 快照里以这句开头的评论数 + 1（卡死、超时合并计数），不另加标签；
   满 `AGENT_KILL_LIMIT` 次（缺省 3）改为 `failed` 转人工——评论只能降低重犯的概率，次数上限才挡得住死循环。诊断没跑成，评论照发，只是没有诊断稿。
 - **机器标签**（名字在各工单源的 `source.mjs`，可改）：入队 `ready-for-agent`；`afk-claimed`（认领中）/ `afk-delivered`（已交付）/ `afk-failed`（失败）。依赖满足 = 前置单贴了 `afk-delivered` 或已关单（TAPD：已到结束类状态）。
-- 每个工单源带 `source.mjs`：这家的常量 + `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY` + `commitMessage(ticket, { type, summary })`；共用的 `config.mjs` 只留 `DEV / REVIEWER / REVIEW / VERIFY / ROUNDS / PUSH / AGENT_RETRY_DELAYS / AGENT_IDLE_SEC / AGENT_KILL_LIMIT / DISCUSS_IDLE_MAX_SEC`。
+- 每个工单源带 `source.mjs`：这家的常量 + `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY` + `commitMessage(ticket, { type, summary })`；共用的 `config.mjs` 只留 `DEV / REVIEWER / REVIEW / VERIFY / ROUNDS / PUSH / AGENT_RETRY_DELAYS / AGENT_IDLE_SEC / AGENT_KILL_LIMIT / GIT_RETRY_DELAYS / DISCUSS_IDLE_MAX_SEC`。
 
 已实现的工单源：
 `templates/github/` = GitHub（`ticket_*` 脚本、讨论流程的 `discuss_*` 脚本、`source.mjs`；配合共用的 `dev` 与 `discuss`：认领 issue → 开发 →（要审查的单子）审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`；讨论单贴 `agent-discuss` → 评论区逐轮追问 → `/spec` 写进正文 → `/tickets` 建开发单，见 TODO C3、F2、F4）。

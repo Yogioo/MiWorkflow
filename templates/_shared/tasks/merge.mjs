@@ -11,6 +11,7 @@
 // 合并失败（冲突解不了 / 验证修不好）：回到合并前 → 单子分支备份成 ref 后删掉 → 摘 afk-merging、评论写明原因、退回就绪队列
 // （ticket_mark requeued），工人在最新主分支上重做；同一张单满 MERGE_FAIL_LIMIT 次就贴 afk-failed 转人工
 // （次数按工单快照里这类评论的条数算，做法同 dev 的「Agent 被强制结束」计数）。
+// fetch / push 连不上 origin（网络抖动）：按 GIT_RETRY_DELAYS 退避重试，用完再按失败处理。
 // 推送失败：本地主分支保留、不关单、整轮停下（同 dev 的推送失败）。
 // 合并 Agent 没跑成（连不上 / 卡死 / 超时）：退回队列但不计入失败次数，整轮停下，下轮重来。
 //
@@ -23,7 +24,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { MERGER, VERIFY, ROUNDS, AGENT_RETRY_DELAYS, AGENT_IDLE_SEC, MERGE_FAIL_LIMIT } from '../config.mjs';
+import { MERGER, VERIFY, ROUNDS, AGENT_RETRY_DELAYS, AGENT_IDLE_SEC, MERGE_FAIL_LIMIT, GIT_RETRY_DELAYS } from '../config.mjs';
 
 export const title = '合并：单子分支 rebase → 解冲突 → 验证 → 推送 → 关单';
 
@@ -38,6 +39,16 @@ export default async function ({ script: rawScript, agent, args, stopping = () =
   if (pre.status !== 'ok') throw new Error(`看不了 git 状态：${pre.error}`);
   const root = pre.data.root || PROJECT;
   const g = (action, extra = {}) => script('git_merge', { action, cwd: root, ...extra });
+  // 连 origin 的动作（fetch / push）：网络抖动（data.transient）按 GIT_RETRY_DELAYS 退避重试，被拒的原样交回
+  const remote = async (action, extra) => {
+    for (let i = 0; ; i++) {
+      const r = await g(action, extra);
+      if (r.status === 'ok' || r.data?.transient !== true || i >= GIT_RETRY_DELAYS.length) return r;
+      const wait = GIT_RETRY_DELAYS[i];
+      console.error(`  ${action} 连不上 origin，第 ${i + 1} 次重试（等 ${Math.round(wait / 1000)} 秒）：${r.error}`);
+      await sleep(wait);
+    }
+  };
 
   // 启动校验（§10.1）：配置不对就不启动——不动 git、不改工单、不叫 Agent；干跑也一样查
   await checkConfig(agent);
@@ -60,7 +71,7 @@ export default async function ({ script: rawScript, agent, args, stopping = () =
 
   if (!st.data.clean) throw new Error(`主目录不干净（${st.data.dirty.length} 处改动，先处理干净再合）：${st.data.dirty.slice(0, 5).join('、')}${st.data.dirty.length > 5 ? ' 等' : ''}`);
 
-  const ctx = { script, agent, args, root, g, main };
+  const ctx = { script, agent, args, root, g, remote, main };
   const max = args.max ? Number(args.max) : Infinity;
   const maxFailures = args['max-failures'] ? Number(args['max-failures']) : 3;
   let merged = [];
@@ -77,8 +88,11 @@ export default async function ({ script: rawScript, agent, args, stopping = () =
     const now = await g('status');
     if (now.status !== 'ok') throw new Error(`看不了仓库：${now.error}`);
     if (!now.data.clean) throw new Error(`主目录不干净（${now.data.dirty.length} 处改动，先处理干净再合）：${now.data.dirty.slice(0, 5).join('、')}`);
-    const f = await g('fetch');
-    if (f.status !== 'ok') throw new Error(`fetch 失败：${firstLine(f.error)}`);
+    const f = await remote('fetch');
+    if (f.status !== 'ok') {
+      const tried = f.data?.transient && GIT_RETRY_DELAYS.length ? `（重试 ${GIT_RETRY_DELAYS.length} 次仍连不上 origin，多半是网络问题，稍后重跑）` : '';
+      throw new Error(`${f.error}${tried}`);
+    }
     const sy = await g('sync');
     if (sy.status !== 'ok') throw new Error(`主分支对不上 origin：${firstLine(sy.error)}`);
     if (sy.data?.moved) console.log(`主分支 ${sy.data.before?.slice(0, 7)} → ${sy.data.sha.slice(0, 7)}（跟上了 origin）`);
@@ -193,7 +207,7 @@ async function mergeOne(next, ctx) {
   const ff = await g('ff', { branch, main });
   if (ff.status !== 'ok') return requeue(t, branch, baseMain, `主分支快进失败：${firstLine(ff.error)}`, reply, ctx);
   const sha = ff.data.sha;
-  const push = await g('push', { main });
+  const push = await ctx.remote('push', { main });
   if (push.status !== 'ok' || push.data?.pushed === false) {
     const file = await report(t, ctx, notes, {
       head: `已合到本地 ${main}（${short(sha)}），但推送失败：本地提交保留，工单保持打开，等人处理。`,

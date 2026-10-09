@@ -4,9 +4,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { plan, seen, cli, git, gitOut, runScript } from './github-template.mjs';
+
+const FAKE_SSH = fileURLToPath(new URL('./fake-ssh.mjs', import.meta.url));
 
 const READY = ['ready-for-agent'];
 const MERGING = ['afk-merging'];
@@ -222,6 +225,58 @@ export function defineMergeScenarios(src) {
     assert.equal(r.code, 0, r.stderr + r.stdout);
     const subjects = gitOut(['log', '--pretty=%s', '-2', 'origin/main'], s.root).split('\n');
     assert.deepEqual(subjects, [`${src.commitPrefix(1)}改一下`, '远端的一笔'], subjects.join(' / '));
+    assertDelivered(view(1));
+  });
+
+  // origin 改走假 ssh：fetch / push 各自前 n 次连接被掐断（模拟网络抖动），之后正常
+  function flakyOrigin(s, fails) {
+    const file = path.join(s.base, 'ssh-fails.json');
+    writeFileSync(file, JSON.stringify(fails));
+    const bare = path.join(s.base, 'origin.git').replace(/\\/g, '/');
+    git(['remote', 'set-url', 'origin', `ssh://fake/${bare}`], s.root);
+    s.env.GIT_SSH_COMMAND = `"${process.execPath.replace(/\\/g, '/')}" "${FAKE_SSH.replace(/\\/g, '/')}"`;
+    s.env.FAKE_SSH_FAILS = file;
+    return () => JSON.parse(readFileSync(file, 'utf8'));
+  }
+
+  scenario('fetch 连不上 origin（ssh 握手被掐）→ 按 GIT_RETRY_DELAYS 重试，连上后照常合入', {
+    tickets: [{ key: 1, labels: READY }], push: true
+  }, (s, view) => {
+    deliver(s, 1, { 'note.txt': 'hi\n' });
+    const left = flakyOrigin(s, { fetch: 2 });
+    const r = cli(s, ['merge']);
+    assert.equal(r.code, 0, r.stderr + r.stdout);
+    assert.equal(left().fetch, 0, '两次被掐都重试过了');
+    assert.match(r.stderr, /fetch 连不上 origin，第 2 次重试/, r.stderr);
+    assert.equal(gitOut(['log', '-1', '--pretty=%s', 'origin/main'], s.root), `${src.commitPrefix(1)}改一下`);
+    assertDelivered(view(1));
+  });
+
+  scenario('fetch 一直连不上 → 重试用完停下，报错只说一遍「fetch 失败」，不动分支、不改工单', {
+    tickets: [{ key: 1, labels: READY }], push: true
+  }, (s, view) => {
+    deliver(s, 1, { 'note.txt': 'hi\n' });
+    flakyOrigin(s, { fetch: 99 });
+    const r = cli(s, ['merge']);
+    assert.equal(r.code, 1);
+    const text = r.stderr + r.stdout;
+    assert.match(text, /fetch 失败：kex_exchange_identification/, text);
+    assert.doesNotMatch(text, /fetch 失败：fetch 失败/, text);
+    assert.match(text, /重试 2 次仍连不上 origin/, text);
+    assert.deepEqual(branches(s), [branchOf(1)], '分支不动');
+    assert.deepEqual(view(1).labels, [...READY, ...MERGING], '工单不动');
+  });
+
+  scenario('push 连不上 origin → 重试后推上去、关单', {
+    tickets: [{ key: 1, labels: READY }], push: true
+  }, (s, view) => {
+    deliver(s, 1, { 'note.txt': 'hi\n' });
+    const left = flakyOrigin(s, { push: 1 });
+    const r = cli(s, ['merge']);
+    assert.equal(r.code, 0, r.stderr + r.stdout);
+    assert.equal(left().push, 0);
+    assert.match(r.stderr, /push 连不上 origin，第 1 次重试/, r.stderr);
+    assert.equal(gitOut(['log', '-1', '--pretty=%s', 'main'], path.join(s.base, 'origin.git')), `${src.commitPrefix(1)}改一下`, '远端拿到这一笔');
     assertDelivered(view(1));
   });
 

@@ -186,7 +186,7 @@ miworkflow stop dev --dir wt1         # 只停 wt1 这一个：做完手头这�
 
 `merge` 在主目录里当唯一的合入口（不带 `--dir` 的老式 `dev` 也可以并存，但两者别同时开）：取本地所有 `afk/*` 分支，
 **按提交时间先交先合**（`afk-merging` 标签只是给人看的）。每轮开始要求主目录整个干净，再 fetch、把本地主分支快进到 `origin` 上那份
-（两边分叉就停下交给人）。每张单：`git rebase` 到主分支 → 冲突交给合并 Agent（`config.mjs` 的 `MERGER`，提示词 `prompts/merge.md`，
+（只是落后就快进，两边分叉才停下交给人；fetch / 推送碰上网络抖动按 `config.mjs` 的 `GIT_RETRY_DELAYS` 重试）。每张单：`git rebase` 到主分支 → 冲突交给合并 Agent（`config.mjs` 的 `MERGER`，提示词 `prompts/merge.md`，
 两边意图都要保留）→ 验证（工人开工以来主分支没动过就跳过，动过跑 `VERIFY`，不过交回合并 Agent 修，最多 `ROUNDS` 轮）→
 快进主分支 → 推 `origin` → **推送成功才关单**，然后删掉单子分支。
 
