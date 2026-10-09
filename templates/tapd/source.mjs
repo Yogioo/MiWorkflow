@@ -9,6 +9,9 @@ export const WORKSPACE_ID = '';
 // 评论人：tapd-cli 写评论要它，缺了在动标签之前就报错。留空 = 读环境变量 TAPD_NPC_ROLE。
 export const COMMENTER = process.env.TAPD_NPC_ROLE ?? '';
 
+// discuss 的 /tickets 建出来的开发单挂给谁（TAPD 处理人）：缺省同评论人（跑这套工作流的那个人）；'' = 不填。
+export const TICKET_OWNER = COMMENTER;
+
 // 需求约定。机器标签（claimed / delivered / failed）两家工单源同名；带任一机器标签的不入队。
 // TAPD 的 label 多值用 | 分隔，写逗号会被当成一个新标签名。
 export const LABELS = {

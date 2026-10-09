@@ -187,10 +187,10 @@ test('tickets_create：建子需求（parent_id、标签、优先级）+ 写前�
     const st = readTapdState(f);
     const kids = st.stories.filter((s) => s.parent_id === D).sort((a, b) => (a.id < b.id ? -1 : 1));
     assert.equal(kids.length, 2);
-    assert.deepEqual(kids.map((s) => [s.name, s.label, s.priority_label]), [
-      ['做甲', 'ready-for-agent|needs-review', '高'],
-      ['做乙', 'ready-for-agent', '低']
-    ]);
+    assert.deepEqual(kids.map((s) => [s.name, s.label, s.priority_label, s.owner]), [
+      ['做甲', 'ready-for-agent|needs-review', '高', 'bot-npc'],
+      ['做乙', 'ready-for-agent', '低', 'bot-npc']
+    ], '处理人挂给跑工作流的人（缺省同评论人）');
     assert.equal(kids[0].description, '## What to build\n\n甲的行为', '正文原样给 description（tapd-cli 自己转 HTML）');
     // 依赖落成原生前后置关系：t1(due) → t2(begin)
     assert.deepEqual(st.relations, [{

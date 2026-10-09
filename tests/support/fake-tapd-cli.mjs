@@ -47,7 +47,7 @@ if (entity === 'story' && action === 'list') {
   const s = {
     id: String(maxId + 1n), name: params.name ?? '', label: params.label ?? '',
     priority: params.priority_label ?? '', priority_label: params.priority_label ?? '',
-    description: params.description ?? '', status: 'open', owner: '',
+    description: params.description ?? '', status: 'open', owner: params.owner ?? '',
     workspace_id: params.workspace_id ?? '1000', parent_id: params.parent_id ?? '0'
   };
   state.stories.push(s);

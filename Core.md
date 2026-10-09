@@ -848,6 +848,7 @@ AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 
 
 拆单与开发一样：Agent 不碰工单系统，只交 `data.tickets` 结构（`key` / `title` / `body` / `priority` / `review` / `blockedBy`），
 建单与依赖由 `tickets_create` 落地——TAPD 的依赖只能直连 OpenAPI 写（`tapd-cli` 没封装），Agent 做不了（TODO F4）。
+TAPD 建出来的开发单处理人填 `source.mjs` 的 `TICKET_OWNER`（缺省同评论人），回查时一并核对。
 
 - **工单快照**（读）：正文 + 全部评论转成 Markdown，写到 `logs/<runId>/tickets/<id>/ticket.md`，图片下到同目录 `images/`、相对路径引用；Agent 的 `inputs` 只给路径，自己读。
 - **回帖稿**（写）：`dev` 每次调 Agent 前分配 `logs/<runId>/tickets/<id>/reply-<n>.md`，提示词要求**必写**（写给没看过过程的人：做了什么、关键取舍、怎么验证的、遗留风险；图片放同目录、相对路径）。

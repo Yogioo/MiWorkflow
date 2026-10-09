@@ -7,7 +7,7 @@ import { main, readStdin, emit } from './_lib.mjs';
 import { tapdJson, labelsOf } from './_tapd.mjs';
 import { normalizeTickets, orderTickets, findCycle } from './_tickets.mjs';
 import { predecessorsOf, saveRelations, storyOf } from './_discuss.mjs';
-import { WORKSPACE_ID, COMMENTER, LABELS, refOf } from '../source.mjs';
+import { WORKSPACE_ID, COMMENTER, TICKET_OWNER, LABELS, refOf } from '../source.mjs';
 
 // TAPD 的优先级只有 高 / 中 / 低 三档，P0 与 P1 会并成 高（dev 队列按这个排）
 const PRIORITY_LABEL = { P0: '高', P1: '高', P2: '中', P3: '低', P4: '低' };
@@ -32,7 +32,8 @@ await main(async () => {
     const labels = [LABELS.ready, ...(t.review ? [LABELS.review] : [])];
     const r = tapdJson(['story', 'add', `workspace_id=${ws}`, `name=${t.title}`,
       `description=${t.body || '（Agent 没写正文）'}`, `parent_id=${parentId}`,
-      `label=${labels.join('|')}`, `priority_label=${PRIORITY_LABEL[t.priority] ?? '中'}`]);
+      `label=${labels.join('|')}`, `priority_label=${PRIORITY_LABEL[t.priority] ?? '中'}`,
+      ...(TICKET_OWNER ? [`owner=${TICKET_OWNER}`] : [])]);
     const id = String(r.data?.Story?.id ?? '').trim();
     if (!id) throw new Error(`建开发单没拿到需求号：${t.title}`);
     made.set(t.key, id);
@@ -50,7 +51,7 @@ await main(async () => {
     const id = made.get(t.key);
     try {
       const s = storyOf(id);
-      kids.push({ id, review: t.review, parent: String(s.parent_id ?? '').trim(), labels: labelsOf(s) });
+      kids.push({ id, review: t.review, parent: String(s.parent_id ?? '').trim(), labels: labelsOf(s), owner: String(s.owner ?? '') });
     } catch (err) {
       check.push(`${refOf(id)} 建完读不到：${String(err?.message ?? err).split('\n')[0]}`);
     }
@@ -61,6 +62,10 @@ await main(async () => {
     if (k.parent !== parentId) check.push(`${refOf(k.id)} 没挂在讨论单 ${refOf(parentId)} 下（parent_id=${k.parent || '空'}）`);
     if (!k.labels.includes(LABELS.ready)) check.push(`${refOf(k.id)} 没贴 ${LABELS.ready}`);
     if (k.review && !k.labels.includes(LABELS.review)) check.push(`${refOf(k.id)} 要审查却没贴 ${LABELS.review}`);
+    // 处理人多值用 ; 分隔（TAPD 回读常带结尾的 ;）
+    if (TICKET_OWNER && !k.owner.split(';').map((o) => o.trim()).includes(TICKET_OWNER)) {
+      check.push(`${refOf(k.id)} 处理人不是 ${TICKET_OWNER}（回读是「${k.owner || '空'}」）`);
+    }
     let preds;
     try {
       preds = await predecessorsOf(ws, k.id);
