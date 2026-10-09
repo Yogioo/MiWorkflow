@@ -1,6 +1,6 @@
 // 工单源接口：改工单状态。GitHub 实现：认领（claimed）/ 完成关单（done）/ 未推送留人处理（unpushed）/ 失败待人看（failed）/
 // Agent 连接失败释放（released：摘认领、不贴失败、保留 ready）/ 等合并（merging：工人在工位里交了单子分支，
-// 摘认领、贴 afk-merging、不关单——不算交付，依赖它的单仍被挡住）。
+// 摘认领、贴 afk-merging、不关单——不算交付，依赖它的单仍被挡住）/ 合并失败退回队列（requeued：摘 afk-merging、贴回 ready）。
 // 标签取自 source.mjs 的 LABELS；要贴的标签仓库里没有时先 `gh label create` 再贴，建不出来就明确报错。
 // 评论正文由调用方给整段：comment 在前、commentFile（回帖稿）在后，原样发；两样都没给才用 DEFAULT_COMMENT 的一句话。
 // 每段评论开头贴一个状态标记（[miworkflow:done] 等），工单源靠它判定「有效接单」（见 _claim.mjs）。
@@ -25,6 +25,7 @@ const DEFAULT_COMMENT = {
   unpushed: (a) => `本地提交（未推送）：${a.sha || '(未记录)'}`,
   failed: () => 'afk failed',
   released: () => 'Agent 连接失败，已回滚并释放，下轮重做',
+  requeued: () => '合并失败，已回到合并前并退回就绪队列，工人在最新主分支上重做',
   merging: (a) => `提交 ${a.sha || '(未记录)'} 在本地分支 ${a.branch || '(未记录)'}，等合并`
 };
 
@@ -42,7 +43,7 @@ await main(async () => {
   const remove = (label) => ['issue', 'edit', n, '--remove-label', label, ...repoArg];
 
   if (!['claimed', ...Object.keys(DEFAULT_COMMENT)].includes(action)) {
-    throw new Error(`不认识的 action：${action}（claimed / done / unpushed / failed / released / merging）`);
+    throw new Error(`不认识的 action：${action}（claimed / done / unpushed / failed / released / merging / requeued）`);
   }
   let reply = null;
   let comment = null;
@@ -58,14 +59,16 @@ await main(async () => {
   // 接单：先发接单评论、再贴 afk-claimed（中间挂了也还认得出是谁接的）
   const plan = {
     claimed: () => [['issue', 'comment', n, '--body', claimComment(worker), ...repoArg], add(LABELS.claimed)],
-    done: () => [comment, ['issue', 'close', n, ...repoArg], add(LABELS.delivered), remove(LABELS.ready), remove(LABELS.claimed)],
+    done: () => [comment, ['issue', 'close', n, ...repoArg], add(LABELS.delivered), remove(LABELS.ready), remove(LABELS.claimed), remove(LABELS.merging)],
     // 本地提交了但没推出去：不关单、不动标签（保留 claimed 提醒人处理），只留一条评论
     unpushed: () => [comment],
-    failed: () => [comment, add(LABELS.failed), remove(LABELS.claimed)],
+    failed: () => [comment, add(LABELS.failed), remove(LABELS.claimed), remove(LABELS.merging)],
     // Agent 基础设施故障：摘认领、不贴失败、保留 ready，下轮自动重做
     released: () => [comment, remove(LABELS.claimed)],
     // 工位交单：摘认领、贴等合并，不关单——不算交付
-    merging: () => [comment, remove(LABELS.claimed), add(LABELS.merging)]
+    merging: () => [comment, remove(LABELS.claimed), add(LABELS.merging)],
+    // 合并失败：摘等合并、贴回 ready，工人在最新主分支上重做
+    requeued: () => [comment, remove(LABELS.merging), add(LABELS.ready)]
   }[action]();
 
   const desc = plan.map((a) => a.join(' '));
@@ -99,7 +102,7 @@ await main(async () => {
     runPlan(plan);
   }
 
-  const label = { claimed: `接单（${worker}）`, done: '完成关单', unpushed: '记录未推送', failed: '标记失败', released: '释放（下轮重做）', merging: '标记等合并' }[action];
+  const label = { claimed: `接单（${worker}）`, done: '完成关单', unpushed: '记录未推送', failed: '标记失败', released: '释放（下轮重做）', merging: '标记等合并', requeued: '退回就绪队列' }[action];
   emit({ status: 'ok', say: `${ref} ${label}${reply?.warn ? `；${reply.warn}` : ''}`, data: { id: n, ref, did: desc } });
 
   // 校验：没有任何机器标签，也没有还有效的接单评论

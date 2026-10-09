@@ -807,7 +807,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 结果同一个 bug 要在两处各修一遍）。归项目的只有配置：`config.mjs`、`source.mjs` 里一行写完的 `export const`
 （升级时原样保留）、`prompts/local/<dev|review|fix|diagnose>.md`（项目对各 Agent 的补充要求，接到对应提示词的 `{{local}}` 处），
 以及项目自己加的任务 / 脚本；想改模板行为就把它做成一行常量或补充要求，别直接改模板文件，下次升级会被覆盖（有备份）。
-模板的测试留在内核仓库的 `tests/template-*.test.mjs`（假外部命令 / 假 Agent / 临时 git 仓库），保证复制出去的那一刻是好的。`init` 按组合复制：先复制共用模板 `templates/_shared/`（两个任务 `dev` / `discuss`，讨论提示词 `prompts/grilling|spec|tickets.md`，开发提示词 `prompts/dev|review|fix|diagnose.md`，git 脚本、`run_cmd`、`config.mjs`），再复制所选工单源；以 `_` 开头的目录不出现在模板菜单与 `--template` 里。
+模板的测试留在内核仓库的 `tests/template-*.test.mjs`（假外部命令 / 假 Agent / 临时 git 仓库），保证复制出去的那一刻是好的。`init` 按组合复制：先复制共用模板 `templates/_shared/`（三个任务 `dev` / `discuss` / `merge`，讨论提示词 `prompts/grilling|spec|tickets.md`，开发与合并提示词 `prompts/dev|review|fix|diagnose|merge.md`，git 脚本、`run_cmd`、`config.mjs`），再复制所选工单源；以 `_` 开头的目录不出现在模板菜单与 `--template` 里。
 
 工单源的约定就是三个脚本名 + 输入输出（不做抽象层，TODO F2）；`dev` 只调它们，不知道背后是哪家。工单号一律字符串，日志 / 评论 / 提问里用工单引用 `ref`：
 
@@ -815,7 +815,7 @@ AGENTFLOW_HOME=examples node run.mjs demo --who 你
 |---|---|---|
 | `ticket_ready` | `{}` | `{ ready: [{ id, ref, title, priority }], blocked: [{ id, ref, reason }] }`（已排序：优先级 → 工单号） |
 | `ticket_view` | `{ id }` | `{ id, ref, title, file, review }`：写出**工单快照**；`review` 是这张单有没有「要审查」标签 |
-| `ticket_mark` | `{ id, action, commentFile?, comment?, sha? }` | `action` = `claimed` / `done` / `failed` / `unpushed` / `released`（Agent 连接失败：摘认领、不贴失败、保留入队，下轮重做）；评论由调用方给整段（`comment` 在前、`commentFile` 在后，原样发），两样都没给才用一句缺省 |
+| `ticket_mark` | `{ id, action, commentFile?, comment?, sha?, worker?, branch? }` | `action` = `claimed` / `done` / `failed` / `unpushed` / `released`（Agent 连接失败：摘认领、不贴失败、保留入队，下轮重做）/ `merging`（工位交单：摘认领、贴 `afk-merging`，不算交付）/ `requeued`（合并失败：摘 `afk-merging`、贴回入队，工人在最新主分支上重做）；评论由调用方给整段（`comment` 在前、`commentFile` 在后，原样发），两样都没给才用一句缺省 |
 
 三个脚本失败时，若是**工单系统暂时不可用**（5xx、网络、限流，脚本内已退避重试用完），出参 `data` 带 `transient: true`；`dev` 据此整轮停下、不计入失败、不回滚已推送的代码。其他失败不带。
 

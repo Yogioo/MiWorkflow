@@ -830,7 +830,7 @@ REVIEWER 那次完整的 Agent 调用（还要重读项目）是白花的开销�
    （`ticket_view` 多给 `labels` / `claim`、`ticket_mark claimed` 收 `worker` 并按「校验 → 抢锁 → 锁里再校验 → 发接单评论 + 贴标签」写）+ `ticket_ready claims:true`（工人重启清理）+
    `dev` 的接单与重启清理（`config.mjs` 的 `WORKER`，缺省 `<主机名>/<工位目录名>`）；契约测试与三家场景都覆盖抢单、过期锁、`--issue` 撞单、重启清理
 3. J2 工人交单子分支：`dev.mjs` + `config.mjs` 开关 + git 脚本（开工对齐含子模块更新）；三家现有场景原样通过
-4. J3 `merge` 任务 + MergeAgent 提示词 + 场景测试（临时仓库、真开 worktree、假远端）
+4. ✅ J3 `merge` 任务 + MergeAgent 提示词 + 场景测试（临时仓库、真开 worktree、假远端）
 5. 在 DigitDoor 上实测：先用 `new-worktree.sh` 建 2～3 个工位并静音 Unity 噪音，主目录跑 `discuss`、`merge` 和各工位的 `dev --dir`
 
 ## E. 来自 MiCan 的经验（先不做，写明什么时候做）

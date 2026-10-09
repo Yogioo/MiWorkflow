@@ -160,6 +160,28 @@ Agent 不直接碰 GitHub：认领 / 读单 / 标记全由 `.workflow/scripts/` 
 Agent 每次都要写**回帖稿**（同目录的 `reply-<n>.md`，可带图）：做了什么、关键取舍、怎么验证的、遗留风险，提问和失败原因也写这里，由脚本发成评论。
 回帖稿带图时靠 `gh issue comment --attach` 上传，要 `gh` ≥ 2.99.0；版本不够只是图不上传（评论里留占位并提示升级），评论照发。
 
+### 工位与合并：多工人并行，合入只有一个口子
+
+```bash
+miworkflow dev --dir wt1            # 工人在工位里做单：交本地分支 afk/<工单号>、贴 afk-merging（不推 origin、不关单）
+miworkflow merge --every            # 主目录串行合入：一张合完再合下一张
+miworkflow stop dev --dir wt1       # 只停这一个工位
+```
+
+工位是一份长期存在的 git 工作副本（本机 worktree，别的机器是 clone），里面不放 `.workflow/`：任务、配置、日志只有主目录一份。
+主分支自动认 `origin/HEAD`（不加配置项）；每张单开工前把工位对齐到最新的本地主分支。一个工单只该有一个工人，
+拿不同工单的工人可以同时跑。
+
+`merge` 在主目录里当唯一的合入口（不带 `--dir` 的老式 `dev` 也可以并存，但两者别同时开）：取本地所有 `afk/*` 分支，
+**按提交时间先交先合**（`afk-merging` 标签只是给人看的）。每轮开始要求主目录整个干净，再 fetch、把本地主分支快进到 `origin` 上那份
+（两边分叉就停下交给人）。每张单：`git rebase` 到主分支 → 冲突交给合并 Agent（`config.mjs` 的 `MERGER`，提示词 `prompts/merge.md`，
+两边意图都要保留）→ 验证（工人开工以来主分支没动过就跳过，动过跑 `VERIFY`，不过交回合并 Agent 修，最多 `ROUNDS` 轮）→
+快进主分支 → 推 `origin` → **推送成功才关单**，然后删掉单子分支。
+
+合并失败（冲突解不了 / 验证修不好）：回到合并前，单子分支备份成 `refs/afk-merge-backup/*` 后删掉、摘 `afk-merging`、
+评论写明原因并退回就绪队列（`ticket_mark requeued`），工人在最新主分支上重做；同一张单满 `MERGE_FAIL_LIMIT` 次（缺省 3）
+就贴 `afk-failed` 转人工。推送失败：本地保留、不关单、整轮停下（同 `dev`）。
+
 ### 讨论单：先把需求问清楚
 
 给 issue 贴 `agent-discuss`，跑 `miworkflow discuss`（`--max N` 限张数；适合定时跑），

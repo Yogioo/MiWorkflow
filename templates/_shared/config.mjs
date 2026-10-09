@@ -7,6 +7,9 @@
 export const DEV = null;
 export const REVIEWER = null;
 
+// 谁来解合并冲突 / 修合并后的验证失败（merge 任务）；null = 用本机缺省（AGENTFLOW_AGENT）。写法同 DEV。
+export const MERGER = null;
+
 // 要不要叫审查 Agent（REVIEWER）
 // 'auto'（缺省）：工单贴了「要审查」标签（各工单源 source.mjs 的 LABELS.review）才审，
 //   或 DEV 在回话里选 done_review 主动升级；其余单子 DEV 自测 + VERIFY 就够，不起审查 Agent。
@@ -42,6 +45,9 @@ export const AGENT_IDLE_SEC = 1200;
 
 // 同一张工单被强制结束（卡死、超时合并计数）第几次就不再重做，转人工（贴 afk-failed）
 export const AGENT_KILL_LIMIT = 3;
+
+// 同一张工单合并失败（退回队列让工人重做）第几次就不再自动重做，转人工（贴 afk-failed）
+export const MERGE_FAIL_LIMIT = 3;
 
 // 省着查（工单系统有调用额度，TAPD 个人令牌 2000 次 / 24 小时）：下次查的间隔 = 距上次有动静的时间 ÷ 4，
 // 最长这么多秒；最短就是 --every 给的间隔。刚忙完那几分钟几乎每轮都查，没动静就逐步拉长到这个上限。
