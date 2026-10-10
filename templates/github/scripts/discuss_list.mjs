@@ -1,6 +1,6 @@
 // 工单源接口：列要处理的讨论单（GitHub 实现）。
-// 打开、贴了进入标签，且没有阶段标签（discuss:*）或阶段是 grilling / spec；按工单号升序。
-// 入：{ enter, grilling, spec, repo? }
+// 打开、贴了进入标签，且没有阶段标签（discuss:*）或阶段是 grilling / spec（给了 ticketed 也算它，任务要看 /change）；按工单号升序。
+// 入：{ enter, grilling, spec, ticketed?, repo? }
 // 出：{ status, say, data: { items: [{ id, ref, title, labels }] } }
 import { main, readStdin, emit } from './_lib.mjs';
 import { runGh, labelName, refOf } from './_gh.mjs';
@@ -8,7 +8,7 @@ import { runGh, labelName, refOf } from './_gh.mjs';
 await main(async () => {
   const args = await readStdin();
   const enter = args.enter ?? 'agent-discuss';
-  const phasesOk = new Set([args.grilling ?? 'discuss:grilling', args.spec ?? 'discuss:spec'].map((l) => l.toLowerCase()));
+  const phasesOk = new Set([args.grilling ?? 'discuss:grilling', args.spec ?? 'discuss:spec', ...(args.ticketed ? [args.ticketed] : [])].map((l) => l.toLowerCase()));
   const repoArg = args.repo ? ['--repo', args.repo] : [];
 
   const raw = runGh([

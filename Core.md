@@ -841,7 +841,7 @@ AI 记账标记长什么样（GitHub：评论末尾的 HTML 注释；TAPD：剥 
 
 | 脚本 | 入 | 出 |
 |---|---|---|
-| `discuss_list` | `{ enter, grilling, spec, cursor? }` | `{ items: [{ id, ref, title, labels, changed? }], cursor? }`：打开、贴了 `enter`、阶段标签空或 `grilling` / `spec`，按工单号升序。增量可选：源交回 `cursor`（内容归源，任务原样存、下次原样带回），给了 `cursor` 就按它给每张单标 `changed`（有新的人的评论或单子改过）；不支持增量的源两样都不给，任务就每张都读 |
+| `discuss_list` | `{ enter, grilling, spec, ticketed?, cursor? }` | `{ items: [{ id, ref, title, labels, changed? }], cursor? }`：打开、贴了 `enter`、阶段标签空或 `grilling` / `spec`（给了 `ticketed` 也列它，任务要看 `/change`），按工单号升序。增量可选：源交回 `cursor`（内容归源，任务原样存、下次原样带回），给了 `cursor` 就按它给每张单标 `changed`（有新的人的评论或单子改过）；不支持增量的源两样都不给，任务就每张都读 |
 | `discuss_view` | `{ id }` | `{ id, ref, title, body, spec, labels, comments }`。`body` = 人写的正文（机器区域与机器评论已去掉）；`spec` = 当前 spec 或 `null`；`comments` = `[{ id, author, at, text, ai, mark }]`，`ai` 是「这条是不是 AI 发的」，`mark`（AI 才有）= `{ hash, seen, cli, session, body }` 记账字段 |
 | `discuss_post` | `{ id, body?, mark?, spec?, setTickets?, addLabel?, removeLabel? }` | `{ did: string[] }`：发评论（末尾由源附上 `mark`）/ 写 spec / 写开发单清单 / 贴摘标签，都可选、按序做 |
 | `tickets_create` | `{ parentId, tickets: [{ key, title, body, priority, review, blockedBy }] }` | `{ tickets: [{ key, id, ref, title }], problems: string[] }`：**建单 / 贴标签 / 写依赖 / 回查都在脚本里**；`problems` 非空 = 没建好（可能部分建出来了），任务据此不改阶段 |
@@ -873,7 +873,7 @@ TAPD 建出来的开发单处理人填 `source.mjs` 的 `TICKET_OWNER`（缺省�
 - 每个工单源带 `source.mjs`：这家的常量 + `COMMIT_TYPES` / `COMMIT_FORMAT` / `COMMIT_BODY` + `commitMessage(ticket, { type, summary })`；共用的 `config.mjs` 只留 `DEV / REVIEWER / REVIEW / VERIFY / ROUNDS / PUSH / AGENT_RETRY_DELAYS / AGENT_IDLE_SEC / AGENT_KILL_LIMIT / GIT_RETRY_DELAYS / DISCUSS_IDLE_MAX_SEC`。
 
 已实现的工单源：
-`templates/github/` = GitHub（`ticket_*` 脚本、讨论流程的 `discuss_*` 脚本、`source.mjs`；配合共用的 `dev` 与 `discuss`：认领 issue → 开发 →（要审查的单子）审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`；讨论单贴 `agent-discuss` → 评论区逐轮追问 → `/spec` 写进正文 → `/tickets` 建开发单，见 TODO C3、F2、F4）。
+`templates/github/` = GitHub（`ticket_*` 脚本、讨论流程的 `discuss_*` 脚本、`source.mjs`；配合共用的 `dev` 与 `discuss`：认领 issue → 开发 →（要审查的单子）审查 → 验证 → 提交 → 关单 + 贴 `afk-delivered`；讨论单贴 `agent-discuss` → 评论区逐轮追问 → `/spec` 写进正文 → `/tickets` 建开发单 → `/change` 调整，见 TODO C3、F2、F4、K）。
 回帖稿带图时用 `gh issue comment --attach` 上传，要 `gh` ≥ 2.99.0；只在确实有图时查版本，不够就把图片换成「图片未上传」占位、`say` 提示升级，评论照发。
 
 `templates/tapd/` = TAPD（`ticket_*` + `discuss_*` 脚本、`scripts/_tapd.mjs` / `_discuss.mjs`、`source.mjs`；`dev` 与 `discuss` 都是共用的，TODO F3、F4）。三个 `ticket_*` 的 TAPD 实现：
@@ -899,7 +899,7 @@ TAPD 建出来的开发单处理人填 `source.mjs` 的 `TICKET_OWNER`（缺省�
 - **阶段标签**走 `story update label=`，多值用 `|` 分隔，**写完回读校验**（写成逗号会被当成一个新标签名）；标签名不存在时 TAPD 隐式创建，不用预建。
 - **建开发单**：`story add parent_id=<讨论单>` 建子需求，标签 `ready-for-agent` + 可选的「要审查」，优先级 `P0/P1 → 高、P2 → 中、P3/P4 → 低`（TAPD 只有三档）；正文 Markdown 直接交给 `description`（tapd-cli 会转 HTML）。
 - **依赖**落成原生前后置：直连 OpenAPI `POST /stories/save_time_relations`，**必须 form-encoded**（`relations[0][workitem_id]` / `[dst_workitem_id]` / `[src_field]=due` / `[dst_field]=begin` + `current_user`），JSON body 报 422。回查时逐个子需求读 `get_time_relative_stories`，前置必须是这批里的、且不能是讨论单自己。
-- `discuss_list` 靠标签而不是状态：贴了 `agent-discuss`、阶段标为空或 grilling / spec 才处理；ticketed 或摘掉 `agent-discuss` 就退出（TAPD 没有「打开 / 关闭」这个开关）。
+- `discuss_list` 靠标签而不是状态：贴了 `agent-discuss`、阶段标为空或 grilling / spec / ticketed 才列出（ticketed 只认 `/change`）；彻底退出靠摘掉 `agent-discuss`（TAPD 没有「打开 / 关闭」这个开关）。
 - **省调用额度**（个人令牌 2000 次 / 24 小时，429 `API request limit exceeded`）：`discuss_list` 做增量，`cursor` = 各需求的 `modified` + 见过的最大评论 ID；
   每次两次请求（`story list` + 全项目按创建时间倒序的 `/comments`），带 AI 标记的评论不算动静，改旧评论不算。额度用完不退避重试，直接报工单系统暂时不可用。
   节奏归共用的 `discuss` 任务：只在 `--every` 循环里（认 `AGENTFLOW_LOOP_PID`），间隔 = 距上次有动静 ÷ 4、最长 `DISCUSS_IDLE_MAX_SEC`，没到点的一轮不碰工单系统，

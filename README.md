@@ -197,7 +197,8 @@ miworkflow stop dev --dir wt1         # 只停 wt1 这一个：做完手头这�
 ### 讨论单：先把需求问清楚
 
 给 issue 贴 `agent-discuss`，跑 `miworkflow discuss`（`--max N` 限张数；适合定时跑），
-AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一条评论，问题全部编号、每题附推荐答案；
+AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一条评论，先「业务对齐」（问策划，不提代码）、再「技术对齐」（问开发），
+阶段由 AI 自己掌握、标在评论开头；问题分「需要你拍板」（编号、附推荐答案）和「我已按推荐定了」（一行一条），没回的就按推荐算定。
 问完会提示「回复 /spec 生成」。首次处理贴 `discuss:grilling`；讨论期间 Agent 对仓库只读。
 
 - 人回复评论或改正文 → 下一次运行接着问；没新内容就不重复回复（AI 评论里的标记记着它读到的内容哈希）
@@ -205,7 +206,9 @@ AI 就在评论区按 `.workflow/prompts/grilling.md` 逐轮追问：一轮一�
 - 回复 `/spec` → AI 按 `.workflow/prompts/spec.md` 交回完整 spec，**写在哪由工单源决定**（GitHub：写进正文末尾的 spec 标记区域，原文留在上面），
   阶段改为 `discuss:spec`；之后的评论（或再次 `/spec`）都是修改意见，AI 只重写 spec。spec 不算「人的内容」，AI 写 spec 不会触发它自己；spec 不贴 `ready-for-agent`
 - spec 阶段回复 `/tickets` → AI 按 `.workflow/prompts/tickets.md` 交回**开发单结构**（`data.tickets`），
-  **建单 / 贴标签 / 写依赖由脚本做**（Agent 不碰工单系统）；通过就写清单、阶段改为 `discuss:ticketed`，此后不再响应
+  **建单 / 贴标签 / 写依赖由脚本做**（Agent 不碰工单系统）；通过就写清单、阶段改为 `discuss:ticketed`，此后普通评论不唤起 AI
+- 拆完单要调整需求，回复 `/change`（后面可以直接写要改什么）→ 阶段改回 `discuss:spec`，AI 开新会话改 spec：
+  只看建单回执之后的评论（追问阶段的旧讨论已收进 spec，不再喂），自己按工单号查 git 哪些开发单已做完；之后照常 `/tickets`，只拆增量
 - 追问的 Agent 由 `source.mjs` 的 `DISCUSS` 指定
 - **常驻用 `miworkflow discuss --every 30s`，它会省着查**（工单系统有调用额度，TAPD 个人令牌只有 2000 次 / 24 小时）：
   下次查的间隔 = 距上次有动静（人回复、AI 发言）的时间 ÷ 4，最短是 `--every` 给的间隔，最长 `config.mjs` 的 `DISCUSS_IDLE_MAX_SEC`（缺省 10 分钟）；
@@ -219,7 +222,7 @@ GitHub、TAPD、beads 三个工单源都实现了，流程与提示词共用，�
 - **AI 记账标记是评论末尾一行纯文本** `[miworkflow:discuss hash=… seen=… …]`，人看得见；TAPD 会把评论里的 HTML 注释整个剥掉，GitHub 那套用不了
 - **开发单建成讨论单的子需求**（`story add parent_id=`），贴 `ready-for-agent`（要审查的再贴 `needs-review`），依赖落成 TAPD 原生的前后置关系（前置的结束 → 后置的开始）；
   优先级 `P0`/`P1` 都落成「高」、`P2` 落成「中」、`P3`/`P4` 落成「低」（TAPD 只有高 / 中 / 低三档，同档内不再细分）。建完逐张回查这次建的子需求（父需求、标签与依赖；讨论单下原有的子需求不管），对不上就不改阶段、交人处理
-- **TAPD 没有「关单」**（需求状态由人验收后自己流转），讨论单靠阶段标签 `discuss:ticketed` 或摘掉 `agent-discuss` 退出队列
+- **TAPD 没有「关单」**（需求状态由人验收后自己流转），讨论单彻底不用了就摘掉 `agent-discuss` 退出队列（`discuss:ticketed` 的单还会被列出来等 `/change`，增量下没新评论不花额度）
 - **阶段标签不用预建**：`discuss:grilling` / `discuss:spec` / `discuss:ticketed` 第一次写入时 TAPD 隐式建出来；多个标签用 `|` 分隔写入，写完回读校验
 
 GitHub 这边：spec 写进正文末尾的机器区域，标记是评论末尾的 HTML 注释（人看不见），开发单是普通 issue，依赖写在正文的 `## Blocked by`，优先级原样贴 `P0`–`P4` 标签。

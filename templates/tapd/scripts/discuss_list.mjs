@@ -1,7 +1,7 @@
 // 工单源接口：列要处理的讨论单（TAPD 实现）。
-// 只看标签：贴了 agent-discuss，且阶段标签（discuss:*）为空或是 grilling / spec。
-// TAPD 没有「打开 / 关闭」这个开关（状态是人验收后自己流转的），所以讨论单结束时靠阶段标签（ticketed）或摘掉 agent-discuss 来退出。
-// 入：{ enter, grilling, spec, cursor? }
+// 只看标签：贴了 agent-discuss，且阶段标签（discuss:*）为空或是 grilling / spec（给了 ticketed 也算它，任务要看 /change）。
+// TAPD 没有「打开 / 关闭」这个开关（状态是人验收后自己流转的），所以讨论单彻底结束靠摘掉 agent-discuss 来退出。
+// 入：{ enter, grilling, spec, ticketed?, cursor? }
 // 出：{ status, say, data: { items: [{ id, ref, title, labels, changed }], cursor } }
 //
 // 增量（省调用额度）：cursor 是上一次交回的原样，记着各需求的 modified 与见过的最大评论 ID。
@@ -20,7 +20,7 @@ const idNum = (v) => { try { return BigInt(String(v ?? '').trim() || '0'); } cat
 await main(async () => {
   const args = await readStdin();
   const enter = args.enter ?? 'agent-discuss';
-  const ok = new Set([args.grilling ?? 'discuss:grilling', args.spec ?? 'discuss:spec'].map((l) => l.toLowerCase()));
+  const ok = new Set([args.grilling ?? 'discuss:grilling', args.spec ?? 'discuss:spec', ...(args.ticketed ? [args.ticketed] : [])].map((l) => l.toLowerCase()));
   const prev = args.cursor && typeof args.cursor === 'object' ? args.cursor : null;
 
   const listed = tapdJson(['story', 'list', `label=${enter}`, `limit=${LIST_LIMIT}`, ...(WORKSPACE_ID ? [`workspace_id=${WORKSPACE_ID}`] : [])]);

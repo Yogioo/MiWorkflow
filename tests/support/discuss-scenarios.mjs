@@ -301,6 +301,41 @@ export function defineDiscussScenarios(src) {
     assert.equal(src.devTickets(s, 1).length, 2, '改写 spec 不动已建的开发单');
   });
 
+  scenario('/change：ticketed 阶段普通评论不唤起；/change 改回 spec、开新会话、只重放建单回执之后；之后 /tickets 续上新会话', {
+    issues: [specIssue()]
+  }, (s) => {
+    reply(s, 1, '旧讨论 OLD');
+    reply(s, 1, '/tickets');
+    plan(s, [{ ...tickets([dev('a', '做甲')]), session: 'S1' }]);
+    run(s);
+    assert.deepEqual(src.labels(s, 1), ['agent-discuss', 'discuss:ticketed']);
+    assert.match(bodies(s, 1).at(-1), /要调整需求回复 \/change/);
+
+    reply(s, 1, '随口一句');
+    plan(s, []);
+    run(s);
+    assert.equal(seen(s).length, 1, '普通评论不唤起');
+
+    reply(s, 1, '/change 甲要改成乙');
+    plan(s, [{ ...specOut('新规格'), session: 'S2' }]);
+    run(s);
+    const change = seen(s)[1];
+    assert.equal(change.session, undefined, '不续追问阶段的旧会话');
+    assert.match(change.goal, /已建开发单[\s\S]*随口一句[\s\S]*\/change 甲要改成乙/);
+    assert.match(change.goal, /当前 spec[\s\S]*规格/);
+    assert.doesNotMatch(change.goal, /旧讨论 OLD/, '更早的讨论不重放');
+    assert.doesNotMatch(change.ticket, /旧讨论 OLD/);
+    assert.deepEqual(src.labels(s, 1), ['agent-discuss', 'discuss:spec']);
+    assert.equal(src.spec(s, 1), '新规格');
+
+    reply(s, 1, '/tickets');
+    plan(s, [{ ...tickets([dev('b', '做乙')]), session: 'S2' }]);
+    run(s);
+    assert.equal(seen(s)[2].session, 'S2', '调整后续的是新会话');
+    assert.deepEqual(src.devTickets(s, 1).map((t) => t.title), ['做甲', '做乙']);
+    assert.deepEqual(src.labels(s, 1), ['agent-discuss', 'discuss:ticketed']);
+  });
+
   scenario('/tickets 讨论单下已有别的子需求（没贴 ready-for-agent）→ 回查只看这次建的，仍改 ticketed，已有的一个字不动', {
     issues: [specIssue(), { key: 2, parent: 1, labels: [], body: '早就有的子需求' }]
   }, (s) => {

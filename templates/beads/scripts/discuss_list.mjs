@@ -1,7 +1,7 @@
 // 工单源接口：列要处理的讨论单（beads 实现）。
-// 没关、贴了进入标签，且没有阶段标签（discuss:*）或阶段是 grilling / spec；按工单号升序。
+// 没关、贴了进入标签，且没有阶段标签（discuss:*）或阶段是 grilling / spec（给了 ticketed 也算它，任务要看 /change）；按工单号升序。
 // 本地库没有调用额度，不做增量（不交 cursor、不标 changed），任务每张都读。
-// 入：{ enter, grilling, spec }
+// 入：{ enter, grilling, spec, ticketed? }
 // 出：{ status, say, data: { items: [{ id, ref, title, labels }] } }
 import { main, readStdin, emit } from './_lib.mjs';
 import { bdJson, labelsOf } from './_bd.mjs';
@@ -10,7 +10,7 @@ import { refOf } from '../source.mjs';
 await main(async () => {
   const args = await readStdin();
   const enter = args.enter ?? 'agent-discuss';
-  const phasesOk = new Set([args.grilling ?? 'discuss:grilling', args.spec ?? 'discuss:spec'].map((l) => l.toLowerCase()));
+  const phasesOk = new Set([args.grilling ?? 'discuss:grilling', args.spec ?? 'discuss:spec', ...(args.ticketed ? [args.ticketed] : [])].map((l) => l.toLowerCase()));
 
   const rows = bdJson(['list', '--label', enter, '--limit', '0']) ?? [];
   if (!Array.isArray(rows)) throw new Error('bd list 返回的不是数组');

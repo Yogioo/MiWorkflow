@@ -3,7 +3,7 @@
 // 是哪家工单系统、正文与评论长什么样、标记与 spec 存在哪，全在每个工单源的那几个脚本里（Core.md §15）。
 //
 // 规范形状（任务只认它，源负责与自家存储形态互转）：
-//   discuss_list 入 { enter, grilling, spec, cursor? }，出 { items: [{ id, ref, title, labels, changed? }], cursor? }
+//   discuss_list 入 { enter, grilling, spec, ticketed, cursor? }，出 { items: [{ id, ref, title, labels, changed? }], cursor? }
 //     cursor 内容归源，任务原样存、下次原样带回；changed = false 的单子这轮不读
 //   discuss_view 入 { id }，出 { id, ref, title, body, spec, labels, comments }
 //     body     = 人写的正文（Markdown，机器区域/机器评论已去掉）
@@ -19,8 +19,12 @@
 //   追问：AI 按 grilling.md 写一条评论（data.comment），choice=ask
 //   写 spec：人回复 /spec 或阶段已是 spec → AI 按 spec.md 交回完整 spec（data.spec），choice=spec
 //   拆单：spec 阶段人回复 /tickets → AI 按 tickets.md 交回开发单结构（data.tickets），choice=tickets
-//        脚本建单并回查；通过就写清单、阶段改为 ticketed，此后不再响应（人把阶段改回 spec 即恢复）
+//        脚本建单并回查；通过就写清单、阶段改为 ticketed，此后只认 /change
+//   调整：ticketed 阶段人回复 /change → 阶段改回 spec、开新会话写 spec；重放只从建单回执那条 AI 评论起，
+//        追问阶段的旧讨论不再喂（会让 AI 以为还没做）。哪些开发单做完了由 AI 自己在 git 里查（spec.md）；
+//        之后照常 /tickets，tickets.md 只拆增量。普通评论不唤起 AI。
 //   讨论单由人来关。
+//   业务对齐 / 技术对齐两个阶段只在 grilling.md 里由 AI 自己掌握，流程不管。
 //
 // 判轮：人的内容（body + 不带 mark 的评论）的哈希 ≠ 最近一条 AI 评论记下的哈希，就轮到 AI。
 // AI 评论记的是该轮「开始时」读到的哈希，所以 AI 思考期间人补发的评论，下一次运行会被处理。
@@ -49,7 +53,7 @@ import { DISCUSS } from '../source.mjs';
 import { DISCUSS_IDLE_MAX_SEC } from '../config.mjs';
 import { paceOf, clock } from '../scripts/_pace.mjs';
 
-export const title = '讨论单：agent-discuss → 评论区逐轮追问 → /spec 写 spec → /tickets 建开发单';
+export const title = '讨论单：agent-discuss → 评论区逐轮追问 → /spec 写 spec → /tickets 建开发单 → /change 调整';
 
 const PROJECT = fileURLToPath(new URL('../..', import.meta.url));
 const PROMPTS = {
@@ -63,6 +67,7 @@ const SPEC = 'discuss:spec';
 const TICKETED = 'discuss:ticketed';
 const SPEC_CMD = /^\/spec(?![\w-])/i;
 const TICKETS_CMD = /^\/tickets(?![\w-])/i;
+const CHANGE_CMD = /^\/change(?![\w-])/i;
 const CONTRACT = {
   grilling: { choice: 'ask', key: 'comment' },
   spec: { choice: 'spec', key: 'spec' },
@@ -89,7 +94,7 @@ export default async function ({ script, agent, args, stopping = () => false }) 
   const before = pace.read();
   // cursor（增量）只在循环里带：单跑按老规矩全量看一遍
   const cursor = loop ? before.cursor : null;
-  const r = await script('discuss_list', { enter: ENTER, grilling: GRILLING, spec: SPEC, ...(cursor ? { cursor } : {}) });
+  const r = await script('discuss_list', { enter: ENTER, grilling: GRILLING, spec: SPEC, ticketed: TICKETED, ...(cursor ? { cursor } : {}) });
   if (r.status !== 'ok') {
     pace.backoff();
     throw new Error(`列讨论单失败：${r.error}`);
@@ -107,12 +112,18 @@ export default async function ({ script, agent, args, stopping = () => false }) 
     const last = lastMark(issue);
     if (hash === last?.hash) continue;
 
-    handled++;
     const fresh = freshHuman(issue, last);
+    const change = hasLabel(issue, TICKETED);
+    if (change) {
+      if (!fresh.some((c) => CHANGE_CMD.test(c.text.trim()))) continue;
+      await script('discuss_post', { id: issue.id, addLabel: SPEC, removeLabel: TICKETED });
+      issue.labels = [...issue.labels.filter((l) => String(l).toLowerCase() !== TICKETED), SPEC];
+    }
+    handled++;
     const mode = hasLabel(issue, SPEC) && fresh.some((c) => TICKETS_CMD.test(c.text.trim())) ? 'tickets'
       : hasLabel(issue, SPEC) || fresh.some((c) => SPEC_CMD.test(c.text.trim())) ? 'spec' : 'grilling';
     if (mode === 'tickets') {
-      await ticketsRound(issue, last, hash, agent, script);
+      await ticketsRound(issue, last, hash, agent, script, change);
       continue;
     }
     if (mode === 'spec') {
@@ -122,7 +133,7 @@ export default async function ({ script, agent, args, stopping = () => false }) 
     } else if (!hasLabel(issue, GRILLING)) {
       await script('discuss_post', { id: issue.id, addLabel: GRILLING });
     }
-    const out = await askRound(issue, last, agent, mode, PROJECT);
+    const out = await askRound(issue, last, agent, mode, PROJECT, { fresh: change });
     const mark = marker(hash, humanComments(issue).length, out.cli, out.session, bodyHash(issue));
     const post = { id: issue.id };
     if (!out.ok) {
@@ -152,8 +163,8 @@ export default async function ({ script, agent, args, stopping = () => false }) 
 const pace = paceOf('discuss', DISCUSS_IDLE_MAX_SEC);
 
 // 拆单：Agent 只交结构（data.tickets），建单 / 贴标签 / 写依赖 / 回查都在脚本里
-async function ticketsRound(issue, last, hash, agent, script) {
-  const out = await askRound(issue, last, agent, 'tickets', PROJECT);
+async function ticketsRound(issue, last, hash, agent, script, fresh) {
+  const out = await askRound(issue, last, agent, 'tickets', PROJECT, { fresh });
   const mark = marker(hash, humanComments(issue).length, out.cli, out.session, bodyHash(issue));
   const post = { id: issue.id, mark };
   let line;
@@ -171,7 +182,7 @@ async function ticketsRound(issue, last, hash, agent, script) {
       post.setTickets = `## 开发单\n\n${list}`;
       post.addLabel = TICKETED;
       post.removeLabel = SPEC;
-      post.body = `已建开发单 ${c.data.tickets.map((t) => t.ref).join('、')}，阶段改为 ${TICKETED}，AI 不再响应评论（改回 ${SPEC} 即恢复）。讨论单请人来关。`;
+      post.body = `已建开发单 ${c.data.tickets.map((t) => t.ref).join('、')}，阶段改为 ${TICKETED}，AI 不再响应普通评论；要调整需求回复 /change。讨论单请人来关。`;
       line = `✔ ${issue.ref} 已建开发单 ${c.data.tickets.length} 张`;
     }
   }
@@ -180,11 +191,11 @@ async function ticketsRound(issue, last, hash, agent, script) {
   else console.log(line);
 }
 
-// 一轮 Agent 调用：续会话只喂增量，续不上就重放；回来的选择必须合契约
-async function askRound(issue, last, agent, mode, project) {
+// 一轮 Agent 调用：续会话只喂增量，续不上就重放；回来的选择必须合契约。fresh：不续上一轮的会话（/change）
+async function askRound(issue, last, agent, mode, project, { fresh = false } = {}) {
   const cli = agentCli();
-  const own = cli === 'pi' ? piSession(project, issue.id) : undefined;
-  const prev = last?.session && last.cli === cli && (!own || last.session === own) ? last.session : undefined;
+  const own = cli === 'pi' ? piSession(project, issue.id, changes(issue)) : undefined;
+  const prev = !fresh && last?.session && last.cli === cli && (!own || last.session === own) ? last.session : undefined;
   let res;
   try {
     if (prev) {
@@ -216,7 +227,7 @@ async function askRound(issue, last, agent, mode, project) {
 // inputs 的原文与完整提示词：续会话时会话里已有，不再整段重喂。
 function callAgent(agent, issue, goal, session, mode, project, { delta = false } = {}) {
   const spec = agentSpec();
-  const inputs = { cwd: project, id: issue.id, ref: issue.ref, ...(delta ? {} : { ticket: issueText(issue) }), choices: [CONTRACT[mode].choice] };
+  const inputs = { cwd: project, id: issue.id, ref: issue.ref, ...(delta ? {} : { ticket: issueText(issue, mode) }), choices: [CONTRACT[mode].choice] };
   const label = LABELS[mode];
   if (spec) return agent(goal, { label, agent: session ? { ...spec, session } : spec, inputs });
   return agent(goal, { label, inputs: session ? { ...inputs, session } : inputs });
@@ -230,7 +241,12 @@ function agentSpec() {
 
 const agentCli = () => String(agentSpec()?.cli ?? 'cmd');
 
-const piSession = (project, id) => `discuss-${createHash('sha256').update(`${project}#${id}`).digest('hex').slice(0, 16)}`;
+// 每次 /change 换一个会话号：pi 的会话号是算出来的，不换就续回追问阶段的旧会话
+const piSession = (project, id, epoch = 0) => `discuss-${createHash('sha256').update(`${project}#${id}${epoch ? `#${epoch}` : ''}`).digest('hex').slice(0, 16)}`;
+
+const isChange = (c) => !isAi(c) && CHANGE_CMD.test(c.text.trim());
+
+const changes = (issue) => issue.comments.filter(isChange).length;
 
 const hasLabel = (issue, name) => (issue.labels ?? []).some((l) => String(l).toLowerCase() === name.toLowerCase());
 
@@ -270,12 +286,20 @@ const contractLine = (mode) => {
 };
 
 // 正文只给人写的原文；评论逐条列出（谁、什么时候、说了什么）
-const issueText = (issue) => [
+const issueText = (issue, mode) => [
   `# ${issue.ref} ${issue.title}`,
   '',
   issue.body,
-  ...issue.comments.map((c) => `\n---\n${isAi(c) ? '[AI] ' : ''}@${c.author} 评论（${c.at}）：\n${c.text}`)
+  ...replayed(issue, mode).map((c) => `\n---\n${isAi(c) ? '[AI] ' : ''}@${c.author} 评论（${c.at}）：\n${c.text}`)
 ].join('\n');
+
+// 调整过需求（/change）的讨论单，spec / 拆单只重放最近一次 /change 前那条 AI 评论（建单回执）及之后的评论
+function replayed(issue, mode) {
+  if (mode === 'grilling') return issue.comments;
+  const i = issue.comments.findLastIndex(isChange);
+  if (i < 0) return issue.comments;
+  return issue.comments.slice(Math.max(issue.comments.slice(0, i).findLastIndex(isAi), 0));
+}
 
 function specSection(issue, mode) {
   if (mode === 'grilling') return [];
@@ -303,8 +327,10 @@ function prompt(issue, mode, project) {
     '',
     `工作目录（只读）：${project}`,
     '',
-    '工单（正文 + 全部评论；标了「AI」的是你之前的发言）：',
-    issueText(issue),
+    replayed(issue, mode) === issue.comments
+      ? '工单（正文 + 全部评论；标了「AI」的是你之前的发言）：'
+      : '工单（正文 + 最近一次 /change 前的建单回执及之后的评论；更早的讨论已收进当前 spec）：',
+    issueText(issue, mode),
     ...specSection(issue, mode),
     '',
     contractLine(mode)
