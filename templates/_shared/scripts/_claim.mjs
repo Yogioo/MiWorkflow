@@ -39,6 +39,12 @@ export function claimWorker(comments) {
   return worker;
 }
 
+// 接单校验与 ticket_view 认的接单人：接单评论还得有 afk-claimed 撑着。人在工单系统里摘了标签（重新入队，顺手删了失败评论）
+// 就当没人接——不然旧接单评论一直有效，别的工人说「已被接走」、原工人说「已经是我」，谁都不接、也没人清理。
+// 接单是先发评论再贴标签：中间那一瞬靠接单锁挡住同机的工人；挂在中间的单没有标签，正好重新可接。
+export const claimHolder = (comments, labels) =>
+  machineLabels(labels).includes('afk-claimed') ? claimWorker(comments) : null;
+
 // 工人名缺省：`<主机名>/<工位目录名>`（不带 --dir 时是主目录的目录名）。dev 按 config.mjs 的 WORKER 算好了传进来，
 // 单独手动跑脚本又不给 worker 时退回这个（同一个工人重启后认得出自己接的单）。
 export const defaultWorker = (dir) => `${os.hostname()}/${path.basename(path.resolve(dir))}`;

@@ -13,7 +13,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { main, readStdin, emit } from './_lib.mjs';
 import { runGh, issueNumber, refOf, viewIssue } from './_gh.mjs';
-import { claimComment, claimWorker, defaultWorker, machineLabels, projectDirOf, stampComment, withClaimLock } from './_claim.mjs';
+import { claimComment, claimHolder, defaultWorker, machineLabels, projectDirOf, stampComment, withClaimLock } from './_claim.mjs';
 import { LABELS } from '../source.mjs';
 
 const GH_ATTACH_MIN = [2, 99, 0];
@@ -108,8 +108,8 @@ await main(async () => {
   // 校验：没有任何机器标签，也没有还有效的接单评论
   function refuse() {
     const issue = viewIssue(number, repoArg);
-    // 先看接单评论（谁接的报得出来），再看机器标签
-    const holder = claimWorker(issue.comments.map((c) => c.body));
+    // 先看接单评论（谁接的报得出来，没贴 afk-claimed 的不算），再看机器标签
+    const holder = claimHolder(issue.comments.map((c) => c.body), issue.labels);
     if (holder) return holder === worker ? `已经是我（${worker}）接的单` : `已被 ${holder} 接走`;
     const machine = machineLabels(issue.labels);
     if (machine.length) return `已经贴了 ${machine.join('、')}`;

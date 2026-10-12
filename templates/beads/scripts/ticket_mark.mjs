@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { main, readStdin, emit } from './_lib.mjs';
 import { runBd, issueId, labelsOf, showIssue, listComments } from './_bd.mjs';
-import { claimComment, claimWorker, defaultWorker, machineLabels, projectDirOf, stampComment, withClaimLock } from './_claim.mjs';
+import { claimComment, claimHolder, defaultWorker, machineLabels, projectDirOf, stampComment, withClaimLock } from './_claim.mjs';
 import { LABELS, refOf } from '../source.mjs';
 
 const IMAGE_RE = /(!\[[^\]]*\]\(\s*<?)([^)\s>]+)(>?(?:\s+"[^"]*")?\s*\))|(<img\b[^>]*?\bsrc\s*=\s*["'])([^"']+)(["'][^>]*>)/gi;
@@ -106,10 +106,11 @@ await main(async () => {
 
   // 校验：没有任何机器标签，也没有还有效的接单评论
   function refuse() {
-    // 先看接单评论（谁接的报得出来），再看机器标签
-    const holder = claimWorker(listComments(id).map((c) => c.text));
+    // 先看接单评论（谁接的报得出来，没贴 afk-claimed 的不算），再看机器标签
+    const labels = labelsOf(showIssue(id));
+    const holder = claimHolder(listComments(id).map((c) => c.text), labels);
     if (holder) return holder === worker ? `已经是我（${worker}）接的单` : `已被 ${holder} 接走`;
-    const machine = machineLabels(labelsOf(showIssue(id)));
+    const machine = machineLabels(labels);
     if (machine.length) return `已经贴了 ${machine.join('、')}`;
     return null;
   }

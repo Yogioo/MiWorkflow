@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { main, readStdin, emit, imageExt } from './_lib.mjs';
 import { tapdJson, openApi, htmlToMarkdown, IMG_SRC, imgSrcOf, mask } from './_tapd.mjs';
-import { claimWorker } from './_claim.mjs';
+import { claimHolder } from './_claim.mjs';
 import { WORKSPACE_ID, LABELS, refOf } from '../source.mjs';
 
 const labelList = (label) => String(label ?? '').split('|').map((l) => l.trim()).filter(Boolean);
@@ -70,7 +70,7 @@ await main(async () => {
       review: labelList(story.label).includes(LABELS.review),
       labels: labelList(story.label),
       // 接单标记是评论正文里的纯文本，只看最近这些评论就够（标记不会被 HTML 转义掉）
-      claim: claimWorker(comments.map((c) => c.description))
+      claim: claimHolder(comments.map((c) => c.description), labelList(story.label))
     }
   });
 });

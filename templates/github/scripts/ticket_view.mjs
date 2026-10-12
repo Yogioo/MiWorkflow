@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { main, readStdin, emit, imageExt } from './_lib.mjs';
 import { viewIssue, issueNumber, refOf, ghToken, fetchImpl, downloadImage, anyNeedsToken } from './_gh.mjs';
-import { claimWorker } from './_claim.mjs';
+import { claimHolder } from './_claim.mjs';
 import { LABELS } from '../source.mjs';
 
 const MAX_IMAGES = 30;
@@ -61,7 +61,7 @@ await main(async () => {
       file,
       review: issue.labels.includes(LABELS.review),
       labels: issue.labels,
-      claim: claimWorker(issue.comments.map((c) => c.body))
+      claim: claimHolder(issue.comments.map((c) => c.body), issue.labels)
     }
   });
 });

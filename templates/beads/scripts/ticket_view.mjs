@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { main, readStdin, emit } from './_lib.mjs';
 import { showIssue, listComments, hasLabel, issueId, labelsOf } from './_bd.mjs';
-import { claimWorker } from './_claim.mjs';
+import { claimHolder } from './_claim.mjs';
 import { LABELS, refOf } from '../source.mjs';
 
 const SECTIONS = [['design', '设计'], ['acceptance_criteria', '验收标准'], ['notes', '备注']];
@@ -50,7 +50,7 @@ await main(async () => {
       file,
       review: hasLabel(issue, LABELS.review),
       labels: labelsOf(issue),
-      claim: claimWorker(comments.map((c) => c.text))
+      claim: claimHolder(comments.map((c) => c.text), labelsOf(issue))
     }
   });
 });

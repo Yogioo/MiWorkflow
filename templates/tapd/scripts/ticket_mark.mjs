@@ -17,7 +17,7 @@ import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { main, readStdin, emit } from './_lib.mjs';
 import { tapdJson, openApi } from './_tapd.mjs';
-import { claimComment, claimWorker, defaultWorker, machineLabels, projectDirOf, stampComment, withClaimLock } from './_claim.mjs';
+import { claimComment, claimHolder, defaultWorker, machineLabels, projectDirOf, stampComment, withClaimLock } from './_claim.mjs';
 import { WORKSPACE_ID, COMMENTER, LABELS, END_STATUSES, DONE_STATUS, refOf } from '../source.mjs';
 
 const COMMENT_PAGE = 200;
@@ -106,10 +106,11 @@ await main(async () => {
 
   // 校验：没有任何机器标签，也没有还有效的接单评论
   const refuse = async () => {
-    // 先看接单评论（谁接的报得出来），再看机器标签
-    const holder = claimWorker(await recentComments(workspace, id));
+    // 先看接单评论（谁接的报得出来，没贴 afk-claimed 的不算），再看机器标签
+    const labels = labelsOf(readStory(id));
+    const holder = claimHolder(await recentComments(workspace, id), labels);
     if (holder) return holder === worker ? `已经是我（${worker}）接的单` : `已被 ${holder} 接走`;
-    const machine = machineLabels(labelsOf(readStory(id)));
+    const machine = machineLabels(labels);
     if (machine.length) return `已经贴了 ${machine.join('、')}`;
     return null;
   };

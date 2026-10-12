@@ -174,6 +174,29 @@ export function defineTicketContract(src) {
     assert.equal(claim(4), null, '完成之后不算有效接单');
   });
 
+  contract('接单评论要有 afk-claimed 撑着：人直接摘了标签（没有终态评论），旧接单评论不再挡人，别的工人和原工人都能接', {
+    tickets: [1, 2].map((key) => ({ key, labels: READY }))
+  }, (s, view) => {
+    const mark = (key, worker) => runScript(s, 'ticket_mark', { id: src.id(key), action: 'claimed', worker });
+    const claim = (key) => runScript(s, 'ticket_view', { id: src.id(key) }).data.claim;
+
+    assert.equal(mark(1, 'wt1').status, 'ok');
+    src.relabel(s, 1, READY);
+    assert.equal(claim(1), null, '标签摘了：旧接单评论不算有效接单');
+    const other = mark(1, 'wt2');
+    assert.equal(other.status, 'ok', other.say);
+    assert.notEqual(other.data.claimed, false, `别的工人能接：${other.data.reason}`);
+    assert.equal(view(1).comments.at(-1), '[miworkflow:claim worker=wt2]');
+    assert.ok(view(1).labels.includes('afk-claimed'), view(1).labels.join(','));
+    assert.equal(claim(1), 'wt2');
+
+    assert.equal(mark(2, 'wt1').status, 'ok');
+    src.relabel(s, 2, READY);
+    const self = mark(2, 'wt1');
+    assert.notEqual(self.data.claimed, false, `原工人也能重新接，不再报「已经是我」：${self.data.reason}`);
+    assert.equal(claim(2), 'wt1');
+  });
+
   contract('ticket_ready claims:true：只列认领中的单，带上有效接单人（工人重启后收拾自己没收尾的单用）', {
     tickets: [
       { key: 1, labels: READY },

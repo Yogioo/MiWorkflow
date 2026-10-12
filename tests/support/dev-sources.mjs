@@ -28,6 +28,12 @@ const github = {
     const i = readState(s).issues.find((x) => x.number === key);
     return { closed: i.state === 'CLOSED', labels: i.labels.map((l) => l.name), comments: (i.comments ?? []).map((c) => c.body) };
   },
+  // 人在工单系统里直接改标签（不经工作流、不留评论）
+  relabel(s, key, labels) {
+    const st = readState(s);
+    st.issues.find((x) => x.number === key).labels = labels.map((name) => ({ name }));
+    writeFileSync(s.stateFile, JSON.stringify(st));
+  },
   // 工单系统一直 5xx：之后每条 gh / tapd-cli 调用都报错
   down(s) {
     const st = readState(s);
@@ -76,6 +82,11 @@ const tapd = {
       comments: st.comments.filter((c) => c.entry_id === x.id).map((c) => c.description)
     };
   },
+  relabel(s, key, labels) {
+    const st = readTapdState(s.tapdFile);
+    st.stories.find((y) => y.id === tapdId(key)).label = labels.join('|');
+    writeFileSync(s.tapdFile, JSON.stringify(st));
+  },
   down(s) {
     const st = readTapdState(s.tapdFile);
     st.fail = { times: 999, message: 'HTTP 500 Internal Server Error' };
@@ -112,6 +123,11 @@ const beads = {
   view(s, key) {
     const x = readBdState(s.bdFile).issues.find((y) => y.id === beadsId(key));
     return { closed: x.status === 'closed', status: x.status, labels: [...x.labels], comments: (x.comments ?? []).map((c) => c.text) };
+  },
+  relabel(s, key, labels) {
+    const st = readBdState(s.bdFile);
+    st.issues.find((y) => y.id === beadsId(key)).labels = [...labels];
+    writeFileSync(s.bdFile, JSON.stringify(st));
   },
   down(s) {
     const st = readBdState(s.bdFile);
