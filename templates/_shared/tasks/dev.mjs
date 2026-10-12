@@ -25,7 +25,8 @@
 //   miworkflow dev --dir wt1          在工位 wt1 里做单：交本地分支 afk/<工单号> + 标「等合并」，不推 origin
 //   miworkflow dev --confirm          每次提交（+ 推送 + 标记完成）前 human 确认
 //   miworkflow dev --dry-run          只报会做哪些工单、哪些被挡住，不改工单、不改 git
-//   miworkflow dev --now              忽略退避，立刻就列一次队（队列空过一阵之后不想等）
+//   miworkflow dev --now              忽略退避，立刻就列一次队（队列空过一阵之后不想等）；
+//                                     配 --every 时只管第一轮，之后照常退避
 //
 // 省着查（工单系统有调用额度）：队列空的那一轮记退避（logs/dev.pace.json，实现在 scripts/_pace.mjs），
 // 空闲期最多每 config.mjs 的 DEV_IDLE_MAX_SEC 秒列一次队；--issue、--dry-run、--now 直接放行。
@@ -41,8 +42,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { DEV, REVIEWER, VERIFY, ROUNDS, PUSH, REVIEW, AGENT_RETRY_DELAYS, AGENT_IDLE_SEC, AGENT_KILL_LIMIT, DEV_IDLE_MAX_SEC, WORKER } from '../config.mjs';
 import * as source from '../source.mjs';
-import { paceOf, clock } from '../scripts/_pace.mjs';
-import { defaultWorker } from '../scripts/_claim.mjs';
+import { paceOf, clock, nowOnce } from '../scripts/_pace.mjs';
+import { defaultWorker, STOP_ACTIONS } from '../scripts/_claim.mjs';
 import { branchOf } from '../scripts/_lib.mjs';
 
 export const title = '开发：认领工单 → 开发 → 审查 → 验证 → 提交 → 关单';
@@ -60,16 +61,40 @@ const PROJECT = fileURLToPath(new URL('../..', import.meta.url));
 // 省着查的记账：logs/dev.pace.json（实现见 scripts/_pace.mjs）
 const devPace = paceOf('dev', DEV_IDLE_MAX_SEC);
 
+// 认领清理的记账：logs/dev.tidy.<工人>.json 记着「哪个 --every 循环的上一轮正常收尾」（AGENTFLOW_LOOP_PID）。
+// 一个工人同时只有一个循环，按工人分文件，几个工位互不覆盖；单跑不记、每次都清理。
+// 开工前先删（dirty）：这一轮中途崩了、或收尾时还攥着没交出去的单（未推送、标记没写成），下一轮照旧清理。
+function tidyOf(worker) {
+  const loop = process.env.AGENTFLOW_LOOP_PID;
+  const file = fileURLToPath(new URL(`../logs/dev.tidy.${String(worker).replace(/[^\w.-]+/g, '-')}.json`, import.meta.url));
+  return {
+    skip: () => {
+      if (!loop) return false;
+      try { return JSON.parse(readFileSync(file, 'utf8')).loop === loop; } catch { return false; }
+    },
+    dirty: () => rmSync(file, { force: true }),
+    clean: () => { if (loop) writeFileSync(file, JSON.stringify({ loop })); }
+  };
+}
+
 export default async function ({ script: rawScript, agent, human, args, stopping = () => false }) {
+  // 本轮接下、还没交出去的单：接单成功进，完成 / 失败 / 释放 / 等合并标记成功出；收尾时为空才算正常收尾
+  const open = new Set();
   // 工单脚本内部对工单系统故障退避重试（一次 ticket_mark 可能多条命令各自等），缺省 120 秒不够
-  const script = (name, input, opts) =>
-    rawScript(name, input, name.startsWith('ticket_') ? { timeoutMs: 900_000, ...opts } : opts);
+  const script = async (name, input, opts) => {
+    const r = await rawScript(name, input, name.startsWith('ticket_') ? { timeoutMs: 900_000, ...opts } : opts);
+    if (name === 'ticket_mark' && r.status === 'ok') {
+      if (input.action === 'claimed' && r.data?.claimed !== false) open.add(String(input.id));
+      else if (STOP_ACTIONS.includes(input.action)) open.delete(String(input.id));
+    }
+    return r;
+  };
   const max = args.max ? Number(args.max) : Infinity;
   const maxFailures = args['max-failures'] ? Number(args['max-failures']) : 3;
   const only = args.issue ? String(args.issue) : null;
   // 省着查：退避对所有调用方生效（单跑也读）——只管 --every 循环的话，外面套一层 while 反复单跑，
   // 每轮都实打实列一次队。人点名的（--issue）、干跑、--now 放行：这三种都是当场就要看结果。
-  const force = Boolean(args.now || only || process.env.AGENTFLOW_DRY_RUN === '1');
+  const force = Boolean(only || process.env.AGENTFLOW_DRY_RUN === '1' || nowOnce('dev', args.now));
   if (!force && devPace.held()) {
     console.log(`还没到点：${clock(devPace.read().nextAt)} 再查（上一轮队列空；要立刻就做用 --now）`);
     return;
@@ -119,8 +144,12 @@ export default async function ({ script: rawScript, agent, human, args, stopping
     console.log(`工位 ${ctx.station}：${w.data.created ? `从 ${w.data.main || '主分支'} 新建（分离 HEAD）` : '复用'}`);
   }
 
-  // 工人重启：先收拾自己上次没收尾的单（工作区里可能正是那份半成品，清理会把它回滚掉），再要求干净
-  await cleanOwnClaims(ctx, worker);
+  // 工人重启：先收拾自己上次没收尾的单（工作区里可能正是那份半成品，清理会把它回滚掉），再要求干净。
+  // --every 循环里上一轮正常收尾就跳过：清理要列认领单再逐张读评论，每轮都跑很费额度
+  const tidy = tidyOf(worker);
+  if (tidy.skip()) console.log('上一轮正常收尾，跳过认领清理');
+  else await cleanOwnClaims(ctx, worker);
+  tidy.dirty();
   const start = await script('git_state', { cwd: ctx.root });
   if (start.status !== 'ok') throw new Error(`看不了 git 状态：${start.error}`);
   if (!start.data.clean) {
@@ -187,6 +216,7 @@ export default async function ({ script: rawScript, agent, human, args, stopping
   // 队列空（没做成、也没出事）才记退避；出过事的下一轮照旧快查，别把重试拖慢
   const after = devPace.settle(done > 0 || failures > 0 || pushStopped || infraStopped);
   if (after.idle && after.nextAt > Date.now()) console.log(`队列空，${clock(after.nextAt)} 再查（要立刻就做用 --now）`);
+  if (!open.size) tidy.clean();
   if (failures > 0) throw new Error(`本轮有 ${failures} 个工单失败（停止原因：${stop}）`);
   if (pushStopped || infraStopped) throw new Error(stop);
 }

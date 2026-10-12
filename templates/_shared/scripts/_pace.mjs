@@ -56,5 +56,24 @@ export function paceOf(name, maxSec) {
   };
 }
 
+// --now 在 --every 循环里只放行第一轮：内核把同一份参数交给每一轮，不拦的话退避永远不生效。
+// 记账在 logs/<name>.now.json（用过 --now 的循环 pid，按 AGENTFLOW_LOOP_PID 认）；单跑的 --now 每次都放行。
+const NOW_KEEP = 20;
+export function nowOnce(name, now) {
+  if (!now) return false;
+  const loop = process.env.AGENTFLOW_LOOP_PID;
+  if (!loop) return true;
+  const file = fileURLToPath(new URL(`../logs/${name}.now.json`, import.meta.url));
+  let loops = [];
+  try {
+    const p = JSON.parse(readFileSync(file, 'utf8'));
+    if (Array.isArray(p.loops)) loops = p.loops.map(String);
+  } catch { /* 还没有这个文件、或文件坏了：当没用过 */ }
+  if (loops.includes(loop)) return false;
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({ loops: [...loops, loop].slice(-NOW_KEEP) }, null, 2));
+  return true;
+}
+
 // 日志里给时刻，人的时区
 export const clock = (ms) => new Date(ms).toLocaleTimeString('zh-CN', { hour12: false });

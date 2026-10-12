@@ -43,7 +43,7 @@
 // 用法：
 //   miworkflow discuss                  逐张处理轮到 AI 的讨论单
 //   miworkflow discuss --max 3          最多处理 3 张
-//   miworkflow discuss --now            忽略退避，立刻就查一次（刚在工单上补了内容，不想等）
+//   miworkflow discuss --now            忽略退避，立刻就查一次（刚在工单上补了内容，不想等）；配 --every 时只管第一轮
 //   miworkflow discuss --every 30s      常驻：最快 30 秒查一次，没动静就逐步拉长
 //   miworkflow stop discuss             手头这张讨论单处理完就停
 import { createHash } from 'node:crypto';
@@ -51,7 +51,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DISCUSS } from '../source.mjs';
 import { DISCUSS_IDLE_MAX_SEC } from '../config.mjs';
-import { paceOf, clock } from '../scripts/_pace.mjs';
+import { paceOf, clock, nowOnce } from '../scripts/_pace.mjs';
 
 export const title = '讨论单：agent-discuss → 评论区逐轮追问 → /spec 写 spec → /tickets 建开发单 → /change 调整';
 
@@ -86,7 +86,7 @@ export default async function ({ script, agent, args, stopping = () => false }) 
   if (probe.status !== 'ok') throw new Error(`配置不对，不启动：\n- DISCUSS：${probe.reason}`);
   // 退避对所有调用方生效（单跑也读）：不然外面套一层 while 反复单跑，每轮都实打实查工单系统。--now 是人的手动放行。
   const loop = Boolean(process.env.AGENTFLOW_LOOP_PID);
-  if (!args.now && pace.held()) {
+  if (!nowOnce('discuss', args.now) && pace.held()) {
     const held = pace.read();
     console.log(`还没到点：${clock(held.nextAt)} 再查（上一轮没事干；上次有动静：${held.activeAt ? clock(held.activeAt) : '无'}）；要立刻就查用 --now`);
     return;
