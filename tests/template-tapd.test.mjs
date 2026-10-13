@@ -272,6 +272,44 @@ test('ticket_ready first：只扫到第一张可做的（dev 只用第一张，�
   assert.equal(relIds(full).length, 3, '每张候选都查依赖');
 });
 
+test('ticket_ready：已完结的需求不进 ready（贴了 ready 也挡住，不改标签、不查依赖）；first 扫到它接着往下扫', async () => {
+  const id = (k) => `1152360842001005050${k}`;
+  const seed = () => ({
+    stories: [
+      { ...story(id(1), { label: 'ready-for-agent', priority: '高', status: 'status_7' }), v_status: '已完成' },
+      story(id(2), { label: 'ready-for-agent', priority: '中', status: 'open' })
+    ],
+    lastSteps: { status_7: '已完成' }
+  });
+
+  const f = stateFile(seed());
+  const api = await startFakeOpenApi(f);
+  let out;
+  try {
+    ({ out } = runScript('ticket_ready', {}, tapdEnv(f, api.endpoint)));
+  } finally {
+    await api.close();
+  }
+  assert.deepEqual(out.data.ready.map((t) => t.id), [id(2)]);
+  assert.deepEqual(out.data.blocked.map((t) => t.id), [id(1)]);
+  assert.match(out.data.blocked[0].reason, /已到结束类状态（已完成）/);
+  assert.match(out.data.blocked[0].reason, /ready-for-agent/);
+  assert.match(out.say, /已完结 1 张/);
+  assert.equal(readTapdState(f).calls.length, 1, '完结的不改标签：摘标签是人的事');
+  assert.equal(readTapdState(f).stories[0].label, 'ready-for-agent');
+  assert.ok(!openApiLog(f).some((l) => l.url.includes(`story_id=${id(1)}`)), '完结的不查依赖');
+
+  // first：完结的那张排在前面，不能因为它是第一张就把队列判成空
+  const f2 = stateFile(seed());
+  const api2 = await startFakeOpenApi(f2);
+  try {
+    ({ out } = runScript('ticket_ready', { first: true }, tapdEnv(f2, api2.endpoint)));
+  } finally {
+    await api2.close();
+  }
+  assert.deepEqual(out.data.ready.map((t) => t.id), [id(2)], '扫到完结的接着往下扫');
+});
+
 test('ticket_ready：前后置依赖——未完成挡住并指出前置；afk-delivered / 结束类状态放行；不认识的前置挡住；同一前置只查一次', async () => {
   const rel = (pre, post) => ({ workitem_id: pre, dst_workitem_id: post, src_field: 'due', dst_field: 'begin' });
   const seed = (extra = {}) => ({
@@ -477,6 +515,28 @@ async function withMark(label, fn, patch) {
     await api.close();
   }
 }
+
+test('ticket_mark claimed：已完结的需求不接单，工单上一个字都不写', async () => {
+  const id = '1152360842001005060';
+  const f = stateFile({
+    stories: [{ ...story(id, { label: 'ready-for-agent', status: 'status_7', owner: 'alice' }), v_status: '已完成' }],
+    lastSteps: { status_7: '已完成' }
+  });
+  const api = await startFakeOpenApi(f);
+  try {
+    const { out } = runScript('ticket_mark', { id, action: 'claimed', worker: 'wt1' }, { ...tapdEnv(f, api.endpoint), TAPD_NPC_ROLE: 'bot-npc' });
+    assert.equal(out.status, 'ok', out.say);
+    assert.equal(out.data.claimed, false);
+    assert.match(out.data.reason, /已到结束类状态（已完成）/);
+    const st = readTapdState(f);
+    assert.deepEqual(st.comments, [], '没发接单评论');
+    assert.equal(st.stories[0].label, 'ready-for-agent', '标签没动');
+    assert.equal(st.stories[0].status, 'status_7', '状态没动');
+    assert.ok(!st.calls.some((c) => c[0] === 'story' && c[1] === 'update'), '没写标签');
+  } finally {
+    await api.close();
+  }
+});
 
 test('ticket_mark：五种 action 的标签变化，| 分隔；done 不改状态与处理人；出参形状同 GitHub；comment 原样发', async () => {
   const long = `afk failed：${'很长的原因'.repeat(300)}`;

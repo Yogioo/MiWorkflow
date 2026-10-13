@@ -1,4 +1,5 @@
 // 工单源接口：改工单状态。TAPD 实现：认领（claimed）/ 完成（done）/ 未推送留人处理（unpushed）/ 失败待人看（failed）/ 等合并（merging）。
+// 认领还要看需求自己的状态：已到结束类状态（人手动关了单，忘了摘 ready）的不接——照接就是白干一遍（见 _tapd.mjs 的 endedStatus）。
 // 「完成」：撤 claimed 与 afk-merging、贴 delivered、评论提交号，再按单的来源流转状态（source.mjs 的 DONE_STATUS）：
 // AI 建的单（父需求是讨论单）直接到 ai 状态；人建的单到 human 状态、处理人交回建单人验收。流转出问题只记一句，不判失败。
 // failed 保留 ready（人摘掉 failed 就重新入队）；unpushed 只评论、保留 claimed；
@@ -16,7 +17,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { main, readStdin, emit } from './_lib.mjs';
-import { tapdJson, openApi } from './_tapd.mjs';
+import { tapdJson, openApi, endedStatus } from './_tapd.mjs';
 import { claimComment, claimHolder, defaultWorker, machineLabels, projectDirOf, stampComment, withClaimLock } from './_claim.mjs';
 import { WORKSPACE_ID, COMMENTER, LABELS, END_STATUSES, DONE_STATUS, refOf } from '../source.mjs';
 
@@ -104,15 +105,18 @@ await main(async () => {
     return;
   }
 
-  // 校验：没有任何机器标签，也没有还有效的接单评论
+  // 校验：没有任何机器标签、没有还有效的接单评论、需求不在结束类状态
   const refuse = async () => {
-    // 先看接单评论（谁接的报得出来，没贴 afk-claimed 的不算），再看机器标签
-    const labels = labelsOf(readStory(id));
+    // 先看接单评论（谁接的报得出来，没贴 afk-claimed 的不算），再看机器标签，最后看需求是不是已经完结了
+    const story = readStory(id);
+    const labels = labelsOf(story);
     const holder = claimHolder(await recentComments(workspace, id), labels);
     if (holder) return holder === worker ? `已经是我（${worker}）接的单` : `已被 ${holder} 接走`;
     const machine = machineLabels(labels);
     if (machine.length) return `已经贴了 ${machine.join('、')}`;
-    return null;
+    // 完结的需求不接：人手动关了单、忘了摘 ready（再跑一遍是白干）
+    const done = await endedStatus(story, workspace);
+    return done ? `已到结束类状态（${done}）：摘掉 ${LABELS.ready}，或把状态改回进行中再入队` : null;
   };
 
   // 没抢到 / 校验不过：工单上什么都没写
@@ -244,7 +248,7 @@ async function recentComments(workspace, id) {
 }
 
 function readStory(id) {
-  const listed = tapdJson(['story', 'list', `id=${id}`, ...(WORKSPACE_ID ? [`workspace_id=${WORKSPACE_ID}`] : [])]);
+  const listed = tapdJson(['story', 'list', `id=${id}`, 'with_v_status=1', ...(WORKSPACE_ID ? [`workspace_id=${WORKSPACE_ID}`] : [])]);
   const story = (Array.isArray(listed.data) ? listed.data : []).map((r) => r?.Story).find((s) => s && String(s.id) === id);
   if (!story) throw new Error(`找不到 ${refOf(id)}`);
   return story;

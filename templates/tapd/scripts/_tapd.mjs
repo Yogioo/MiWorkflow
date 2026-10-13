@@ -1,7 +1,7 @@
 // TAPD 工单源专用工具：tapd-cli 调用、OpenAPI 调用、令牌打码。通用的 stdin/stdout、git 在 _lib.mjs。
 // 这是模板内容，复制进项目后归项目所有。
 import { execFileSync } from 'node:child_process';
-import { TAPD_RETRY_DELAYS } from '../source.mjs';
+import { TAPD_RETRY_DELAYS, END_STATUSES } from '../source.mjs';
 
 // ── 打码 ──────────────────────────────────────────────────────────────────
 // 报错信息里不留令牌：32 位十六进制一律打码，TAPD_TOKEN 的原值也打码。
@@ -167,6 +167,58 @@ export async function openApi(pathname, { query = {}, method = 'GET', body, form
 // ── 需求/评论小工具 ───────────────────────────────────────────────────────
 // 标签是多值、用 | 分隔（写逗号会被当成一个新标签名，所以写完要回读校验）
 export const labelsOf = (story) => String(story?.label ?? '').split('|').map((l) => l.trim()).filter(Boolean);
+
+// ── 结束类状态（需求已完结）───────────────────────────────────────────────
+// 「哪些状态算完结」由项目工作流定：`workflows/last_steps` 一次拿到全部结束步骤，状态键与中文名都收进 Set
+// （有的项目给键、有的给名，两个都比）。取不到（接口报错、没权限、返回空）才退回 source.mjs 的 END_STATUSES：
+// 先经 `workflows/status_map` 把状态键翻成中文名，翻不到就直接拿需求上的 status 字段比。
+// 同一个项目在一个进程里只取一次（一轮要问很多张需求：候选、前置、认领）。
+const endCache = new Map();
+const kvOf = (data) => {
+  const out = [];
+  const walk = (v) => {
+    if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) {
+        if (x && typeof x === 'object') walk(x);
+        else if (x != null && String(x).trim()) out.push([k, String(x).trim()]);
+      }
+    }
+  };
+  walk(data);
+  return out;
+};
+
+export function endStatuses(workspace) {
+  const key = String(workspace ?? '');
+  if (!endCache.has(key)) {
+    endCache.set(key, (async () => {
+      try {
+        const r = await openApi('/workflows/last_steps', { query: { workspace_id: key || undefined, system: 'story' } });
+        const kv = kvOf(r.data);
+        if (kv.length) return new Set(kv.flat());
+      } catch { /* 取不到就退回 END_STATUSES */ }
+      const set = new Set(END_STATUSES);
+      try {
+        const r = await openApi('/workflows/status_map', { query: { workspace_id: key || undefined, system: 'story' } });
+        for (const [k, name] of kvOf(r.data)) if (END_STATUSES.includes(name)) set.add(k);
+      } catch { /* 翻不成中文名就直接拿 status 比 */ }
+      return set;
+    })());
+  }
+  return endCache.get(key);
+}
+
+// 这张需求是不是已经完结了：出状态名（拿不到名就是状态键），没完结出空串。
+// 优先用需求自带的 v_status（`story list … with_v_status=1` 给中文名），没有就退回 status 键。
+export async function endedStatus(story, workspace) {
+  const set = await endStatuses(workspace);
+  for (const raw of [story?.v_status, story?.status]) {
+    const v = String(raw ?? '').trim();
+    if (v && set.has(v)) return v;
+  }
+  return '';
+}
 
 // 全部评论，按时间从早到晚；翻页取完，不截断。
 // 读评论必须直接调 OpenAPI：`tapd-cli comment list` 会把评论的 HTML 全剥掉（图片、表格、列表都没了）。

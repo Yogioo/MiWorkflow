@@ -1,4 +1,6 @@
-// 工单源接口：列就绪工单。TAPD 实现：只接需求（story），缺陷不处理；入队只看标签——贴了 ready、没贴任何机器标签，不要求处理人。
+// 工单源接口：列就绪工单。TAPD 实现：只接需求（story），缺陷不处理；入队看标签 + 状态——贴了 ready、没贴任何机器标签、
+// 状态不在结束类，不要求处理人。
+// 已完结的需求（人手动关了单、不想干了忘了摘 ready）不进 ready：进 blocked 并写明状态，工作流不改标签也不改状态（那是人的事）。
 // 一次 `story list label=<ready>` 拿全部候选（个人令牌每天有配额，别逐个拉）；就绪的按优先级 → 工单号排序。
 // 空壳需求（描述与评论都为空）不进 ready：进 blocked，并贴 failed 标签 + 评论请人补充（干跑只进 blocked、不改 TAPD）。
 // 只对描述为空的候选走 OpenAPI 读评论（`tapd-cli comment list` 会剥 HTML，只有图片的评论会被当成空）。
@@ -13,9 +15,9 @@
 // 出：{ status, say, data: { ready: [...], blocked: [...] } }，id 为字符串；
 //     claims 模式出 { claimed: [{ id, ref, title, claim }] }，claim 同 ticket_view 的有效接单人（没有为 null）
 import { main, readStdin, emit } from './_lib.mjs';
-import { tapdJson, openApi, commentsOf } from './_tapd.mjs';
+import { tapdJson, openApi, commentsOf, endedStatus } from './_tapd.mjs';
 import { claimWorker } from './_claim.mjs';
-import { WORKSPACE_ID, COMMENTER, LABELS, END_STATUSES, priorityOf, knownPriority, refOf } from '../source.mjs';
+import { WORKSPACE_ID, COMMENTER, LABELS, priorityOf, knownPriority, refOf } from '../source.mjs';
 
 // TAPD 单页上限 200；满页说明可能还有，提示一句而不是逐页拉
 const LIST_LIMIT = 200;
@@ -28,41 +30,6 @@ const byId = (a, b) => a.id.length - b.id.length || (a.id < b.id ? -1 : a.id > b
 const ws = (s) => String(s.workspace_id || WORKSPACE_ID || '');
 const wsArg = (s) => (ws(s) ? [`workspace_id=${ws(s)}`] : []);
 const errText = (err) => String(err?.message ?? err);
-
-// 结束类状态：每个项目一轮只取一次。出 Set（状态键与中文名都放进去）
-const endCache = new Map();
-const kvOf = (data) => {
-  const out = [];
-  const walk = (v) => {
-    if (Array.isArray(v)) v.forEach(walk);
-    else if (v && typeof v === 'object') {
-      for (const [k, x] of Object.entries(v)) {
-        if (x && typeof x === 'object') walk(x);
-        else if (x != null && String(x).trim()) out.push([k, String(x).trim()]);
-      }
-    }
-  };
-  walk(data);
-  return out;
-};
-function endStatuses(w) {
-  if (!endCache.has(w)) {
-    endCache.set(w, (async () => {
-      try {
-        const r = await openApi('/workflows/last_steps', { query: { workspace_id: w || undefined, system: 'story' } });
-        const kv = kvOf(r.data);
-        if (kv.length) return new Set(kv.flat());
-      } catch { /* 取不到就退回 END_STATUSES */ }
-      const set = new Set(END_STATUSES);
-      try {
-        const r = await openApi('/workflows/status_map', { query: { workspace_id: w || undefined, system: 'story' } });
-        for (const [k, name] of kvOf(r.data)) if (END_STATUSES.includes(name)) set.add(k);
-      } catch { /* 翻不成中文名就直接拿 status 比 */ }
-      return set;
-    })());
-  }
-  return endCache.get(w);
-}
 
 // get_time_relative_stories 的真实返回（2026-09-30 真项目实测，见 TODO F4 Step 0）：
 //   data: [{ WorkitemTimeRelation: { id, workspace_id, workitem_type, workitem_id,
@@ -106,9 +73,8 @@ function checkPredecessor(p, w) {
       }
       if (!s) return `前置 ${ref} 查不到（缺陷、别的项目或已删除）`;
       if (labelsOf(s).includes(LABELS.delivered)) return null;
-      const status = String(s.status ?? '').trim();
-      if ((await endStatuses(w)).has(status) || (s.v_status && (await endStatuses(w)).has(String(s.v_status).trim()))) return null;
-      return `前置 ${ref}「${s.name || p.id}」未完成（状态 ${s.v_status || status || '空'}，未贴 ${LABELS.delivered}）`;
+      if (await endedStatus(s, w)) return null;
+      return `前置 ${ref}「${s.name || p.id}」未完成（状态 ${s.v_status || s.status || '空'}，未贴 ${LABELS.delivered}）`;
     })());
   }
   return predCache.get(key);
@@ -161,7 +127,7 @@ await main(async () => {
   const notes = [];
 
   const listed = tapdJson([
-    'story', 'list', `label=${LABELS.ready}`, `limit=${LIST_LIMIT}`,
+    'story', 'list', `label=${LABELS.ready}`, 'with_v_status=1', `limit=${LIST_LIMIT}`,
     ...(WORKSPACE_ID ? [`workspace_id=${WORKSPACE_ID}`] : [])
   ]);
   const rows = Array.isArray(listed.data) ? listed.data : [];
@@ -176,15 +142,26 @@ await main(async () => {
     .filter((s) => s.labels.includes(LABELS.ready) && !machine.some((l) => s.labels.includes(l)))
     .sort((a, b) => priorityOf(a.priority_label || a.priority) - priorityOf(b.priority_label || b.priority) || byId(a, b));
 
-  // 逐个候选看：描述空的要先读评论才知道是不是空壳（只有图片的评论不算空）；不空的直接查依赖。
+  // 逐个候选看：已完结的先出局（人手动关了单、忘了摘 ready；得先于空壳判断，不然会给完结的单贴 afk-failed）；
+  // 再看描述空不空（只有图片的评论不算空）；不空的直接查依赖。
   // first：拿到第一张可做的就停，后面的候选一张都不看（也不查依赖）。
   const first = Boolean(args.first);
+  const ended = [];
   const empty = [];
   const depBlocked = [];
   const passed = [];
   let scanned = 0;
   for (const s of candidates) {
     scanned++;
+    const done = await endedStatus(s, ws(s));
+    if (done) {
+      ended.push({
+        id: s.id,
+        ref: refOf(s.id),
+        reason: `已到结束类状态（${done}）：摘掉 ${LABELS.ready}，或把状态改回进行中再入队（工作流不动完结的单）`
+      });
+      continue;
+    }
     if (blank(s.description)) {
       const r = await openApi('/comments', { query: { workspace_id: ws(s) || undefined, entry_type: 'stories', entry_id: s.id } });
       const comments = (Array.isArray(r.data) ? r.data : []).map((c) => c?.Comment?.description);
@@ -222,6 +199,7 @@ await main(async () => {
   if (unknown.length) notes.push(`不认识的优先级按 2 处理：${unknown.join('、')}`);
 
   const blocked = [
+    ...ended,
     ...empty.map((s) => ({
       id: s.id,
       ref: refOf(s.id),
@@ -235,6 +213,7 @@ await main(async () => {
     status: 'ok',
     say: [
       ready.length ? `就绪 ${ready.length} 张工单` : '没有就绪的工单',
+      ...(ended.length ? [`已完结 ${ended.length} 张`] : []),
       ...(empty.length ? [`空壳 ${empty.length} 张`] : []),
       ...(depBlocked.length ? [`依赖挡住 ${depBlocked.length} 张`] : []),
       ...(rest > 0 ? [`后面还有 ${rest} 张没看`] : []),

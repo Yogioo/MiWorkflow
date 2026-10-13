@@ -865,6 +865,20 @@ AI 续的是追问阶段的会话（或重放全部评论），被旧讨论带�
 - 落点：`discuss.mjs`（`/change` 约二十行）；三家 `discuss_list` 收可选 `ticketed`（任务要看 `/change`，TAPD 增量下没新评论不花额度）；
   `grilling.md` / `spec.md` / `tickets.md`；场景测试 `/change` × 三家假工单源。已 `init` 的项目用 `init --upgrade` 同步。
 
+## L. TAPD 入队 / 认领看状态（2026-10-13，DigitDoor 实测反馈）
+
+现象：DigitDoor 有 3 张单（`story …4925` / `…4930` / `…4885`）前一天 18:00–20:00 已在 TAPD 里手动流转到「已完成」，
+第二天早上 `dev` 又把它们接单、从头做了一遍——人只关了单没摘 `ready-for-agent`，而 `ticket_ready` 只看标签，状态栏一个字都没看。
+（GitHub 的 `--state open`、beads 的 `status === 'open'` 都挡得住，三家只有 TAPD 漏了。）
+
+- 落点：`_tapd.mjs` 出 `endStatuses` / `endedStatus`（`workflows/last_steps` 一次拿全部结束步骤，状态键与中文名都能比；
+  取不到退回 `END_STATUSES` + `status_map`），`ticket_ready` 的候选与前置、`ticket_mark` 的认领校验共用同一套。
+- 完结的单进 `blocked`（reason 写明状态与怎么重新入队），**不替人摘标签、不改状态**（人手动关的单，标签让人自己收拾）。
+- `ticket_ready` 的 `story list` 加 `with_v_status=1`（`ticket_mark` 的 `readStory` 同）：reason 里要中文状态名，`status_7` 人看不懂。
+- 顺带：`dev --issue <已完结单>` 也接不了——同一道校验在 `ticket_mark claimed` 里，不只挡队列。
+- 不做：`cleanOwnClaims` 照旧会释放「自己上轮接了、但已被人关掉」的单（摘 `afk-claimed`、发释放评论），
+  放下轮由状态校验挡住就够，免得认领列表多带一层状态、三家契约测试都跟着动。
+
 ## E. 来自 MiCan 的经验（先不做，写明什么时候做）
 
 MiCan 在真实使用里踩出来的需求。MiWorkflow 现在都没有，但**不预先搬**：满足触发条件再做，
